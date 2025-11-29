@@ -1,0 +1,160 @@
+:root {
+  --bg-color: #f0f0f0;
+  --panel-bg: #ffffff;
+  --border-color: #cccccc;
+  --highlight-color: #4CAF50;
+  --selected-color: #2196F3;
+  --red-player: #d32f2f;
+  --black-player: #000000;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "Microsoft YaHei", sans-serif;
+  background-color: var(--bg-color);
+  height: 100vh;
+  display: flex;
+}
+
+.main-splitter {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.panel {
+  padding: 10px;
+  box-sizing: border-box;
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.left-panel { width: 25%; min-width: 250px; }
+.center-panel { width: 40%; align-items: center; justify-content: center; background: #e0e0e0; }
+.right-panel { width: 35%; overflow-y: auto; }
+
+.group-box {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  padding: 10px;
+  border-radius: 4px;
+}
+
+/* H3 是主要标题，H4 是内部小标题 */
+h3 { margin-top: 0; margin-bottom: 10px; font-size: 1rem; border-bottom: 1px solid #eee; padding-bottom: 5px;}
+h4 {
+  font-size: 0.9rem;
+  color: #555;
+  border-left: 3px solid #4CAF50;
+  padding-left: 8px;
+  margin: 10px 0;
+  line-height: 1.2;
+}
+
+button {
+  width: 100%;
+  padding: 8px;
+  margin-bottom: 5px;
+  cursor: pointer;
+}
+
+.status-row { margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; }
+input[readonly] { background: #f9f9f9; border: 1px solid #ddd; padding: 4px; width: 60%; text-align: center; }
+textarea { width: 95%; height: 300px; resize: none; border: 1px solid #ddd; font-size: 12px; line-height: 1.4; }
+
+/* 棋盘样式 */
+.chess-board {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  padding: 10px;
+  background: #dcb35c; /* 木纹底色 */
+  border: 5px solid #8b5a2b;
+  width: 400px;
+  height: 300px;
+}
+
+.chess-cell {
+  background: #f3d094;
+  border: 2px solid #8b5a2b;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: bold;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 2px 2px 2px rgba(0,0,0,0.2);
+  position: relative;
+}
+
+.chess-cell.hidden { background: #8b5a2b; border-radius: 5px; box-shadow: inset 2px 2px 5px rgba(0,0,0,0.5); color: transparent; }
+.chess-cell.empty { background: transparent; border: 1px dashed #8b5a2b; box-shadow: none; }
+.chess-cell.red { color: var(--red-player); border-color: var(--red-player); }
+.chess-cell.black { color: var(--black-player); border-color: var(--black-player); }
+.chess-cell.selected { background-color: var(--selected-color) !important; color: white !important; }
+.chess-cell:hover { filter: brightness(1.1); }
+
+/* 翻子概率列表样式 (Grid) */
+.prob-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.prob-item {
+  padding: 4px 6px;
+  background: #f0f8ff;
+  border: 1px solid #d1e9ff;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #333;
+  text-align: center;
+}
+
+/* Bitboard Grid 容器 */
+.bitboard-list { 
+  display: grid; 
+  grid-template-columns: 1fr 1fr; 
+  gap: 10px;
+}
+
+.bb-wrapper { 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center;
+  background: #f9f9f9;
+  padding: 5px;
+  border-radius: 3px;
+  border: 1px solid #ddd;
+}
+
+.bb-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+  background: #ccc;
+  border: 1px solid #999;
+  padding: 2px;
+}
+
+.bb-cell { 
+  width: 18px; 
+  height: 18px; 
+  background: #eee;
+}
+
+.bb-cell.active { 
+  background: #4CAF50; /* 激活状态为绿色 */
+}
+
+.bb-label { 
+  font-size: 11px; 
+  font-weight: bold;
+  margin-bottom: 4px;
+  color: #555;
+}

@@ -1,0 +1,75 @@
+[package]
+name = "banqi_3x4"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "3x4 Dark Chess game environment for reinforcement learning"
+license = "MIT"
+default-run = "banqi-tauri"
+
+[lib]
+name = "banqi_3x4"
+path = "src/lib.rs"
+
+[[bin]]
+name = "banqi_3x4"
+path = "src/main.rs"
+
+[[bin]]
+name = "banqi-tauri"
+path = "src/tauri_main.rs"
+
+[[bin]]
+name = "banqi-train"
+path = "src/train.rs"
+
+[[bin]]
+name = "banqi-verify"
+path = "src/verify.rs"
+
+[[bin]]
+name = "banqi-verify2"
+path="src/verify_2.rs"
+
+[[bin]]
+name = "banqi-verify-trained"
+path = "src/verify_trained.rs"
+
+[[bin]]
+name = "banqi-parallel-train"
+path = "src/parallel_train.rs"
+
+[[bin]]
+name = "banqi-verify-samples"
+path = "src/verify_samples.rs"
+
+[[bin]]
+name = "test-observation"
+path = "src/test_observation.rs"
+
+[[bin]]
+name = "banqi-lr-finder"
+path = "src/run_lr_finder.rs"
+
+[dependencies]
+rand = "0.8"
+fixedbitset = "0.5"
+ndarray = "0.15"
+tauri = { version = "2.9", features = [] }
+tauri-plugin-shell = "2.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tch = {version="0.22"}
+rusqlite = { version = "0.32", features = ["bundled"] }
+num_cpus = "1.17"
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[dev-dependencies]
+# 用于测试和示例
+
+[profile.release]
+opt-level = 3
+lto = true
