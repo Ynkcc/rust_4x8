@@ -5,7 +5,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use ndarray::Array;
-use banqi_3x4::game_env::Observation;
+use banqi_4x8::game_env::Observation;
 
 fn main() -> Result<()> {
     let db_path = "training_samples.db";

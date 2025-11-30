@@ -1,4 +1,4 @@
-use banqi_3x4::*;
+use banqi_4x8::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
@@ -6,7 +6,7 @@ fn main() {
     let mut env = DarkChessEnv::new();
     let mut rng = thread_rng();
 
-    println!("=== Rust 迷你暗棋 (3x4) - 随机对局演示 ===\n");
+    println!("=== Rust 迷你暗棋 (4x8) - 随机对局演示 ===\n");
     println!("开始执行随机策略测试...\n");
 
     let obs = env.reset();

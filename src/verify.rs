@@ -2,9 +2,9 @@
 // Run MCTS with an untrained neural network evaluator for 100 simulations and
 // output the highest PUCT path, final leaf value, and visit counts per step.
 
-use banqi_3x4::game_env::{DarkChessEnv, Player};
-use banqi_3x4::mcts::{Evaluator, MCTS, MCTSConfig, MctsNode};
-use banqi_3x4::nn_model::BanqiNet;
+use banqi_4x8::game_env::{DarkChessEnv, Player};
+use banqi_4x8::mcts::{Evaluator, MCTS, MCTSConfig, MctsNode};
+use banqi_4x8::nn_model::BanqiNet;
 use std::sync::Arc;
 use tch::{nn, Device, Tensor, Kind};
 

@@ -1,7 +1,7 @@
 // code_files/src/verify_scenario_2.rs
 
-use banqi_3x4::game_env::DarkChessEnv;
-use banqi_3x4::mcts::{Evaluator, MCTS, MCTSConfig, MctsNode};
+use banqi_4x8::game_env::DarkChessEnv;
+use banqi_4x8::mcts::{Evaluator, MCTS, MCTSConfig, MctsNode};
 use std::sync::Arc;
 
 // --- 简单策略评估器 ---

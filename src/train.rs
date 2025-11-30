@@ -1,7 +1,7 @@
 // code_files/src/train.rs
-use banqi_3x4::game_env::{DarkChessEnv, Observation};
-use banqi_3x4::mcts::{Evaluator, MCTS, MCTSConfig};
-use banqi_3x4::nn_model::BanqiNet;
+use banqi_4x8::game_env::{DarkChessEnv, Observation};
+use banqi_4x8::mcts::{Evaluator, MCTS, MCTSConfig};
+use banqi_4x8::nn_model::BanqiNet;
 use anyhow::Result;
 use std::sync::Arc;
 use tch::{nn, nn::OptimizerConfig, Device, Tensor, Kind};
@@ -231,7 +231,7 @@ fn collect_scenario_samples(
     evaluator: Arc<NNEvaluator>,
     mcts_sims: usize,
 ) -> Vec<(Observation, Vec<f32>, f32, Vec<i32>)> {
-    use banqi_3x4::game_env::Player;
+    use banqi_4x8::game_env::Player;
     
     let mut all_samples = Vec::new();
     
@@ -384,7 +384,7 @@ fn collect_scenario_samples(
 
 // 验证函数：在两个标准场景上测试模型
 fn validate_scenarios(net: &BanqiNet, device: Device, iteration: usize) {
-    use banqi_3x4::game_env::Player;
+    use banqi_4x8::game_env::Player;
     
     // 场景1: 仅剩 R_A 与 B_A
     {

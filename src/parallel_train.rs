@@ -6,13 +6,13 @@
 // - 通信: 通过 channel 发送推理请求和接收结果
 // - 批量推理: 收集多个请求后批量处理，提高GPU利用率
 
-use banqi_3x4::nn_model::BanqiNet;
-use banqi_3x4::inference::{InferenceServer, ChannelEvaluator};
-use banqi_3x4::self_play::{SelfPlayWorker, ScenarioType};
-use banqi_3x4::scenario_validation::validate_model_on_scenarios_with_net;
-use banqi_3x4::training::{train_step, get_loss_weights};
-use banqi_3x4::game_env::Observation;
-use banqi_3x4::training_log::TrainingLog;
+use banqi_4x8::nn_model::BanqiNet;
+use banqi_4x8::inference::{InferenceServer, ChannelEvaluator};
+use banqi_4x8::self_play::{SelfPlayWorker, ScenarioType};
+use banqi_4x8::scenario_validation::validate_model_on_scenarios_with_net;
+use banqi_4x8::training::{train_step, get_loss_weights};
+use banqi_4x8::game_env::Observation;
+use banqi_4x8::training_log::TrainingLog;
 use anyhow::Result;
 use std::sync::{Arc, mpsc};
 use std::time::Instant;

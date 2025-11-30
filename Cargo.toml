@@ -1,18 +1,18 @@
 [package]
-name = "banqi_3x4"
+name = "banqi_4x8"
 version = "0.1.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
-description = "3x4 Dark Chess game environment for reinforcement learning"
+description = "4x8 Dark Chess game environment for reinforcement learning"
 license = "MIT"
 default-run = "banqi-tauri"
 
 [lib]
-name = "banqi_3x4"
+name = "banqi_4x8"
 path = "src/lib.rs"
 
 [[bin]]
-name = "banqi_3x4"
+name = "banqi_4x8"
 path = "src/main.rs"
 
 [[bin]]

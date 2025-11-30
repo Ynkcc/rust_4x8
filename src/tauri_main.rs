@@ -1,6 +1,6 @@
 // code_files/src/tauri_main.rs
-use banqi_3x4::*;
-use banqi_3x4::ai::{Policy, RandomPolicy, RevealFirstPolicy, MctsDlPolicy, ModelWrapper};
+use banqi_4x8::*;
+use banqi_4x8::ai::{Policy, RandomPolicy, RevealFirstPolicy, MctsDlPolicy, ModelWrapper};
 use serde::{Serialize, Deserialize}; // Added Deserialize
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -184,6 +184,10 @@ fn get_piece_short_name(piece: &Piece) -> String {
         PieceType::General => "Gen",
         PieceType::Advisor => "Adv",
         PieceType::Soldier => "Sol",
+        PieceType::Cannon => "Can",
+        PieceType::Horse => "Hor",
+        PieceType::Chariot => "Car",
+        PieceType::Elephant => "Ele",
     };
     format!("{}_{}", p_char, t_char)
 }
