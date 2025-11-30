@@ -1,0 +1,2 @@
+[env]
+LIBTORCH="/home/ynk/miniconda3/lib/python3.13/site-packages/torch"

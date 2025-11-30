@@ -70,16 +70,20 @@ impl MctsNode {
 }
 
 // 辅助函数：为翻开的棋子生成唯一 ID
-// 0-2: Red Sol, Adv, Gen; 3-5: Black Sol, Adv, Gen
+// 0-6: Red [Sol, Can, Hor, Cha, Ele, Adv, Gen]; 7-13: Black [Sol, Can, Hor, Cha, Ele, Adv, Gen]
 fn get_outcome_id(piece: &Piece) -> usize {
     let type_idx = match piece.piece_type {
         PieceType::Soldier => 0,
-        PieceType::Advisor => 1,
-        PieceType::General => 2,
+        PieceType::Cannon => 1,
+        PieceType::Horse => 2,
+        PieceType::Chariot => 3,
+        PieceType::Elephant => 4,
+        PieceType::Advisor => 5,
+        PieceType::General => 6,
     };
     let player_offset = match piece.player {
         Player::Red => 0,
-        Player::Black => 3,
+        Player::Black => 7,
     };
     type_idx + player_offset
 }
@@ -234,8 +238,8 @@ impl<E: Evaluator> MCTS<E> {
             
             // 1. 如果尚未扩展，则进行全量扩展
             if !node.is_expanded {
-                // 统计剩余棋子种类和数量
-                let mut counts = [0; 6];
+                // 统计剩余棋子种类和数量（7种棋子 x 2方 = 14）
+                let mut counts = [0; 14];
                 for p in &env.hidden_pieces {
                     counts[get_outcome_id(p)] += 1;
                 }
@@ -245,7 +249,7 @@ impl<E: Evaluator> MCTS<E> {
                 let mut total_weighted_value = 0.0;
                 
                 // 对每一种可能的 outcome 进行扩展和评估
-                for outcome_id in 0..6 {
+                for outcome_id in 0..14 {
                     if counts[outcome_id] > 0 {
                         let prob = counts[outcome_id] as f32 / total_hidden;
                         

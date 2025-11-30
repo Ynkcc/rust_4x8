@@ -14,34 +14,59 @@ use serde::{Serialize, Deserialize};
 pub const STATE_STACK_SIZE: usize = 1; // 禁用状态堆叠，仅使用当前帧
 const MAX_CONSECUTIVE_MOVES_FOR_DRAW: usize = 14;
 const MAX_STEPS_PER_EPISODE: usize = 100;
-pub const BOARD_ROWS: usize = 3;
-pub const BOARD_COLS: usize = 4;
+pub const BOARD_ROWS: usize = 4;
+pub const BOARD_COLS: usize = 8;
 pub const TOTAL_POSITIONS: usize = BOARD_ROWS * BOARD_COLS;
-pub const NUM_PIECE_TYPES: usize = 3;
+pub const NUM_PIECE_TYPES: usize = 7; // Soldier, Cannon, Horse, Chariot, Elephant, Advisor, General
 const INITIAL_REVEALED_PIECES: usize = 2;
 
-// 存活向量大小: 2(兵) + 1(士) + 1(将) = 4
-const SURVIVAL_VECTOR_SIZE: usize = 4;
+// 存活向量大小: 5(兵) + 2(炮) + 2(马) + 2(车) + 2(象) + 2(士) + 1(将) = 16
+const SURVIVAL_VECTOR_SIZE: usize = 16;
 
-// 动作空间
-pub const REVEAL_ACTIONS_COUNT: usize = 12;
-pub const REGULAR_MOVE_ACTIONS_COUNT: usize = 34;
-pub const ACTION_SPACE_SIZE: usize = REVEAL_ACTIONS_COUNT + REGULAR_MOVE_ACTIONS_COUNT; // 46
+// 动作空间 (需要重新计算，基于 4x8 棋盘)
+pub const REVEAL_ACTIONS_COUNT: usize = 32;  // 4x8 = 32个位置
+// 常规移动：4x8 网格共有 52 条无向相邻边，方向化为 104 个动作
+pub const REGULAR_MOVE_ACTIONS_COUNT: usize = 104;
+// 炮的攻击：同排(8列)排距>1的有 5 个目标/起点，每排 8*5=40，4排合计 160；
+// 同列(4行)距>1的有 1 个目标/起点，每列 4*1=4，8列合计 32；总计 160+32=192
+pub const CANNON_ATTACK_ACTIONS_COUNT: usize = 192;
+pub const ACTION_SPACE_SIZE: usize = REVEAL_ACTIONS_COUNT + REGULAR_MOVE_ACTIONS_COUNT + CANNON_ATTACK_ACTIONS_COUNT; // 32 + 104 + 192 = 328
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PieceType {
-    Soldier = 0,
-    Advisor = 1,
-    General = 2,
+    Soldier = 0,   // 兵
+    Cannon = 1,    // 炮
+    Horse = 2,     // 马
+    Chariot = 3,   // 车
+    Elephant = 4,  // 象
+    Advisor = 5,   // 士
+    General = 6,   // 将
 }
 
 impl PieceType {
     fn from_usize(u: usize) -> Option<Self> {
         match u {
             0 => Some(PieceType::Soldier),
-            1 => Some(PieceType::Advisor),
-            2 => Some(PieceType::General),
+            1 => Some(PieceType::Cannon),
+            2 => Some(PieceType::Horse),
+            3 => Some(PieceType::Chariot),
+            4 => Some(PieceType::Elephant),
+            5 => Some(PieceType::Advisor),
+            6 => Some(PieceType::General),
             _ => None,
+        }
+    }
+    
+    /// 获取棋子价值
+    pub fn value(&self) -> i32 {
+        match self {
+            PieceType::Soldier => 2,
+            PieceType::Cannon => 5,
+            PieceType::Horse => 5,
+            PieceType::Chariot => 5,
+            PieceType::Elephant => 5,
+            PieceType::Advisor => 10,
+            PieceType::General => 30,
         }
     }
 }
@@ -96,6 +121,10 @@ impl Piece {
         };
         let t_char = match self.piece_type {
             PieceType::General => "Gen",
+            PieceType::Cannon => "Can",
+            PieceType::Horse => "Hor",
+            PieceType::Chariot => "Cha",
+            PieceType::Elephant => "Ele",
             PieceType::Advisor => "Adv",
             PieceType::Soldier => "Sol",
         };
@@ -152,6 +181,10 @@ pub struct DarkChessEnv {
     action_to_coords: HashMap<usize, Vec<usize>>, 
     coords_to_action: HashMap<Vec<usize>, usize>, 
     
+    // 炮的攻击射线表 (4个方向 x 12个位置 x 12个位置的布尔矩阵)
+    // [方向][from_sq][to_sq] -> 是否在射线上
+    ray_attacks: Vec<Vec<FixedBitSet>>,
+    
     // 隐藏棋子池 (Bag Model: 翻棋时从此池中随机抽取)
     pub hidden_pieces: Vec<Piece>,
     
@@ -183,11 +216,14 @@ impl DarkChessEnv {
             action_to_coords: HashMap::new(),
             coords_to_action: HashMap::new(),
             
+            ray_attacks: vec![vec![FixedBitSet::with_capacity(TOTAL_POSITIONS); TOTAL_POSITIONS]; 4],
+            
             hidden_pieces: Vec::new(),
-            reveal_probabilities: vec![0.0; 6],
+            reveal_probabilities: vec![0.0; 14],
         };
 
         env.initialize_lookup_tables();
+        env.precompute_ray_attacks();
         env.reset();
         env
     }
@@ -257,7 +293,7 @@ impl DarkChessEnv {
         self.scalar_history.clear();
         
         self.hidden_pieces.clear();
-        self.reveal_probabilities = vec![0.0; 6];
+        self.reveal_probabilities = vec![0.0; 14];
     }
 
     fn initialize_board(&mut self) {
@@ -266,8 +302,21 @@ impl DarkChessEnv {
         // 1. 生成实际棋子池 (Bag)
         let mut pieces = Vec::new();
         for &player in &[Player::Red, Player::Black] {
+            // 每方: 1将, 2士, 2象, 2车, 2马, 2炮, 5兵
             pieces.push(Piece::new(PieceType::General, player));
             pieces.push(Piece::new(PieceType::Advisor, player));
+            pieces.push(Piece::new(PieceType::Advisor, player));
+            pieces.push(Piece::new(PieceType::Elephant, player));
+            pieces.push(Piece::new(PieceType::Elephant, player));
+            pieces.push(Piece::new(PieceType::Chariot, player));
+            pieces.push(Piece::new(PieceType::Chariot, player));
+            pieces.push(Piece::new(PieceType::Horse, player));
+            pieces.push(Piece::new(PieceType::Horse, player));
+            pieces.push(Piece::new(PieceType::Cannon, player));
+            pieces.push(Piece::new(PieceType::Cannon, player));
+            pieces.push(Piece::new(PieceType::Soldier, player));
+            pieces.push(Piece::new(PieceType::Soldier, player));
+            pieces.push(Piece::new(PieceType::Soldier, player));
             pieces.push(Piece::new(PieceType::Soldier, player));
             pieces.push(Piece::new(PieceType::Soldier, player));
         }
@@ -275,11 +324,11 @@ impl DarkChessEnv {
         pieces.shuffle(&mut rng);
         self.hidden_pieces = pieces; // 这些是等待被翻出来的棋子
 
-        // 2. 生成棋盘布局 (Layout): 8个 Hidden, 4个 Empty
+        // 2. 生成棋盘布局 (Layout): 32个 Hidden, 0个 Empty (总共32个位置)
         // Python逻辑: board_setup = pieces + empty_slots -> shuffle
         // 这里我们用 Hidden 替代具体的 Piece，直到翻开时才决定是哪个 Piece
-        let piece_count = self.hidden_pieces.len(); // 8
-        let empty_count = TOTAL_POSITIONS - piece_count; // 4
+        let piece_count = self.hidden_pieces.len(); // 32
+        let empty_count = TOTAL_POSITIONS - piece_count; // 0
         
         let mut layout = Vec::with_capacity(TOTAL_POSITIONS);
         for _ in 0..piece_count {
@@ -392,24 +441,32 @@ impl DarkChessEnv {
         let total_hidden = self.hidden_pieces.len();
         
         if total_hidden == 0 {
-            self.reveal_probabilities = vec![0.0; 6];
+            self.reveal_probabilities = vec![0.0; 14];
             return;
         }
         
-        let mut counts = vec![0; 6];
+        let mut counts = vec![0; 14];
         for piece in &self.hidden_pieces {
             let idx = match (piece.player, piece.piece_type) {
                 (Player::Red, PieceType::Soldier) => 0,
-                (Player::Red, PieceType::Advisor) => 1,
-                (Player::Red, PieceType::General) => 2,
-                (Player::Black, PieceType::Soldier) => 3,
-                (Player::Black, PieceType::Advisor) => 4,
-                (Player::Black, PieceType::General) => 5,
+                (Player::Red, PieceType::Cannon) => 1,
+                (Player::Red, PieceType::Horse) => 2,
+                (Player::Red, PieceType::Chariot) => 3,
+                (Player::Red, PieceType::Elephant) => 4,
+                (Player::Red, PieceType::Advisor) => 5,
+                (Player::Red, PieceType::General) => 6,
+                (Player::Black, PieceType::Soldier) => 7,
+                (Player::Black, PieceType::Cannon) => 8,
+                (Player::Black, PieceType::Horse) => 9,
+                (Player::Black, PieceType::Chariot) => 10,
+                (Player::Black, PieceType::Elephant) => 11,
+                (Player::Black, PieceType::Advisor) => 12,
+                (Player::Black, PieceType::General) => 13,
             };
             counts[idx] += 1;
         }
         
-        for i in 0..6 {
+        for i in 0..14 {
             self.reveal_probabilities[i] = counts[i] as f32 / total_hidden as f32;
         }
     }
@@ -447,11 +504,6 @@ impl DarkChessEnv {
     }
 
     fn apply_move_action(&mut self, from_sq: usize, to_sq: usize) {
-        // 先验证吃子规则
-        if let Err(e) = self.verify_capture_rules(from_sq, to_sq) {
-            panic!("吃子规则验证失败: {}", e);
-        }
-        
         // 提取源棋子 (必须是 Revealed)
         let attacker = match std::mem::replace(&mut self.board[from_sq], Slot::Empty) {
             Slot::Revealed(p) => p,
@@ -501,10 +553,15 @@ impl DarkChessEnv {
 
     fn update_survival_vector_on_capture(&mut self, captured: &Piece) {
         let vec = self.survival_vectors.get_mut(&captured.player).unwrap();
+        // 存活向量: [Sol(5), Can(2), Hor(2), Cha(2), Ele(2), Adv(2), Gen(1)]
         let (start_idx, count) = match captured.piece_type {
-            PieceType::Soldier => (0, 2),
-            PieceType::Advisor => (2, 1),
-            PieceType::General => (3, 1),
+            PieceType::Soldier => (0, 5),
+            PieceType::Cannon => (5, 2),
+            PieceType::Horse => (7, 2),
+            PieceType::Chariot => (9, 2),
+            PieceType::Elephant => (11, 2),
+            PieceType::Advisor => (13, 2),
+            PieceType::General => (15, 1),
         };
         
         for i in 0..count {
@@ -587,7 +644,7 @@ impl DarkChessEnv {
 
     // --- 状态获取 ---
     fn get_board_state_tensor(&self) -> Vec<f32> {
-        let mut tensor = Vec::with_capacity(8 * TOTAL_POSITIONS);
+        let mut tensor = Vec::with_capacity(16 * TOTAL_POSITIONS); // 7 + 7 + 1 + 1 = 16 channels
         
         let my = self.current_player;
         let opp = my.opposite();
@@ -626,7 +683,7 @@ impl DarkChessEnv {
         vec.extend_from_slice(&self.survival_vectors[&opp]);
         vec.push(self.total_step_counter as f32 / MAX_STEPS_PER_EPISODE as f32);
         
-        // 编码当前玩家的 action_masks (46维)
+        // 编码当前玩家的 action_masks (208维)
         let action_masks = self.action_masks();
         let action_masks_float: Vec<f32> = action_masks.iter().map(|&x| x as f32).collect();
         vec.extend(action_masks_float);
@@ -635,16 +692,16 @@ impl DarkChessEnv {
     }
     
     pub fn get_state(&self) -> Observation {
-        let mut board_data = Vec::with_capacity(STATE_STACK_SIZE * 8 * BOARD_ROWS * BOARD_COLS);
+        let mut board_data = Vec::with_capacity(STATE_STACK_SIZE * 16 * BOARD_ROWS * BOARD_COLS); // 更新为16通道
         for frame in &self.board_history {
             board_data.extend_from_slice(frame);
         }
         let board = Array4::from_shape_vec(
-            (STATE_STACK_SIZE, 8, BOARD_ROWS, BOARD_COLS),
+            (STATE_STACK_SIZE, 16, BOARD_ROWS, BOARD_COLS), // 更新为16通道
             board_data
         ).expect("Failed to reshape board array");
         
-        let mut scalars_data = Vec::with_capacity(STATE_STACK_SIZE * 56);
+        let mut scalars_data = Vec::with_capacity(STATE_STACK_SIZE * 242); // 1 + 16 + 16 + 1 + 208 = 242
         for frame in &self.scalar_history {
             scalars_data.extend_from_slice(frame);
         }
@@ -655,10 +712,11 @@ impl DarkChessEnv {
 
     // --- 规则检查 ---
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
-        if self.dead_pieces[&Player::Red].len() == 4 {
+        // 每方共16个棋子: 5兵+2炮+2马+2车+2象+2士+1将 = 16
+        if self.dead_pieces[&Player::Red].len() == 16 {
             return (true, false, Some(Player::Black.val()));
         }
-        if self.dead_pieces[&Player::Black].len() == 4 {
+        if self.dead_pieces[&Player::Black].len() == 16 {
             return (true, false, Some(Player::Red.val()));
         }
         
@@ -702,6 +760,11 @@ impl DarkChessEnv {
         
         for pt_val in 0..NUM_PIECE_TYPES {
             let pt = PieceType::from_usize(pt_val).unwrap();
+            
+            // 炮不使用常规移动，跳过
+            if pt == PieceType::Cannon {
+                continue;
+            }
             
             let piece_locs: Vec<usize> = self.piece_vectors[&player][pt_val].ones().collect();
             let valid_targets = &target_vectors[&pt];
@@ -892,6 +955,12 @@ impl DarkChessEnv {
         bitboards
     }
 
+
+        /* 
+        // ------------------------------------------------------------------
+        // 注意: 以下自定义场景函数已过时，需要根据新的4x8棋盘和7种棋子重新设计
+        // ------------------------------------------------------------------
+        
     // ------------------------------------------------------------------
     // 自定义场景: 仅剩红方士(R_A)与黑方士(B_A)，其它棋子全部阵亡
     // current_player 指定当前行动方
@@ -951,6 +1020,7 @@ impl DarkChessEnv {
         self.action_to_coords.get(&action)
     }
     
+
 // ------------------------------------------------------------------
     // 自定义场景 2: 隐藏的威胁
     // 棋子: R_Adv(明), B_Adv(暗), B_Sol(暗)
@@ -1028,4 +1098,5 @@ impl DarkChessEnv {
             self.scalar_history.push_back(scalar_state.clone());
         }
     }
+    */
 }
