@@ -42,7 +42,10 @@
         </div>
         <div class="status-row">
           <label>当前玩家:</label>
-          <input type="text" id="current-player" readonly>
+          <div id="current-player" class="player-indicator">
+            <span class="indicator-dot"></span>
+            <span class="indicator-text">红方</span>
+          </div>
         </div>
         <div class="status-row">
           <label>状态:</label>
@@ -65,26 +68,45 @@
         <div class="chess-board" id="chess-board">
           </div>
       </div>
-    </div>
 
-    <div class="panel right-panel">
-      <div class="group-box">
-        <h3>阵亡棋子</h3>
-        <div class="dead-row">
-          <span>红方:</span> <span id="dead-red">无</span>
-        </div>
-        <div class="dead-row">
-          <span>黑方:</span> <span id="dead-black">无</span>
-        </div>
-      </div>
-
-      <div class="group-box">
-        <h3>辅助信息 (Debug)</h3>
-        <div id="info-container">
+      <div class="insights-grid">
+        <div class="group-box reveal-section">
+          <div class="section-heading">
+            <h3>翻开暗子概率</h3>
+            <span class="section-subtitle">实时更新的暗子分布</span>
           </div>
+          <div class="prob-list" id="reveal-prob-list"></div>
+          <div class="prob-empty" id="reveal-prob-empty">暂无可用数据</div>
+        </div>
+
+        <div class="group-box fallen-section">
+          <h3>阵亡棋子</h3>
+          <div class="fallen-row" id="fallen-red-row">
+            <div class="fallen-row-title">红方阵亡</div>
+            <div class="fallen-list" id="dead-red"></div>
+          </div>
+          <div class="fallen-row" id="fallen-black-row">
+            <div class="fallen-row-title">黑方阵亡</div>
+            <div class="fallen-list" id="dead-black"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
+
+  <div class="bitboard-launcher">
+    <button id="toggle-bitboard" type="button">通道状态</button>
+  </div>
+  <div class="bitboard-overlay" id="bitboard-overlay"></div>
+  <aside class="bitboard-sidebar" id="bitboard-sidebar" aria-hidden="true">
+    <div class="bitboard-sidebar-header">
+      <h3>通道状态 (Bitboards)</h3>
+      <button id="close-bitboard" class="icon-button" type="button" aria-label="关闭通道状态">×</button>
+    </div>
+    <div class="bitboard-sidebar-body">
+      <div id="bitboard-container" class="bitboard-list"></div>
+    </div>
+  </aside>
   <script src="main_tauri.js" type="module"></script>
 </body>
 </html>

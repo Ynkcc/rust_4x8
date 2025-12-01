@@ -1,7 +1,68 @@
-const { invoke } = window.__TAURI__.core;
+// Tauri API 访问 - 兼容 Tauri v2
+let invoke;
+if (window.__TAURI__) {
+  // Tauri v1 风格
+  invoke = window.__TAURI__.core?.invoke || window.__TAURI__.invoke;
+} else if (window.__TAURI_INTERNALS__) {
+  // Tauri v2 风格
+  invoke = window.__TAURI_INTERNALS__.invoke;
+} else {
+  console.error("Tauri API not found!");
+  invoke = async () => { throw new Error("Tauri API not available"); };
+}
 
-let selectedSquare = null; // 记录当前选中的格子索引 (0-11)
+let selectedSquare = null; // 记录当前选中的格子索引 (0-31 for 4x8)
 let gameState = null;
+
+const pieceTypeOrder = [
+  "General",
+  "Advisor",
+  "Elephant",
+  "Chariot",
+  "Horse",
+  "Cannon",
+  "Soldier",
+];
+
+const pieceTypeMeta = {
+  General: { code: "Gen", redChar: "帥", blackChar: "將" },
+  Advisor: { code: "Adv", redChar: "仕", blackChar: "士" },
+  Elephant: { code: "Ele", redChar: "相", blackChar: "象" },
+  Chariot: { code: "Car", redChar: "車", blackChar: "車" },
+  Horse: { code: "Hor", redChar: "馬", blackChar: "馬" },
+  Cannon: { code: "Can", redChar: "炮", blackChar: "砲" },
+  Soldier: { code: "Sol", redChar: "兵", blackChar: "卒" },
+};
+
+const actionIndexCache = new Map();
+let moveHighlightMap = new Map();
+let revealHighlightSet = new Set();
+
+const revealProbabilityLabels = [
+  "红兵", "红炮", "红马", "红车", "红象", "红仕", "红帅",
+  "黑卒", "黑砲", "黑馬", "黑車", "黑象", "黑士", "黑将"
+];
+
+const bitboardOrder = [
+  { key: 'hidden', label: 'Hidden (暗子)' },
+  { key: 'empty', label: 'Empty (空位)' },
+  { key: 'red_revealed', label: 'Red All (红方)' },
+  { key: 'black_revealed', label: 'Black All (黑方)' },
+  { key: 'red_soldier', label: 'R_Sol (红兵)' },
+  { key: 'black_soldier', label: 'B_Sol (黑卒)' },
+  { key: 'red_advisor', label: 'R_Adv (红仕)' },
+  { key: 'black_advisor', label: 'B_Adv (黑士)' },
+  { key: 'red_general', label: 'R_Gen (红帅)' },
+  { key: 'black_general', label: 'B_Gen (黑将)' },
+  { key: 'red_cannon', label: 'R_Can (红炮)' },
+  { key: 'black_cannon', label: 'B_Can (黑砲)' },
+  { key: 'red_horse', label: 'R_Hor (红馬)' },
+  { key: 'black_horse', label: 'B_Hor (黑馬)' },
+  { key: 'red_chariot', label: 'R_Car (红車)' },
+  { key: 'black_chariot', label: 'B_Car (黑車)' },
+  { key: 'red_elephant', label: 'R_Ele (红相)' },
+  { key: 'black_elephant', label: 'B_Ele (黑象)' },
+];
 
 // 棋子文字映射
 function getPieceText(slotStr) {
@@ -10,16 +71,24 @@ function getPieceText(slotStr) {
   
   // 格式: "R_Sol", "B_Gen", "R_Adv" 等
   const isRed = slotStr.startsWith("R_");
-  const type = slotStr.substring(2); // "Sol", "Gen", "Adv"
+  const type = slotStr.substring(2); // "Sol", "Gen", "Adv", "Can", "Hor", "Car", "Ele"
   
   if (isRed) {
     if (type === "Gen") return "帥";
     if (type === "Adv") return "仕";
     if (type === "Sol") return "兵";
+    if (type === "Can") return "炮";
+    if (type === "Hor") return "馬";
+    if (type === "Car") return "車";
+    if (type === "Ele") return "相";
   } else {
     if (type === "Gen") return "將";
     if (type === "Adv") return "士";
     if (type === "Sol") return "卒";
+    if (type === "Can") return "砲";
+    if (type === "Hor") return "馬";
+    if (type === "Car") return "車";
+    if (type === "Ele") return "象";
   }
   return "";
 }
@@ -36,11 +105,134 @@ function getSlotPlayer(slotStr) {
   return null;
 }
 
+function isSelectablePiece(state, idx) {
+  if (!state || idx == null) return false;
+  const slot = state.board?.[idx];
+  if (!isRevealed(slot)) return false;
+  return getSlotPlayer(slot) === state.current_player;
+}
+
+function updateCurrentPlayerIndicator(player) {
+  const indicator = document.getElementById('current-player');
+  if (!indicator) return;
+  const textEl = indicator.querySelector('.indicator-text');
+  indicator.classList.toggle('black-turn', player === 'Black');
+  if (textEl) {
+    textEl.textContent = player === 'Red' ? '红方' : '黑方';
+  }
+}
+
+function renderFallenPieces(player, deadList) {
+  const targetId = player === 'Red' ? 'dead-red' : 'dead-black';
+  const container = document.getElementById(targetId);
+  if (!container) return;
+  container.innerHTML = '';
+
+  const counts = {};
+  pieceTypeOrder.forEach(type => { counts[type] = 0; });
+  (deadList || []).forEach(typeName => {
+    if (counts.hasOwnProperty(typeName)) {
+      counts[typeName] += 1;
+    }
+  });
+
+  pieceTypeOrder.forEach(typeName => {
+    const meta = pieceTypeMeta[typeName];
+    if (!meta) return;
+    const count = counts[typeName] || 0;
+    const item = document.createElement('div');
+    item.className = 'fallen-item ' + (count > 0 ? 'has-loss' : 'no-loss');
+
+    const icon = document.createElement('span');
+    icon.className = `fallen-icon ${player === 'Red' ? 'red' : 'black'}`;
+    icon.textContent = player === 'Red' ? meta.redChar : meta.blackChar;
+    if (count > 1) {
+      icon.setAttribute('data-count', count);
+    }
+
+    const label = document.createElement('span');
+    label.className = 'fallen-label';
+    label.textContent = player === 'Red' ? meta.redChar : meta.blackChar;
+
+    item.appendChild(icon);
+    item.appendChild(label);
+    container.appendChild(item);
+  });
+}
+
+function computeRevealHighlights(state) {
+  const revealSet = new Set();
+  if (!state || !state.board) return revealSet;
+  state.board.forEach((slot, idx) => {
+    if (slot === 'Hidden' && state.action_masks?.[idx] === 1) {
+      revealSet.add(idx);
+    }
+  });
+  return revealSet;
+}
+
+async function computeMoveHighlights(state, fromIdx) {
+  const highlights = new Map();
+  if (!state || fromIdx == null) return highlights;
+  const tasks = state.board.map(async (_slot, idx) => {
+    if (idx === fromIdx) return null;
+    const action = await getCachedMoveAction(fromIdx, idx);
+    if (action == null) return null;
+    if (state.action_masks?.[action] !== 1) return null;
+    const type = getMoveHighlightType(state.board[idx], state.current_player);
+    if (!type) return null;
+    return { idx, type };
+  });
+
+  const results = await Promise.all(tasks);
+  results.filter(Boolean).forEach(entry => {
+    highlights.set(entry.idx, entry);
+  });
+  return highlights;
+}
+
+async function getCachedMoveAction(fromSq, toSq) {
+  const key = `${fromSq}-${toSq}`;
+  if (actionIndexCache.has(key)) {
+    return actionIndexCache.get(key);
+  }
+  try {
+    const action = await invoke('get_move_action', { fromSq, toSq });
+    actionIndexCache.set(key, action);
+    return action;
+  } catch (err) {
+    console.error('get_move_action failed', err);
+    actionIndexCache.set(key, null);
+    return null;
+  }
+}
+
+function getMoveHighlightType(slot, currentPlayer) {
+  if (!slot || slot === 'Empty') return 'move';
+  if (slot === 'Hidden') return null;
+  if (isRevealed(slot)) {
+    return getSlotPlayer(slot) !== currentPlayer ? 'capture' : null;
+  }
+  return null;
+}
+
 async function updateUI(state) {
+  console.log("updateUI called with state:", state);
   gameState = state;
   
+  // 检查 state 是否有效
+  if (!state || !state.board) {
+    console.error("Invalid state received:", state);
+    return;
+  }
+  if (selectedSquare !== null && !isSelectablePiece(state, selectedSquare)) {
+    selectedSquare = null;
+  }
+  
+  console.log("Board length:", state.board.length);
+  
   // 1. 更新状态栏
-  document.getElementById('current-player').value = state.current_player === "Red" ? "红方" : "黑方";
+  updateCurrentPlayerIndicator(state.current_player);
   
   let statusText = "进行中";
   if (state.winner === 1) statusText = "红方获胜";
@@ -49,17 +241,34 @@ async function updateUI(state) {
   
   document.getElementById('game-status').value = statusText;
   document.getElementById('move-counter').value = state.move_counter;
-  document.getElementById('dead-red').textContent = state.dead_red.join(', ') || "无";
-  document.getElementById('dead-black').textContent = state.dead_black.join(', ') || "无";
 
-  // 2. 渲染棋盘 (3行4列)
+  // 更新阵亡棋子
+  renderFallenPieces('Red', state.dead_red);
+  renderFallenPieces('Black', state.dead_black);
+
+  // 计算高亮
+  revealHighlightSet = computeRevealHighlights(state);
+  if (selectedSquare !== null) {
+    moveHighlightMap = await computeMoveHighlights(state, selectedSquare);
+  } else {
+    moveHighlightMap = new Map();
+  }
+
+  // 2. 渲染棋盘 (4行8列)
   const boardEl = document.getElementById('chess-board');
+  if (!boardEl) {
+    console.error("chess-board element not found!");
+    return;
+  }
+  
   boardEl.innerHTML = '';
   // 确保样式正确
   boardEl.style.display = 'grid';
-  boardEl.style.gridTemplateColumns = 'repeat(4, 1fr)';
-  boardEl.style.gridTemplateRows = 'repeat(3, 1fr)';
+  boardEl.style.gridTemplateColumns = 'repeat(8, 1fr)';
+  boardEl.style.gridTemplateRows = 'repeat(4, 1fr)';
   boardEl.style.gap = '5px';
+
+  console.log("Rendering board with", state.board.length, "cells");
 
   state.board.forEach((slot, idx) => {
     const cell = document.createElement('div');
@@ -79,90 +288,25 @@ async function updateUI(state) {
       cell.classList.add('selected');
     }
 
-    cell.textContent = getPieceText(slot);
+    if (revealHighlightSet.has(idx) && slot === 'Hidden') {
+      cell.classList.add('legal-reveal');
+    }
+    const moveHighlight = moveHighlightMap.get(idx);
+    if (moveHighlight) {
+      cell.classList.add(moveHighlight.type === 'capture' ? 'legal-capture' : 'legal-move');
+    }
+
+    const pieceText = getPieceText(slot);
+    cell.textContent = pieceText;
+    console.log(`Cell ${idx}: ${slot} -> ${pieceText}`);
     cell.onclick = () => onSquareClick(idx);
     boardEl.appendChild(cell);
   });
+  
+  console.log("Board rendered with", boardEl.children.length, "cells");
 
-  // 3. 渲染辅助信息 (概率 + Bitboards)
-  const infoContainer = document.getElementById('info-container');
-  infoContainer.innerHTML = ''; // 清空
-  
-  // --- 3.1 翻子概率部分 ---
-  const probSection = document.createElement('div');
-  probSection.style.marginBottom = '15px';
-  
-  const probTitle = document.createElement('h4');
-  probTitle.textContent = '翻开暗子概率 (Reveal Prob)';
-  probSection.appendChild(probTitle);
-  
-  const probList = document.createElement('div');
-  probList.className = 'prob-list'; // 使用 Grid 布局
-  
-  const probLabels = ["红兵", "红仕", "红帅", "黑卒", "黑士", "黑将"];
-  state.reveal_probabilities.forEach((prob, idx) => {
-    const div = document.createElement('div');
-    div.className = 'prob-item';
-    // 只有概率 > 0 才高亮显示，避免视觉杂乱
-    if (prob <= 0.0001) div.style.opacity = '0.5';
-    div.textContent = `${probLabels[idx]}: ${(prob * 100).toFixed(1)}%`;
-    probList.appendChild(div);
-  });
-  probSection.appendChild(probList);
-  infoContainer.appendChild(probSection);
-  
-  // --- 3.2 Bitboards 可视化 (通道状态) ---
-  if (state.bitboards) {
-    const bbSection = document.createElement('div');
-    
-    const bbTitle = document.createElement('h4');
-    bbTitle.textContent = '通道状态 (Bitboards)';
-    bbSection.appendChild(bbTitle);
-    
-    const bitboardList = document.createElement('div');
-    bitboardList.className = 'bitboard-list';
-    
-    // 定义显示顺序和标签
-    const bbOrder = [
-      { key: 'hidden', label: 'Hidden (暗子)' },
-      { key: 'empty', label: 'Empty (空位)' },
-      { key: 'red_revealed', label: 'Red All (红方)' },
-      { key: 'black_revealed', label: 'Black All (黑方)' },
-      { key: 'red_soldier', label: 'R_Sol (红兵)' },
-      { key: 'black_soldier', label: 'B_Sol (黑卒)' },
-      { key: 'red_advisor', label: 'R_Adv (红仕)' },
-      { key: 'black_advisor', label: 'B_Adv (黑士)' },
-      { key: 'red_general', label: 'R_Gen (红帅)' },
-      { key: 'black_general', label: 'B_Gen (黑将)' },
-    ];
-    
-    bbOrder.forEach(({ key, label }) => {
-      if (state.bitboards[key]) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'bb-wrapper';
-        
-        const bbLabel = document.createElement('div');
-        bbLabel.className = 'bb-label';
-        bbLabel.textContent = label;
-        
-        const grid = document.createElement('div');
-        grid.className = 'bb-grid';
-        
-        state.bitboards[key].forEach(isActive => {
-          const cell = document.createElement('div');
-          cell.className = `bb-cell ${isActive ? 'active' : ''}`;
-          grid.appendChild(cell);
-        });
-        
-        wrapper.appendChild(bbLabel);
-        wrapper.appendChild(grid);
-        bitboardList.appendChild(wrapper);
-      }
-    });
-    
-    bbSection.appendChild(bitboardList);
-    infoContainer.appendChild(bbSection);
-  }
+  renderRevealProbabilities(state.reveal_probabilities || []);
+  renderBitboards(state.bitboards);
 }
 
 async function onSquareClick(idx) {
@@ -266,7 +410,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
-  // 绑定 MCTS+DL 控件
+  // 绑定 MCTS+DL 控件 (暂时禁用)
   const refreshBtn = document.getElementById('btn-refresh-models');
   const loadBtn = document.getElementById('btn-load-model');
   const modelSelect = document.getElementById('model-select');
@@ -274,53 +418,36 @@ window.addEventListener('DOMContentLoaded', async () => {
   const itersInput = document.getElementById('mcts-iters');
 
   async function refreshModels() {
-    try {
-      const list = await invoke('list_models');
-      if (modelSelect) {
-        modelSelect.innerHTML = '';
-        list.forEach(m => {
-          const opt = document.createElement('option');
-          opt.value = m.path;
-          opt.textContent = m.name;
-          modelSelect.appendChild(opt);
-        });
-      }
-    } catch (e) {
-      console.error('列出模型失败:', e);
+    // 模型功能暂时禁用
+    console.log('模型功能暂时禁用');
+    if (modelSelect) {
+      modelSelect.innerHTML = '<option value="">模型功能暂时禁用</option>';
     }
   }
 
   if (refreshBtn) refreshBtn.onclick = refreshModels;
   if (loadBtn) loadBtn.onclick = async () => {
-    try {
-      const path = modelSelect ? modelSelect.value : '';
-      if (!path) return alert('请选择一个模型文件 (.ot)。');
-      const msg = await invoke('load_model', { path });
-      alert(msg);
-    } catch (e) {
-      alert('加载失败: ' + e);
-    }
+    alert('模型功能暂时禁用');
   };
   if (applyItersBtn) applyItersBtn.onclick = async () => {
-    try {
-      const v = parseInt(itersInput.value || '0', 10);
-      const n = await invoke('set_mcts_iterations', { iters: v });
-      alert('已设置搜索次数：' + n);
-    } catch (e) {
-      alert('设置失败: ' + e);
-    }
+    alert('模型功能暂时禁用');
   };
 
   // 加载初始状态
+  console.log("Loading initial state...");
   try {
     const state = await invoke("get_game_state");
+    console.log("Initial state loaded:", state);
     await updateUI(state);
   } catch (e) {
     console.error("Failed to load initial state:", e);
+    alert("加载初始状态失败: " + e);
   }
 
-  // 初始刷新模型列表
+  // 初始刷新模型列表（显示禁用状态）
   await refreshModels();
+
+  setupBitboardSidebar();
 });
 
 // 在人类完成一步后，若对手为电脑，则自动让电脑走一步
@@ -336,4 +463,140 @@ async function maybeBotTurn() {
     // 当处于 PvP 或无棋可走时，后端可能返回错误，此处静默或打印日志
     console.log('bot_move skipped or failed:', e);
   }
+}
+
+function renderRevealProbabilities(probabilities) {
+  const listEl = document.getElementById('reveal-prob-list');
+  const emptyEl = document.getElementById('reveal-prob-empty');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+
+  if (!Array.isArray(probabilities) || probabilities.length === 0) {
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    return;
+  }
+
+  let hasPositive = false;
+  probabilities.forEach((raw, idx) => {
+    const prob = Math.max(0, raw || 0);
+    if (prob > 0.001) {
+      hasPositive = true;
+    }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'prob-item';
+    if (prob <= 0.001) {
+      wrapper.classList.add('low-value');
+    }
+
+    const label = document.createElement('div');
+    label.className = 'prob-label';
+    label.textContent = revealProbabilityLabels[idx] || `未知${idx}`;
+
+    const bar = document.createElement('div');
+    bar.className = 'prob-bar';
+    const barFill = document.createElement('span');
+    barFill.style.width = `${Math.min(1, prob) * 100}%`;
+    bar.appendChild(barFill);
+
+    const value = document.createElement('div');
+    value.className = 'prob-value';
+    value.textContent = `${(prob * 100).toFixed(prob >= 0.1 ? 1 : 2)}%`;
+
+    wrapper.appendChild(label);
+    wrapper.appendChild(bar);
+    wrapper.appendChild(value);
+    listEl.appendChild(wrapper);
+  });
+
+  if (emptyEl) {
+    emptyEl.classList.toggle('hidden', hasPositive);
+  }
+}
+
+function renderBitboards(bitboards) {
+  const container = document.getElementById('bitboard-container');
+  const toggleBtn = document.getElementById('toggle-bitboard');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!bitboards) {
+    if (toggleBtn) {
+      toggleBtn.disabled = true;
+    }
+    const empty = document.createElement('div');
+    empty.className = 'bitboard-empty';
+    empty.textContent = '暂无通道数据';
+    container.appendChild(empty);
+    return;
+  }
+
+  if (toggleBtn) {
+    toggleBtn.disabled = false;
+  }
+
+  let rendered = 0;
+  bitboardOrder.forEach(({ key, label }) => {
+    if (!bitboards[key] || !Array.isArray(bitboards[key])) return;
+    rendered += 1;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'bb-wrapper';
+
+    const bbLabel = document.createElement('div');
+    bbLabel.className = 'bb-label';
+    bbLabel.textContent = label;
+
+    const grid = document.createElement('div');
+    grid.className = 'bb-grid';
+
+    bitboards[key].forEach(isActive => {
+      const cell = document.createElement('div');
+      cell.className = `bb-cell ${isActive ? 'active' : ''}`;
+      grid.appendChild(cell);
+    });
+
+    wrapper.appendChild(bbLabel);
+    wrapper.appendChild(grid);
+    container.appendChild(wrapper);
+  });
+
+  if (rendered === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'bitboard-empty';
+    empty.textContent = '暂无可视化数据';
+    container.appendChild(empty);
+  }
+}
+
+function setupBitboardSidebar() {
+  const sidebar = document.getElementById('bitboard-sidebar');
+  const overlay = document.getElementById('bitboard-overlay');
+  const toggleBtn = document.getElementById('toggle-bitboard');
+  const closeBtn = document.getElementById('close-bitboard');
+  if (!sidebar || !overlay || !toggleBtn || !closeBtn) return;
+
+  const openSidebar = () => {
+    sidebar.classList.add('open');
+    overlay.classList.add('active');
+  };
+
+  const closeSidebar = () => {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('active');
+  };
+
+  toggleBtn.addEventListener('click', () => {
+    if (sidebar.classList.contains('open')) {
+      closeSidebar();
+    } else if (!toggleBtn.disabled) {
+      openSidebar();
+    }
+  });
+
+  closeBtn.addEventListener('click', closeSidebar);
+  overlay.addEventListener('click', closeSidebar);
+  window.addEventListener('keydown', (evt) => {
+    if (evt.key === 'Escape') {
+      closeSidebar();
+    }
+  });
 }

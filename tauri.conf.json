@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "暗棋 3x4",
+  "productName": "暗棋 4x8",
   "version": "0.1.0",
-  "identifier": "com.banqi.3x4",
+  "identifier": "com.banqi.4x8",
   "build": {
     "frontendDist": "./frontend",
     "beforeDevCommand": "",
@@ -12,9 +12,9 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "暗棋 3x4",
-        "width": 1400,
-        "height": 1200,
+        "title": "暗棋 4x8",
+        "width": 1600,
+        "height": 1000,
         "resizable": true,
         "fullscreen": false,
         "center": true

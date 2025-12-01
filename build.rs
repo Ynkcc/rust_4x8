@@ -1,4 +1,8 @@
 fn main() {
+    // Tauri build
+    tauri_build::build();
+    
+    // libtorch linking configuration
     let os = std::env::var("CARGO_CFG_TARGET_OS").expect("Unable to get TARGET_OS");
     match os.as_str() {
         "linux" | "windows" => {

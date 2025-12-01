@@ -5,7 +5,9 @@
   --highlight-color: #4CAF50;
   --selected-color: #2196F3;
   --red-player: #d32f2f;
-  --black-player: #000000;
+  --black-player: #111111;
+  --reveal-accent: #f7c06b;
+  --hidden-pattern: rgba(255,255,255,0.08);
 }
 
 body {
@@ -32,9 +34,48 @@ body {
   gap: 10px;
 }
 
-.left-panel { width: 25%; min-width: 250px; }
-.center-panel { width: 40%; align-items: center; justify-content: center; background: #e0e0e0; }
-.right-panel { width: 35%; overflow-y: auto; }
+.left-panel { width: 25%; min-width: 260px; }
+.center-panel { 
+  width: 75%; 
+  display: flex;
+  flex-direction: column;
+  background: #e0e0e0; 
+  overflow-y: auto;
+}
+.right-panel { display: none; }
+
+.board-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 20px 0;
+}
+
+.insights-grid {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 10px 20px 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.section-heading h3 {
+  margin-bottom: 0;
+}
+
+.section-subtitle {
+  font-size: 0.85rem;
+  color: #888;
+}
 
 .group-box {
   background: var(--panel-bg);
@@ -61,20 +102,47 @@ button {
   cursor: pointer;
 }
 
-.status-row { margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; }
+.status-row { margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 input[readonly] { background: #f9f9f9; border: 1px solid #ddd; padding: 4px; width: 60%; text-align: center; }
+.player-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  min-width: 110px;
+  font-weight: 600;
+  background: #ffecec;
+  color: var(--red-player);
+  border: 1px solid rgba(0,0,0,0.05);
+}
+.player-indicator.black-turn {
+  background: #e7ebff;
+  color: var(--black-player);
+}
+.indicator-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 6px rgba(0,0,0,0.2);
+}
+.indicator-text {
+  font-size: 0.9rem;
+}
 textarea { width: 95%; height: 300px; resize: none; border: 1px solid #ddd; font-size: 12px; line-height: 1.4; }
 
 /* 棋盘样式 */
 .chess-board {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(4, 1fr);
   gap: 5px;
   padding: 10px;
   background: #dcb35c; /* 木纹底色 */
   border: 5px solid #8b5a2b;
-  width: 400px;
-  height: 300px;
+  width: min(700px, 90vw);
+  aspect-ratio: 8 / 4;
 }
 
 .chess-cell {
@@ -91,36 +159,146 @@ textarea { width: 95%; height: 300px; resize: none; border: 1px solid #ddd; font
   box-shadow: 2px 2px 2px rgba(0,0,0,0.2);
   position: relative;
 }
-
-.chess-cell.hidden { background: #8b5a2b; border-radius: 5px; box-shadow: inset 2px 2px 5px rgba(0,0,0,0.5); color: transparent; }
-.chess-cell.empty { background: transparent; border: 1px dashed #8b5a2b; box-shadow: none; }
+.chess-cell.hidden {
+  background: #6e3d13;
+  border-radius: 6px;
+  box-shadow: inset 2px 2px 6px rgba(0,0,0,0.45);
+  color: transparent;
+  position: relative;
+  overflow: hidden;
+}
+.chess-cell.hidden::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 8px,
+    var(--hidden-pattern) 8px,
+    var(--hidden-pattern) 16px
+  );
+  pointer-events: none;
+}
+.chess-cell.hidden::after {
+  content: "?";
+  position: absolute;
+  font-size: 26px;
+  color: var(--reveal-accent);
+  text-shadow: 0 0 6px rgba(0,0,0,0.4);
+}
+.chess-cell.empty {
+  background: rgba(255,255,255,0.35);
+  border: 1px dashed rgba(139,90,43,0.8);
+  box-shadow: none;
+}
 .chess-cell.red { color: var(--red-player); border-color: var(--red-player); }
 .chess-cell.black { color: var(--black-player); border-color: var(--black-player); }
-.chess-cell.selected { background-color: var(--selected-color) !important; color: white !important; }
+.chess-cell.selected {
+  position: relative;
+  box-shadow: 0 0 8px rgba(33,150,243,0.7), inset 0 0 6px rgba(33,150,243,0.4);
+}
+.chess-cell.selected::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 3px solid rgba(33,150,243,0.7);
+  border-radius: inherit;
+  pointer-events: none;
+}
 .chess-cell:hover { filter: brightness(1.1); }
 
-/* 翻子概率列表样式 (Grid) */
+.chess-cell.legal-move::before,
+.chess-cell.legal-capture::before,
+.chess-cell.legal-reveal::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.95;
+}
+.chess-cell.legal-move::before {
+  border: 2px solid rgba(76,175,80,0.75);
+  box-shadow: 0 0 8px rgba(76,175,80,0.25);
+  background: rgba(76,175,80,0.15);
+}
+.chess-cell.legal-capture::before {
+  border: 2px solid rgba(211,47,47,0.75);
+  box-shadow: 0 0 8px rgba(211,47,47,0.3);
+  background: rgba(211,47,47,0.12);
+}
+.chess-cell.legal-reveal::before {
+  border: 2px dashed rgba(247,192,107,0.8);
+  box-shadow: 0 0 6px rgba(247,192,107,0.25);
+  background: rgba(247,192,107,0.12);
+}
+
+/* 翻子概率列表样式 (Grid) - 显示14种棋子 */
 .prob-list {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 5px;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .prob-item {
-  padding: 4px 6px;
-  background: #f0f8ff;
-  border: 1px solid #d1e9ff;
-  border-radius: 3px;
-  font-size: 12px;
-  color: #333;
+  background: linear-gradient(135deg, #f4fbff 0%, #eef6ff 100%);
+  border: 1px solid #d9e9ff;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+}
+
+.prob-label {
+  font-size: 0.85rem;
+  color: #567;
+  font-weight: 600;
+}
+
+.prob-value {
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: #2a4d7d;
+}
+
+.prob-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(38,117,191,0.15);
+  overflow: hidden;
+}
+
+.prob-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4cafef, #2f72ff);
+}
+
+.prob-item.low-value {
+  opacity: 0.55;
+}
+
+.prob-empty {
+  margin-top: 10px;
+  font-size: 0.85rem;
+  color: #888;
   text-align: center;
+}
+
+.prob-empty.hidden {
+  display: none;
 }
 
 /* Bitboard Grid 容器 */
 .bitboard-list { 
   display: grid; 
-  grid-template-columns: 1fr 1fr; 
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); 
+  gap: 12px;
 }
 
 .bb-wrapper { 
@@ -135,16 +313,17 @@ textarea { width: 95%; height: 300px; resize: none; border: 1px solid #ddd; font
 
 .bb-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 2px;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: 1px;
   background: #ccc;
   border: 1px solid #999;
   padding: 2px;
 }
 
 .bb-cell { 
-  width: 18px; 
-  height: 18px; 
+  width: 14px; 
+  height: 14px; 
   background: #eee;
 }
 
@@ -153,8 +332,195 @@ textarea { width: 95%; height: 300px; resize: none; border: 1px solid #ddd; font
 }
 
 .bb-label { 
-  font-size: 11px; 
+  font-size: 10px; 
   font-weight: bold;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   color: #555;
+  text-align: center;
+}
+
+.fallen-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fallen-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fallen-row-title {
+  min-width: 80px;
+  font-weight: bold;
+  color: #555;
+}
+
+.fallen-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fallen-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 12px;
+  color: #666;
+}
+
+.fallen-item.has-loss {
+  color: #111;
+}
+
+.fallen-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: bold;
+  position: relative;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.fallen-icon.red {
+  background: #ffe0e0;
+  color: var(--red-player);
+  border: 1px solid rgba(211,47,47,0.2);
+}
+
+.fallen-icon.black {
+  background: #e4e8ff;
+  color: var(--black-player);
+  border: 1px solid rgba(0,0,0,0.15);
+}
+
+.fallen-item.no-loss .fallen-icon {
+  filter: grayscale(0.6);
+  opacity: 0.5;
+}
+
+.fallen-icon[data-count]:after {
+  content: attr(data-count);
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  background: #333;
+  color: #fff;
+  font-size: 10px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+}
+
+.fallen-label {
+  margin-top: 2px;
+}
+
+.bitboard-launcher {
+  position: fixed;
+  top: 12px;
+  right: 20px;
+  z-index: 1100;
+}
+
+.bitboard-launcher button {
+  width: auto;
+  border: none;
+  background: #0d6efd;
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 999px;
+  box-shadow: 0 6px 16px rgba(13,110,253,0.35);
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.bitboard-launcher button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(13,110,253,0.45);
+}
+
+.bitboard-launcher button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.bitboard-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 1150;
+}
+
+.bitboard-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.bitboard-sidebar {
+  position: fixed;
+  top: 0;
+  right: -520px;
+  width: min(520px, 92vw);
+  height: 100vh;
+  background: #fff;
+  box-shadow: -8px 0 25px rgba(0,0,0,0.25);
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  transition: right 0.25s ease;
+}
+
+.bitboard-sidebar.open {
+  right: 0;
+}
+
+.bitboard-sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #eee;
+}
+
+.bitboard-sidebar-header h3 {
+  margin: 0;
+}
+
+.icon-button {
+  width: auto;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  font-size: 1.4rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.bitboard-sidebar-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.bitboard-empty {
+  text-align: center;
+  color: #666;
+  font-size: 0.9rem;
 }
