@@ -18,10 +18,51 @@ pub const MAX_CONSECUTIVE_MOVES_FOR_DRAW: usize = 24; // 参照 README.md
 
 pub const STATE_STACK_SIZE: usize = 1; // 禁用状态堆叠，仅使用当前帧
 const MAX_STEPS_PER_EPISODE: usize = 100;
-const INITIAL_REVEALED_PIECES: usize = 2;
+const INITIAL_REVEALED_PIECES: usize = 4;
+
+// 初始血量 (减分制，每方从60分开始)
+const INITIAL_HEALTH_POINTS: i32 = 60;
+
+// 棋子数量定义（每方）
+const SOLDIERS_COUNT: usize = 5;
+const CANNONS_COUNT: usize = 2;
+const HORSES_COUNT: usize = 2;
+const CHARIOTS_COUNT: usize = 2;
+const ELEPHANTS_COUNT: usize = 2;
+const ADVISORS_COUNT: usize = 2;
+const GENERALS_COUNT: usize = 1;
+const TOTAL_PIECES_PER_PLAYER: usize = SOLDIERS_COUNT + CANNONS_COUNT + HORSES_COUNT + CHARIOTS_COUNT + ELEPHANTS_COUNT + ADVISORS_COUNT + GENERALS_COUNT; // 16
 
 // 存活向量大小: 5(兵) + 2(炮) + 2(马) + 2(车) + 2(象) + 2(士) + 1(将) = 16
-const SURVIVAL_VECTOR_SIZE: usize = 16;
+const SURVIVAL_VECTOR_SIZE: usize = TOTAL_PIECES_PER_PLAYER;
+
+// 翻棋概率表大小: 2个玩家 * 7种棋子 = 14
+const REVEAL_PROBABILITY_SIZE: usize = 2 * NUM_PIECE_TYPES;
+
+// 方向常量
+const DIRECTION_UP: usize = 0;
+const DIRECTION_DOWN: usize = 1;
+const DIRECTION_LEFT: usize = 2;
+const DIRECTION_RIGHT: usize = 3;
+const NUM_DIRECTIONS: usize = 4;
+
+// MSB (Most Significant Bit) 位数 (64位整数的最高位索引基数)
+const U64_BITS: usize = 64;
+
+// 存活向量中各棋子类型的索引范围 (start, len)
+// 顺序: Soldier, Cannon, Horse, Chariot, Elephant, Advisor, General
+const SURVIVAL_RANGES: [(usize, usize); NUM_PIECE_TYPES] = [
+    (0, SOLDIERS_COUNT),                                           // Soldier
+    (SOLDIERS_COUNT, CANNONS_COUNT),                               // Cannon
+    (SOLDIERS_COUNT + CANNONS_COUNT, HORSES_COUNT),                // Horse
+    (SOLDIERS_COUNT + CANNONS_COUNT + HORSES_COUNT, CHARIOTS_COUNT), // Chariot
+    (SOLDIERS_COUNT + CANNONS_COUNT + HORSES_COUNT + CHARIOTS_COUNT, ELEPHANTS_COUNT), // Elephant
+    (SOLDIERS_COUNT + CANNONS_COUNT + HORSES_COUNT + CHARIOTS_COUNT + ELEPHANTS_COUNT, ADVISORS_COUNT), // Advisor
+    (SOLDIERS_COUNT + CANNONS_COUNT + HORSES_COUNT + CHARIOTS_COUNT + ELEPHANTS_COUNT + ADVISORS_COUNT, GENERALS_COUNT), // General
+];
+
+// 棋盘状态张量的通道数: 自己棋子(7) + 对手棋子(7) + 暗子(1) + 空位(1) = 16
+const BOARD_CHANNELS: usize = 2 * NUM_PIECE_TYPES + 2; // 自己 + 对手 + 隐藏 + 空位
 
 // 动作空间 (TOTAL_POSITIONS = 32)
 pub const REVEAL_ACTIONS_COUNT: usize = 32;
@@ -53,7 +94,7 @@ fn trailing_zeros(bb: u64) -> usize {
 /// 计算最高有效位的位置 (MSB)
 #[inline]
 fn msb_index(bb: u64) -> Option<usize> {
-    if bb == 0 { None } else { Some(63 - bb.leading_zeros() as usize) }
+    if bb == 0 { None } else { Some(U64_BITS - 1 - bb.leading_zeros() as usize) }
 }
 
 /// 获取 LSB 索引并清除该位
@@ -271,10 +312,10 @@ impl DarkChessEnv {
             action_to_coords: HashMap::new(),
             coords_to_action: HashMap::new(),
             
-            ray_attacks: vec![vec![0u64; TOTAL_POSITIONS]; 4],
+            ray_attacks: vec![vec![0u64; TOTAL_POSITIONS]; NUM_DIRECTIONS],
             
             hidden_pieces: Vec::new(),
-            reveal_probabilities: vec![0.0; 14],
+            reveal_probabilities: vec![0.0; REVEAL_PROBABILITY_SIZE],
         };
 
         env.initialize_lookup_tables();
@@ -284,37 +325,37 @@ impl DarkChessEnv {
     }
     
     /// 预计算炮的攻击射线表
-    /// 4个方向: 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
+    /// NUM_DIRECTIONS 个方向: DIRECTION_UP=UP, DIRECTION_DOWN=DOWN, DIRECTION_LEFT=LEFT, DIRECTION_RIGHT=RIGHT
     /// 重写为返回 u64 的 Bitboard
     fn precompute_ray_attacks(&mut self) {
-        self.ray_attacks = vec![vec![0u64; TOTAL_POSITIONS]; 4];
+        self.ray_attacks = vec![vec![0u64; TOTAL_POSITIONS]; NUM_DIRECTIONS];
         
         for sq in 0..TOTAL_POSITIONS {
             let r = sq / BOARD_COLS;
             let c = sq % BOARD_COLS;
             
-            // Direction 0: UP (向上) - 行索引减小
+            // Direction DIRECTION_UP: UP (向上) - 行索引减小
             for i in (0..r).rev() {
                 let target_sq = i * BOARD_COLS + c;
-                self.ray_attacks[0][sq] |= ull(target_sq);
+                self.ray_attacks[DIRECTION_UP][sq] |= ull(target_sq);
             }
             
-            // Direction 1: DOWN (向下) - 行索引增大
+            // Direction DIRECTION_DOWN: DOWN (向下) - 行索引增大
             for i in (r + 1)..BOARD_ROWS {
                 let target_sq = i * BOARD_COLS + c;
-                self.ray_attacks[1][sq] |= ull(target_sq);
+                self.ray_attacks[DIRECTION_DOWN][sq] |= ull(target_sq);
             }
             
-            // Direction 2: LEFT (向左) - 列索引减小
+            // Direction DIRECTION_LEFT: LEFT (向左) - 列索引减小
             for i in (0..c).rev() {
                 let target_sq = r * BOARD_COLS + i;
-                self.ray_attacks[2][sq] |= ull(target_sq);
+                self.ray_attacks[DIRECTION_LEFT][sq] |= ull(target_sq);
             }
             
-            // Direction 3: RIGHT (向右) - 列索引增大
+            // Direction DIRECTION_RIGHT: RIGHT (向右) - 列索引增大
             for i in (c + 1)..BOARD_COLS {
                 let target_sq = r * BOARD_COLS + i;
-                self.ray_attacks[3][sq] |= ull(target_sq);
+                self.ray_attacks[DIRECTION_RIGHT][sq] |= ull(target_sq);
             }
         }
     }
@@ -417,9 +458,9 @@ impl DarkChessEnv {
         self.dead_pieces.insert(Player::Red, Vec::new());
         self.dead_pieces.insert(Player::Black, Vec::new());
         
-        // 初始化血量（减分制）：每方从60分开始
-        self.scores.insert(Player::Red, 60);
-        self.scores.insert(Player::Black, 60);
+        // 初始化血量（减分制）：每方从初始血量值开始
+        self.scores.insert(Player::Red, INITIAL_HEALTH_POINTS);
+        self.scores.insert(Player::Black, INITIAL_HEALTH_POINTS);
         
         self.current_player = Player::Red;
         self.move_counter = 0;
@@ -434,7 +475,7 @@ impl DarkChessEnv {
         self.scalar_history.clear();
         
         self.hidden_pieces.clear();
-        self.reveal_probabilities = vec![0.0; 14];
+        self.reveal_probabilities = vec![0.0; REVEAL_PROBABILITY_SIZE];
     }
 
     fn initialize_board(&mut self) {
@@ -443,23 +484,29 @@ impl DarkChessEnv {
         // 1. 生成实际棋子池 (Bag)
         let mut pieces = Vec::new();
         for &player in &[Player::Red, Player::Black] {
-            // 每方: 1将, 2士, 2象, 2车, 2马, 2炮, 5兵
-            pieces.push(Piece::new(PieceType::General, player));
-            pieces.push(Piece::new(PieceType::Advisor, player));
-            pieces.push(Piece::new(PieceType::Advisor, player));
-            pieces.push(Piece::new(PieceType::Elephant, player));
-            pieces.push(Piece::new(PieceType::Elephant, player));
-            pieces.push(Piece::new(PieceType::Chariot, player));
-            pieces.push(Piece::new(PieceType::Chariot, player));
-            pieces.push(Piece::new(PieceType::Horse, player));
-            pieces.push(Piece::new(PieceType::Horse, player));
-            pieces.push(Piece::new(PieceType::Cannon, player));
-            pieces.push(Piece::new(PieceType::Cannon, player));
-            pieces.push(Piece::new(PieceType::Soldier, player));
-            pieces.push(Piece::new(PieceType::Soldier, player));
-            pieces.push(Piece::new(PieceType::Soldier, player));
-            pieces.push(Piece::new(PieceType::Soldier, player));
-            pieces.push(Piece::new(PieceType::Soldier, player));
+            // 每方: GENERALS_COUNT 将, ADVISORS_COUNT 士, ELEPHANTS_COUNT 象, CHARIOTS_COUNT 车, 
+            // HORSES_COUNT 马, CANNONS_COUNT 炮, SOLDIERS_COUNT 兵
+            for _ in 0..GENERALS_COUNT {
+                pieces.push(Piece::new(PieceType::General, player));
+            }
+            for _ in 0..ADVISORS_COUNT {
+                pieces.push(Piece::new(PieceType::Advisor, player));
+            }
+            for _ in 0..ELEPHANTS_COUNT {
+                pieces.push(Piece::new(PieceType::Elephant, player));
+            }
+            for _ in 0..CHARIOTS_COUNT {
+                pieces.push(Piece::new(PieceType::Chariot, player));
+            }
+            for _ in 0..HORSES_COUNT {
+                pieces.push(Piece::new(PieceType::Horse, player));
+            }
+            for _ in 0..CANNONS_COUNT {
+                pieces.push(Piece::new(PieceType::Cannon, player));
+            }
+            for _ in 0..SOLDIERS_COUNT {
+                pieces.push(Piece::new(PieceType::Soldier, player));
+            }
         }
         // 打乱棋子池
         pieces.shuffle(&mut rng);
@@ -526,9 +573,8 @@ impl DarkChessEnv {
     /// 翻开指定位置的棋子并更新 Bitboards
     fn reveal_piece_at(&mut self, sq: usize, specified_piece: Option<Piece>) {
         // 确保位置是 Hidden
-        match self.board[sq] {
-            Slot::Hidden => {},
-            _ => panic!("尝试翻开非 Hidden 位置: {}", sq),
+        if !matches!(self.board[sq], Slot::Hidden) {
+            panic!("尝试翻开非 Hidden 位置: {}", sq);
         }
         
         if self.hidden_pieces.is_empty() {
@@ -569,11 +615,11 @@ impl DarkChessEnv {
         let total_hidden = self.hidden_pieces.len();
         
         if total_hidden == 0 {
-            self.reveal_probabilities = vec![0.0; 14];
+            self.reveal_probabilities = vec![0.0; REVEAL_PROBABILITY_SIZE];
             return;
         }
         
-        let mut counts = vec![0; 14];
+        let mut counts = vec![0; REVEAL_PROBABILITY_SIZE];
         for piece in &self.hidden_pieces {
             let idx = match (piece.player, piece.piece_type) {
                 (Player::Red, PieceType::Soldier) => 0,
@@ -594,7 +640,7 @@ impl DarkChessEnv {
             counts[idx] += 1;
         }
         
-        for i in 0..14 {
+        for i in 0..REVEAL_PROBABILITY_SIZE {
             self.reveal_probabilities[i] = counts[i] as f32 / total_hidden as f32;
         }
     }
@@ -697,22 +743,12 @@ impl DarkChessEnv {
 
     fn update_survival_vector_on_capture(&mut self, captured: &Piece) {
         let vec = self.survival_vectors.get_mut(&captured.player).unwrap();
-        // 存活向量: [Sol(5), Can(2), Hor(2), Cha(2), Ele(2), Adv(2), Gen(1)]
-        let (start_idx, count) = match captured.piece_type {
-            PieceType::Soldier => (0, 5),
-            PieceType::Cannon => (5, 2),
-            PieceType::Horse => (7, 2),
-            PieceType::Chariot => (9, 2),
-            PieceType::Elephant => (11, 2),
-            PieceType::Advisor => (13, 2),
-            PieceType::General => (15, 1),
-        };
+        // 使用 SURVIVAL_RANGES 数组查找
+        let (start, len) = SURVIVAL_RANGES[captured.piece_type as usize];
         
-        for i in 0..count {
-            if vec[start_idx + i] == 1.0 {
-                vec[start_idx + i] = 0.0;
-                break;
-            }
+        // 使用 find 方法简化逻辑
+        if let Some(idx) = (start..start + len).find(|&i| vec[i] == 1.0) {
+            vec[idx] = 0.0;
         }
     }
     
@@ -733,33 +769,28 @@ impl DarkChessEnv {
 
     // --- 状态获取 ---
     fn get_board_state_tensor(&self) -> Vec<f32> {
-        let mut tensor = Vec::with_capacity(16 * TOTAL_POSITIONS); // 7 + 7 + 1 + 1 = 16 channels
-        
+        let mut tensor = Vec::with_capacity(BOARD_CHANNELS * TOTAL_POSITIONS);
         let my = self.current_player;
         let opp = my.opposite();
         
+        // 辅助闭包：将 bitboard 展开为 f32 向量
+        let mut push_bitboard = |bb: u64| {
+            for sq in 0..TOTAL_POSITIONS {
+                tensor.push(if (bb & ull(sq)) != 0 { 1.0 } else { 0.0 });
+            }
+        };
+        
         // My pieces (Revealed)
         for pt in 0..NUM_PIECE_TYPES {
-            let bb = self.piece_bitboards[&my][pt];
-            for sq in 0..TOTAL_POSITIONS {
-                tensor.push(if (bb & ull(sq)) != 0 {1.0} else {0.0});
-            }
+            push_bitboard(self.piece_bitboards[&my][pt]);
         }
         // Opponent pieces (Revealed)
         for pt in 0..NUM_PIECE_TYPES {
-            let bb = self.piece_bitboards[&opp][pt];
-            for sq in 0..TOTAL_POSITIONS {
-                tensor.push(if (bb & ull(sq)) != 0 {1.0} else {0.0});
-            }
+            push_bitboard(self.piece_bitboards[&opp][pt]);
         }
-        // Hidden
-        for sq in 0..TOTAL_POSITIONS {
-            tensor.push(if (self.hidden_bitboard & ull(sq)) != 0 {1.0} else {0.0});
-        }
-        // Empty
-        for sq in 0..TOTAL_POSITIONS {
-            tensor.push(if (self.empty_bitboard & ull(sq)) != 0 {1.0} else {0.0});
-        }
+        // Hidden & Empty
+        push_bitboard(self.hidden_bitboard);
+        push_bitboard(self.empty_bitboard);
         
         tensor
     }
@@ -769,12 +800,14 @@ impl DarkChessEnv {
         let my = self.current_player;
         let opp = my.opposite();
         
+        vec.push(self.total_step_counter as f32 / MAX_STEPS_PER_EPISODE as f32);
         vec.push(self.move_counter as f32 / MAX_CONSECUTIVE_MOVES_FOR_DRAW as f32);
+        vec.push(self.get_hp(my) as f32 / INITIAL_HEALTH_POINTS as f32);
+        vec.push(self.get_hp(opp) as f32 / INITIAL_HEALTH_POINTS as f32);
         vec.extend_from_slice(&self.survival_vectors[&my]);
         vec.extend_from_slice(&self.survival_vectors[&opp]);
-        vec.push(self.total_step_counter as f32 / MAX_STEPS_PER_EPISODE as f32);
         
-        // 编码当前玩家的 action_masks (208维)
+        // 编码当前玩家的 action_masks (ACTION_SPACE_SIZE维)
         let action_masks = self.action_masks();
         let action_masks_float: Vec<f32> = action_masks.iter().map(|&x| x as f32).collect();
         vec.extend(action_masks_float);
@@ -783,16 +816,16 @@ impl DarkChessEnv {
     }
     
     pub fn get_state(&self) -> Observation {
-        let mut board_data = Vec::with_capacity(STATE_STACK_SIZE * 16 * BOARD_ROWS * BOARD_COLS); // 更新为16通道
+        let mut board_data = Vec::with_capacity(STATE_STACK_SIZE * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
         for frame in &self.board_history {
             board_data.extend_from_slice(frame);
         }
         let board = Array4::from_shape_vec(
-            (STATE_STACK_SIZE, 16, BOARD_ROWS, BOARD_COLS), // 更新为16通道
+            (STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
             board_data
         ).expect("Failed to reshape board array");
         
-        let mut scalars_data = Vec::with_capacity(STATE_STACK_SIZE * 242); // 1 + 16 + 16 + 1 + 208 = 242
+        let mut scalars_data = Vec::with_capacity(STATE_STACK_SIZE * (4 + 2 * SURVIVAL_VECTOR_SIZE + ACTION_SPACE_SIZE));
         for frame in &self.scalar_history {
             scalars_data.extend_from_slice(frame);
         }
@@ -811,11 +844,11 @@ impl DarkChessEnv {
             return (true, false, Some(Player::Red.val()));
         }
         
-        // 2. 全灭判定：每方共16个棋子: 5兵+2炮+2马+2车+2象+2士+1将 = 16
-        if self.dead_pieces[&Player::Red].len() == 16 {
+        // 2. 全灭判定：每方共TOTAL_PIECES_PER_PLAYER个棋子
+        if self.dead_pieces[&Player::Red].len() == TOTAL_PIECES_PER_PLAYER {
             return (true, false, Some(Player::Black.val()));
         }
-        if self.dead_pieces[&Player::Black].len() == 16 {
+        if self.dead_pieces[&Player::Black].len() == TOTAL_PIECES_PER_PLAYER {
             return (true, false, Some(Player::Red.val()));
         }
         
@@ -963,8 +996,8 @@ impl DarkChessEnv {
             while temp_cannons != 0 {
                 let from_sq = pop_lsb(&mut temp_cannons);
                 
-                // 遍历 4 个方向: 0=Up, 1=Down, 2=Left, 3=Right
-                for dir in 0..4 {
+                // 遍历 NUM_DIRECTIONS 个方向: DIRECTION_UP, DIRECTION_DOWN, DIRECTION_LEFT, DIRECTION_RIGHT
+                for dir in 0..NUM_DIRECTIONS {
                     let ray_bb = self.ray_attacks[dir][from_sq];
                     let blockers = ray_bb & all_pieces_bb;
                     
@@ -972,7 +1005,7 @@ impl DarkChessEnv {
 
                     // 寻找炮架 (Screen): 离 from_sq 最近的阻挡物
                     let screen_sq = match dir {
-                        0 | 2 => msb_index(blockers), // Up/Left: 索引减小 -> 离from最近的是最大索引
+                        DIRECTION_UP | DIRECTION_LEFT => msb_index(blockers), // Up/Left: 索引减小 -> 离from最近的是最大索引
                         _ => Some(trailing_zeros(blockers)), // Down/Right: 索引增大 -> 离from最近是最小索引
                     };
 
@@ -987,7 +1020,7 @@ impl DarkChessEnv {
 
                     // 寻找目标 (Target) - 同样的最近原则
                     let target_sq = match dir {
-                        0 | 2 => msb_index(targets),
+                        DIRECTION_UP | DIRECTION_LEFT => msb_index(targets),
                         _ => Some(trailing_zeros(targets)),
                     };
 
@@ -1092,79 +1125,41 @@ impl DarkChessEnv {
     pub fn get_bitboards(&self) -> std::collections::HashMap<String, Vec<bool>> {
         let mut bitboards = std::collections::HashMap::new();
         
-        // Hidden 和 Empty
-        bitboards.insert("hidden".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (self.hidden_bitboard & ull(sq)) != 0).collect());
-        bitboards.insert("empty".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (self.empty_bitboard & ull(sq)) != 0).collect());
+        // 通用闭包：将 bitboard 转换为 Vec<bool>
+        let bb_to_vec = |bb: u64| -> Vec<bool> {
+            (0..TOTAL_POSITIONS).map(|sq| (bb & ull(sq)) != 0).collect()
+        };
         
-        // 红方明子（全部）
-        let red_revealed = self.revealed_bitboards[&Player::Red];
-        bitboards.insert("red_revealed".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_revealed & ull(sq)) != 0).collect());
+        // 隐藏和空位
+        bitboards.insert("hidden".to_string(), bb_to_vec(self.hidden_bitboard));
+        bitboards.insert("empty".to_string(), bb_to_vec(self.empty_bitboard));
         
-        // 红方各类型棋子
-        let red_soldier = self.piece_bitboards[&Player::Red][PieceType::Soldier as usize];
-        bitboards.insert("red_soldier".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_soldier & ull(sq)) != 0).collect());
+        // 棋子类型名称
+        const PIECE_NAMES: [&str; NUM_PIECE_TYPES] = [
+            "soldier", "cannon", "horse", "chariot", "elephant", "advisor", "general"
+        ];
         
-        let red_cannon = self.piece_bitboards[&Player::Red][PieceType::Cannon as usize];
-        bitboards.insert("red_cannon".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_cannon & ull(sq)) != 0).collect());
-        
-        let red_horse = self.piece_bitboards[&Player::Red][PieceType::Horse as usize];
-        bitboards.insert("red_horse".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_horse & ull(sq)) != 0).collect());
-        
-        let red_chariot = self.piece_bitboards[&Player::Red][PieceType::Chariot as usize];
-        bitboards.insert("red_chariot".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_chariot & ull(sq)) != 0).collect());
-        
-        let red_elephant = self.piece_bitboards[&Player::Red][PieceType::Elephant as usize];
-        bitboards.insert("red_elephant".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_elephant & ull(sq)) != 0).collect());
+        // 遍历双方玩家
+        for &player in &[Player::Red, Player::Black] {
+            let prefix = match player {
+                Player::Red => "red",
+                Player::Black => "black",
+            };
             
-        let red_advisor = self.piece_bitboards[&Player::Red][PieceType::Advisor as usize];
-        bitboards.insert("red_advisor".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_advisor & ull(sq)) != 0).collect());
+            // Revealed bitboard
+            bitboards.insert(
+                format!("{}_revealed", prefix),
+                bb_to_vec(self.revealed_bitboards[&player])
+            );
             
-        let red_general = self.piece_bitboards[&Player::Red][PieceType::General as usize];
-        bitboards.insert("red_general".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (red_general & ull(sq)) != 0).collect());
-        
-        // 黑方明子（全部）
-        let black_revealed = self.revealed_bitboards[&Player::Black];
-        bitboards.insert("black_revealed".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_revealed & ull(sq)) != 0).collect());
-        
-        // 黑方各类型棋子
-        let black_soldier = self.piece_bitboards[&Player::Black][PieceType::Soldier as usize];
-        bitboards.insert("black_soldier".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_soldier & ull(sq)) != 0).collect());
-        
-        let black_cannon = self.piece_bitboards[&Player::Black][PieceType::Cannon as usize];
-        bitboards.insert("black_cannon".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_cannon & ull(sq)) != 0).collect());
-        
-        let black_horse = self.piece_bitboards[&Player::Black][PieceType::Horse as usize];
-        bitboards.insert("black_horse".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_horse & ull(sq)) != 0).collect());
-        
-        let black_chariot = self.piece_bitboards[&Player::Black][PieceType::Chariot as usize];
-        bitboards.insert("black_chariot".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_chariot & ull(sq)) != 0).collect());
-        
-        let black_elephant = self.piece_bitboards[&Player::Black][PieceType::Elephant as usize];
-        bitboards.insert("black_elephant".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_elephant & ull(sq)) != 0).collect());
-            
-        let black_advisor = self.piece_bitboards[&Player::Black][PieceType::Advisor as usize];
-        bitboards.insert("black_advisor".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_advisor & ull(sq)) != 0).collect());
-            
-        let black_general = self.piece_bitboards[&Player::Black][PieceType::General as usize];
-        bitboards.insert("black_general".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| (black_general & ull(sq)) != 0).collect());
+            // 各类型棋子
+            for (pt, &name) in PIECE_NAMES.iter().enumerate() {
+                bitboards.insert(
+                    format!("{}_{}", prefix, name),
+                    bb_to_vec(self.piece_bitboards[&player][pt])
+                );
+            }
+        }
         
         bitboards
     }
