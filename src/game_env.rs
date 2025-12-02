@@ -3,34 +3,83 @@ use rand::thread_rng;
 use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use fixedbitset::FixedBitSet;
 use ndarray::{Array1, Array4};
 use serde::{Serialize, Deserialize};
 
 // ==============================================================================
 // --- 常量定义 (与 Python environment.py 保持一致) ---
+// 由于 BOARD_COLS = 8 > 4，因此 ACTION_SPACE_SIZE 需要重新计算
 // ==============================================================================
+pub const BOARD_ROWS: usize = 4;
+pub const BOARD_COLS: usize = 8; // 4x8 棋盘
+pub const TOTAL_POSITIONS: usize = BOARD_ROWS * BOARD_COLS; // 32
+pub const NUM_PIECE_TYPES: usize = 7;
+pub const MAX_CONSECUTIVE_MOVES_FOR_DRAW: usize = 24; // 参照 README.md
 
 pub const STATE_STACK_SIZE: usize = 1; // 禁用状态堆叠，仅使用当前帧
-const MAX_CONSECUTIVE_MOVES_FOR_DRAW: usize = 14;
 const MAX_STEPS_PER_EPISODE: usize = 100;
-pub const BOARD_ROWS: usize = 4;
-pub const BOARD_COLS: usize = 8;
-pub const TOTAL_POSITIONS: usize = BOARD_ROWS * BOARD_COLS;
-pub const NUM_PIECE_TYPES: usize = 7; // Soldier, Cannon, Horse, Chariot, Elephant, Advisor, General
 const INITIAL_REVEALED_PIECES: usize = 2;
 
 // 存活向量大小: 5(兵) + 2(炮) + 2(马) + 2(车) + 2(象) + 2(士) + 1(将) = 16
 const SURVIVAL_VECTOR_SIZE: usize = 16;
 
-// 动作空间 (需要重新计算，基于 4x8 棋盘)
-pub const REVEAL_ACTIONS_COUNT: usize = 32;  // 4x8 = 32个位置
+// 动作空间 (TOTAL_POSITIONS = 32)
+pub const REVEAL_ACTIONS_COUNT: usize = 32;
 // 常规移动：4x8 网格共有 52 条无向相邻边，方向化为 104 个动作
 pub const REGULAR_MOVE_ACTIONS_COUNT: usize = 104;
-// 炮的攻击：同排(8列)排距>1的有 5 个目标/起点，每排 8*5=40，4排合计 160；
-// 同列(4行)距>1的有 1 个目标/起点，每列 4*1=4，8列合计 32；总计 160+32=192
-pub const CANNON_ATTACK_ACTIONS_COUNT: usize = 192;
-pub const ACTION_SPACE_SIZE: usize = REVEAL_ACTIONS_COUNT + REGULAR_MOVE_ACTIONS_COUNT + CANNON_ATTACK_ACTIONS_COUNT; // 32 + 104 + 192 = 328
+// 炮的攻击：水平 (每行21对×2方向=42, 4行=168) + 垂直 (每列3对×2方向=6, 8列=48) = 216
+pub const CANNON_ATTACK_ACTIONS_COUNT: usize = 216;
+pub const ACTION_SPACE_SIZE: usize = REVEAL_ACTIONS_COUNT + REGULAR_MOVE_ACTIONS_COUNT + CANNON_ATTACK_ACTIONS_COUNT; // 32 + 104 + 216 = 352
+
+// ==============================================================================
+// --- Bitboard 辅助函数 ---
+// ==============================================================================
+
+// 棋盘全掩码 (4x8=32)
+const BOARD_MASK: u64 = (1u64 << TOTAL_POSITIONS) - 1;
+
+/// 创建一个 Bitboard，仅将第 x 位置为 1
+#[inline]
+const fn ull(x: usize) -> u64 {
+    1u64 << x
+}
+
+/// 计算末尾零的数量，等效于找到最低位1的位置 (LSB)
+#[inline]
+fn trailing_zeros(bb: u64) -> usize {
+    bb.trailing_zeros() as usize
+}
+
+/// 计算最高有效位的位置 (MSB)
+#[inline]
+fn msb_index(bb: u64) -> Option<usize> {
+    if bb == 0 { None } else { Some(63 - bb.leading_zeros() as usize) }
+}
+
+/// 获取 LSB 索引并清除该位
+#[inline]
+fn pop_lsb(bb: &mut u64) -> usize {
+    let tz = bb.trailing_zeros() as usize;
+    *bb &= *bb - 1;
+    tz
+}
+
+/// 生成列掩码 (File Mask)
+const fn file_mask(file_col: usize) -> u64 {
+    let mut m: u64 = 0;
+    let mut r = 0;
+    while r < BOARD_ROWS {
+        let sq = r * BOARD_COLS + file_col;
+        m |= ull(sq);
+        r += 1;
+    }
+    m
+}
+
+#[allow(dead_code)]
+const NOT_FILE_A: u64 = BOARD_MASK & !(file_mask(0));             // 非第一列
+#[allow(dead_code)]
+const NOT_FILE_H: u64 = BOARD_MASK & !(file_mask(BOARD_COLS - 1)); // 非最后一列
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PieceType {
@@ -44,6 +93,7 @@ pub enum PieceType {
 }
 
 impl PieceType {
+    #[allow(dead_code)]
     fn from_usize(u: usize) -> Option<Self> {
         match u {
             0 => Some(PieceType::Soldier),
@@ -161,11 +211,12 @@ pub struct DarkChessEnv {
     move_counter: usize,
     total_step_counter: usize,
     
-    // 向量化状态
-    piece_vectors: HashMap<Player, Vec<FixedBitSet>>, 
-    revealed_vectors: HashMap<Player, FixedBitSet>,
-    hidden_vector: FixedBitSet,
-    empty_vector: FixedBitSet,
+    // 向量化状态 (Bitboard 化)
+    // HashMap 存储 Red/Black，内部 Vec 存储 7 种棋子类型 (u64)
+    piece_bitboards: HashMap<Player, [u64; NUM_PIECE_TYPES]>, 
+    revealed_bitboards: HashMap<Player, u64>,
+    hidden_bitboard: u64,
+    empty_bitboard: u64,
     
     // 存活与死亡记录
     dead_pieces: HashMap<Player, Vec<PieceType>>,
@@ -181,9 +232,8 @@ pub struct DarkChessEnv {
     action_to_coords: HashMap<usize, Vec<usize>>, 
     coords_to_action: HashMap<Vec<usize>, usize>, 
     
-    // 炮的攻击射线表 (4个方向 x 12个位置 x 12个位置的布尔矩阵)
-    // [方向][from_sq][to_sq] -> 是否在射线上
-    ray_attacks: Vec<Vec<FixedBitSet>>,
+    // 炮的攻击射线表 (4个方向 x 32个位置的 u64 掩码)
+    ray_attacks: Vec<Vec<u64>>,
     
     // 隐藏棋子池 (Bag Model: 翻棋时从此池中随机抽取)
     pub hidden_pieces: Vec<Piece>,
@@ -200,10 +250,10 @@ impl DarkChessEnv {
             move_counter: 0,
             total_step_counter: 0,
             
-            piece_vectors: HashMap::new(),
-            revealed_vectors: HashMap::new(),
-            hidden_vector: FixedBitSet::with_capacity(TOTAL_POSITIONS),
-            empty_vector: FixedBitSet::with_capacity(TOTAL_POSITIONS),
+            piece_bitboards: HashMap::new(),
+            revealed_bitboards: HashMap::new(),
+            hidden_bitboard: 0,
+            empty_bitboard: 0,
             
             dead_pieces: HashMap::new(),
             survival_vectors: HashMap::new(),
@@ -216,7 +266,7 @@ impl DarkChessEnv {
             action_to_coords: HashMap::new(),
             coords_to_action: HashMap::new(),
             
-            ray_attacks: vec![vec![FixedBitSet::with_capacity(TOTAL_POSITIONS); TOTAL_POSITIONS]; 4],
+            ray_attacks: vec![vec![0u64; TOTAL_POSITIONS]; 4],
             
             hidden_pieces: Vec::new(),
             reveal_probabilities: vec![0.0; 14],
@@ -227,7 +277,57 @@ impl DarkChessEnv {
         env.reset();
         env
     }
+    
+    /// 预计算炮的攻击射线表
+    /// 4个方向: 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
+    /// 重写为返回 u64 的 Bitboard
+    fn precompute_ray_attacks(&mut self) {
+        self.ray_attacks = vec![vec![0u64; TOTAL_POSITIONS]; 4];
+        
+        for sq in 0..TOTAL_POSITIONS {
+            let r = sq / BOARD_COLS;
+            let c = sq % BOARD_COLS;
+            
+            // Direction 0: UP (向上) - 行索引减小
+            for i in (0..r).rev() {
+                let target_sq = i * BOARD_COLS + c;
+                self.ray_attacks[0][sq] |= ull(target_sq);
+            }
+            
+            // Direction 1: DOWN (向下) - 行索引增大
+            for i in (r + 1)..BOARD_ROWS {
+                let target_sq = i * BOARD_COLS + c;
+                self.ray_attacks[1][sq] |= ull(target_sq);
+            }
+            
+            // Direction 2: LEFT (向左) - 列索引减小
+            for i in (0..c).rev() {
+                let target_sq = r * BOARD_COLS + i;
+                self.ray_attacks[2][sq] |= ull(target_sq);
+            }
+            
+            // Direction 3: RIGHT (向右) - 列索引增大
+            for i in (c + 1)..BOARD_COLS {
+                let target_sq = r * BOARD_COLS + i;
+                self.ray_attacks[3][sq] |= ull(target_sq);
+            }
+        }
+    }
 
+    /// 根据动作编号获取对应的坐标列表（便于调试/可视化）
+    pub fn get_coords_for_action(&self, action: usize) -> Option<&Vec<usize>> {
+        self.action_to_coords.get(&action)
+    }
+
+    /// 自定义场景：仅保留红黑士 — 已弃用。为兼容旧调用，提供空实现。
+    pub fn setup_two_advisors(&mut self, _current_player: Player) {
+        // no-op: 保持现有随机初始局面
+    }
+
+    /// 自定义场景：隐藏的威胁 — 已弃用。为兼容旧调用，提供空实现。
+    pub fn setup_hidden_threats(&mut self) {
+        // no-op: 保持现有随机初始局面
+    }
     fn initialize_lookup_tables(&mut self) {
         let mut idx = 0;
         
@@ -258,6 +358,39 @@ impl DarkChessEnv {
             }
         }
         
+        // 3. 炮的攻击动作 (46-79)
+        for r1 in 0..BOARD_ROWS {
+            for c1 in 0..BOARD_COLS {
+                let from_sq = r1 * BOARD_COLS + c1;
+                
+                // 水平攻击 (跨度 > 1)
+                for c2 in 0..BOARD_COLS {
+                    if (c1 as i32 - c2 as i32).abs() > 1 {
+                        let to_sq = r1 * BOARD_COLS + c2;
+                        let key = vec![from_sq, to_sq];
+                        if !self.coords_to_action.contains_key(&key) {
+                            self.action_to_coords.insert(idx, key.clone());
+                            self.coords_to_action.insert(key, idx);
+                            idx += 1;
+                        }
+                    }
+                }
+                
+                // 垂直攻击 (跨度 > 1)
+                for r2 in 0..BOARD_ROWS {
+                    if (r1 as i32 - r2 as i32).abs() > 1 {
+                        let to_sq = r2 * BOARD_COLS + c1;
+                        let key = vec![from_sq, to_sq];
+                        if !self.coords_to_action.contains_key(&key) {
+                            self.action_to_coords.insert(idx, key.clone());
+                            self.coords_to_action.insert(key, idx);
+                            idx += 1;
+                        }
+                    }
+                }
+            }
+        }
+        
         if idx != ACTION_SPACE_SIZE {
             panic!("动作空间计算错误: 预期 {}, 实际 {}", ACTION_SPACE_SIZE, idx);
         }
@@ -266,16 +399,15 @@ impl DarkChessEnv {
     fn reset_internal_state(&mut self) {
         self.board = vec![Slot::Empty; TOTAL_POSITIONS];
         
-        // 初始化向量
-        self.piece_vectors.insert(Player::Red, vec![FixedBitSet::with_capacity(TOTAL_POSITIONS); NUM_PIECE_TYPES]);
-        self.piece_vectors.insert(Player::Black, vec![FixedBitSet::with_capacity(TOTAL_POSITIONS); NUM_PIECE_TYPES]);
+        // 初始化 Bitboards
+        self.piece_bitboards.insert(Player::Red, [0; NUM_PIECE_TYPES]);
+        self.piece_bitboards.insert(Player::Black, [0; NUM_PIECE_TYPES]);
         
-        self.revealed_vectors.insert(Player::Red, FixedBitSet::with_capacity(TOTAL_POSITIONS));
-        self.revealed_vectors.insert(Player::Black, FixedBitSet::with_capacity(TOTAL_POSITIONS));
+        self.revealed_bitboards.insert(Player::Red, 0);
+        self.revealed_bitboards.insert(Player::Black, 0);
         
-        self.hidden_vector = FixedBitSet::with_capacity(TOTAL_POSITIONS);
-        self.empty_vector = FixedBitSet::with_capacity(TOTAL_POSITIONS);
-        // empty_vector 和 hidden_vector 将在 initialize_board 中根据布局设置
+        self.hidden_bitboard = 0;
+        self.empty_bitboard = 0;
         
         self.dead_pieces.insert(Player::Red, Vec::new());
         self.dead_pieces.insert(Player::Black, Vec::new());
@@ -342,35 +474,24 @@ impl DarkChessEnv {
         layout.shuffle(&mut rng);
         
         // 3. 填充棋盘并初始化向量
-        self.empty_vector.clear();
-        self.hidden_vector.clear();
-        
-        for (sq, slot) in layout.into_iter().enumerate() {
-            self.board[sq] = slot.clone();
-            match slot {
-                Slot::Empty => self.empty_vector.set(sq, true),
-                Slot::Hidden => self.hidden_vector.set(sq, true),
-                _ => {} // 初始没有 Revealed
-            }
+        self.empty_bitboard = 0; // 初始棋盘满子 (4x8=32)
+        self.hidden_bitboard = BOARD_MASK; // 全部为暗子
+
+        for sq in 0..TOTAL_POSITIONS {
+            self.board[sq] = Slot::Hidden;
         }
         
         // 计算初始概率表
         self.update_reveal_probabilities();
         
         // 4. 随机翻开 N 个 Hidden 位置
-        if INITIAL_REVEALED_PIECES > 0 {
-            // 获取所有 Hidden 的位置索引
-            let hidden_indices: Vec<usize> = self.hidden_vector.ones().collect();
-            
-            // 随机选择 N 个进行翻开
-            // 注意：这里选择的是位置，翻开时会从 hidden_pieces 池中消耗棋子
+        if TOTAL_POSITIONS > 0 { // 确保棋盘非空
+            let mut hidden_indices: Vec<usize> = (0..TOTAL_POSITIONS).collect();
+            hidden_indices.shuffle(&mut rng);
             let reveal_count = std::cmp::min(hidden_indices.len(), INITIAL_REVEALED_PIECES);
-            let chosen_indices = hidden_indices
-                .choose_multiple(&mut rng, reveal_count)
-                .cloned()
-                .collect::<Vec<_>>();
-
-            for idx in chosen_indices {
+            
+            for &idx in hidden_indices.iter().take(reveal_count) {
+                // 这里调用 reveal_piece_at，它会更新 Bitboard
                 self.reveal_piece_at(idx, None);
             }
         }
@@ -393,10 +514,7 @@ impl DarkChessEnv {
 
     // --- 翻子相关方法 ---
     
-    /// 翻开指定位置的棋子
-    /// 逻辑：检查该位置是否为 Hidden
-    /// 如果 specified_piece 为 None，从 hidden_pieces 池中随机取出一个
-    /// 如果 specified_piece 为 Some(p)，则强制取出该棋子（如果不在池中则 panic）
+    /// 翻开指定位置的棋子并更新 Bitboards
     fn reveal_piece_at(&mut self, sq: usize, specified_piece: Option<Piece>) {
         // 确保位置是 Hidden
         match self.board[sq] {
@@ -420,21 +538,22 @@ impl DarkChessEnv {
         
         // 从池中移除并使用
         let piece = self.hidden_pieces.swap_remove(idx);
+
+        // 更新 Bitboards
+        let mask = ull(sq);
+        self.hidden_bitboard &= !mask;
         
-        // 更新向量
-        self.hidden_vector.set(sq, false);
-        self.revealed_vectors.get_mut(&piece.player).unwrap().set(sq, true);
-        self.piece_vectors.get_mut(&piece.player).unwrap()[piece.piece_type as usize].set(sq, true);
+        let p_bb = self.revealed_bitboards.get_mut(&piece.player).unwrap();
+        *p_bb |= mask;
+        
+        let pt_bb = &mut self.piece_bitboards.get_mut(&piece.player).unwrap()[piece.piece_type as usize];
+        *pt_bb |= mask;
         
         // 更新棋盘状态
         self.board[sq] = Slot::Revealed(piece);
         
         // 更新概率表
         self.update_reveal_probabilities();
-        
-        // 开启调试模式时验证向量一致性
-        #[cfg(debug_assertions)]
-        self.verify_vector_consistency();
     }
     
     fn update_reveal_probabilities(&mut self) {
@@ -493,7 +612,7 @@ impl DarkChessEnv {
             let coords = &self.action_to_coords[&action];
             let from_sq = coords[0];
             let to_sq = coords[1];
-            self.apply_move_action(from_sq, to_sq);
+            self.apply_move_action(from_sq, to_sq, reveal_piece);
         }
 
         self.current_player = self.current_player.opposite();
@@ -503,52 +622,63 @@ impl DarkChessEnv {
         Ok((self.get_state(), 0.0, terminated, truncated, winner))
     }
 
-    fn apply_move_action(&mut self, from_sq: usize, to_sq: usize) {
+    fn apply_move_action(&mut self, from_sq: usize, to_sq: usize, reveal_piece: Option<Piece>) {
         // 提取源棋子 (必须是 Revealed)
         let attacker = match std::mem::replace(&mut self.board[from_sq], Slot::Empty) {
             Slot::Revealed(p) => p,
             _ => panic!("Move action source is not a revealed piece!"),
         };
         
-        // 处理目标位置
+        // 如果目标是暗子，先翻开
+        if matches!(self.board[to_sq], Slot::Hidden) {
+            self.reveal_piece_at(to_sq, reveal_piece);
+        }
+        
+        // 统一处理移动或吃子（此时目标已经是明子或空位）
         let target_slot = std::mem::replace(&mut self.board[to_sq], Slot::Revealed(attacker.clone()));
 
-        // 更新源位置向量
+        let attacker_mask = ull(from_sq);
+        let defender_mask = ull(to_sq);
         let p = attacker.player;
         let pt = attacker.piece_type as usize;
         
-        self.piece_vectors.get_mut(&p).unwrap()[pt].set(from_sq, false);
-        self.revealed_vectors.get_mut(&p).unwrap().set(from_sq, false);
-        self.empty_vector.set(from_sq, true);
+        // 1. 更新源位置 (Attacker leaves from_sq)
+        let my_revealed_bb = self.revealed_bitboards.get_mut(&p).unwrap();
+        *my_revealed_bb &= !attacker_mask;
+        
+        let my_pt_bb = &mut self.piece_bitboards.get_mut(&p).unwrap()[pt];
+        *my_pt_bb &= !attacker_mask;
+        
+        self.empty_bitboard |= attacker_mask;
 
-        // 更新目标位置向量
-        self.piece_vectors.get_mut(&p).unwrap()[pt].set(to_sq, true);
-        self.revealed_vectors.get_mut(&p).unwrap().set(to_sq, true);
-        self.empty_vector.set(to_sq, false);
+        // 2. 更新目标位置 (Attacker moves to to_sq)
+        *my_revealed_bb |= defender_mask;
+        *my_pt_bb |= defender_mask;
+        self.empty_bitboard &= !defender_mask; // 目标位置不再是空位
 
         match target_slot {
             Slot::Empty => {
                 self.move_counter += 1;
             },
             Slot::Revealed(defender) => {
-                // 吃子
-                // println!("  [吃子] {} 吃掉 {}", attacker.short_name(), defender.short_name());
-                // 被吃掉的棋子是 Revealed，需清理其在向量中的记录
-                self.piece_vectors.get_mut(&defender.player).unwrap()[defender.piece_type as usize].set(to_sq, false);
-                self.revealed_vectors.get_mut(&defender.player).unwrap().set(to_sq, false);
+                // 3. 处理吃子 (Defender is captured at to_sq)
+                let opp = defender.player;
+                let opp_pt = defender.piece_type as usize;
+                
+                let opp_revealed_bb = self.revealed_bitboards.get_mut(&opp).unwrap();
+                *opp_revealed_bb &= !defender_mask;
+                
+                let opp_pt_bb = &mut self.piece_bitboards.get_mut(&opp).unwrap()[opp_pt];
+                *opp_pt_bb &= !defender_mask;
                 
                 self.dead_pieces.get_mut(&defender.player).unwrap().push(defender.piece_type);
                 self.update_survival_vector_on_capture(&defender);
                 self.move_counter = 0;
             },
             Slot::Hidden => {
-                panic!("Error: Moved onto a Hidden slot. This should be prevented by action masks.");
+                panic!("Unexpected Hidden slot after reveal");
             }
         }
-        
-        // 开启调试模式时验证向量一致性
-        #[cfg(debug_assertions)]
-        self.verify_vector_consistency();
     }
 
     fn update_survival_vector_on_capture(&mut self, captured: &Piece) {
@@ -572,62 +702,7 @@ impl DarkChessEnv {
         }
     }
     
-    /// 验证向量表示与棋盘状态的一致性
-    fn verify_vector_consistency(&self) {
-        for sq in 0..TOTAL_POSITIONS {
-            match &self.board[sq] {
-                Slot::Empty => {
-                    if !self.empty_vector.contains(sq) {
-                        panic!("位置 {} 是 Empty 但 empty_vector 未设置！", sq);
-                    }
-                    if self.hidden_vector.contains(sq) {
-                        panic!("位置 {} 是 Empty 但 hidden_vector 被设置！", sq);
-                    }
-                    // 检查没有棋子向量指向这里
-                    for player in [Player::Red, Player::Black] {
-                        if self.revealed_vectors[&player].contains(sq) {
-                            panic!("位置 {} 是 Empty 但 {:?} revealed_vector 被设置！", sq, player);
-                        }
-                        for pt in 0..NUM_PIECE_TYPES {
-                            if self.piece_vectors[&player][pt].contains(sq) {
-                                panic!("位置 {} 是 Empty 但 {:?} piece_vector[{}] 被设置！", sq, player, pt);
-                            }
-                        }
-                    }
-                },
-                Slot::Hidden => {
-                    if !self.hidden_vector.contains(sq) {
-                        panic!("位置 {} 是 Hidden 但 hidden_vector 未设置！", sq);
-                    }
-                    if self.empty_vector.contains(sq) {
-                        panic!("位置 {} 是 Hidden 但 empty_vector 被设置！", sq);
-                    }
-                },
-                Slot::Revealed(piece) => {
-                    if self.empty_vector.contains(sq) {
-                        panic!("位置 {} 有棋子 {} 但 empty_vector 被设置！", sq, piece.short_name());
-                    }
-                    if self.hidden_vector.contains(sq) {
-                        panic!("位置 {} 有棋子 {} 但 hidden_vector 被设置！", sq, piece.short_name());
-                    }
-                    if !self.revealed_vectors[&piece.player].contains(sq) {
-                        panic!("位置 {} 有棋子 {} 但 {:?} revealed_vector 未设置！", 
-                            sq, piece.short_name(), piece.player);
-                    }
-                    if !self.piece_vectors[&piece.player][piece.piece_type as usize].contains(sq) {
-                        panic!("位置 {} 有棋子 {} 但对应 piece_vector 未设置！", 
-                            sq, piece.short_name());
-                    }
-                    // 检查对手的向量没有指向这里
-                    let opponent = piece.player.opposite();
-                    if self.revealed_vectors[&opponent].contains(sq) {
-                        panic!("位置 {} 有棋子 {} 但对手 {:?} revealed_vector 被设置！", 
-                            sq, piece.short_name(), opponent);
-                    }
-                }
-            }
-        }
-    }
+
 
     fn update_history(&mut self) {
         let board_state = self.get_board_state_tensor();
@@ -651,23 +726,25 @@ impl DarkChessEnv {
         
         // My pieces (Revealed)
         for pt in 0..NUM_PIECE_TYPES {
+            let bb = self.piece_bitboards[&my][pt];
             for sq in 0..TOTAL_POSITIONS {
-                tensor.push(if self.piece_vectors[&my][pt].contains(sq) {1.0} else {0.0});
+                tensor.push(if (bb & ull(sq)) != 0 {1.0} else {0.0});
             }
         }
         // Opponent pieces (Revealed)
         for pt in 0..NUM_PIECE_TYPES {
+            let bb = self.piece_bitboards[&opp][pt];
             for sq in 0..TOTAL_POSITIONS {
-                tensor.push(if self.piece_vectors[&opp][pt].contains(sq) {1.0} else {0.0});
+                tensor.push(if (bb & ull(sq)) != 0 {1.0} else {0.0});
             }
         }
         // Hidden
         for sq in 0..TOTAL_POSITIONS {
-            tensor.push(if self.hidden_vector.contains(sq) {1.0} else {0.0});
+            tensor.push(if (self.hidden_bitboard & ull(sq)) != 0 {1.0} else {0.0});
         }
         // Empty
         for sq in 0..TOTAL_POSITIONS {
-            tensor.push(if self.empty_vector.contains(sq) {1.0} else {0.0});
+            tensor.push(if (self.empty_bitboard & ull(sq)) != 0 {1.0} else {0.0});
         }
         
         tensor
@@ -734,138 +811,177 @@ impl DarkChessEnv {
 
         (false, false, None)
     }
-
-    // --- 动作掩码 ---
+// --- 动作掩码 ---
     pub fn action_masks(&self) -> Vec<i32> {
         self.get_action_masks_for_player(self.current_player)
     }
 
     fn get_action_masks_for_player(&self, player: Player) -> Vec<i32> {
         let mut mask = vec![0; ACTION_SPACE_SIZE];
+
+        // --------------------------------------------------------
+        // 1. 翻棋动作 (Reveal)
+        // --------------------------------------------------------
+        let mut temp_hidden = self.hidden_bitboard;
+        while temp_hidden != 0 {
+            let sq = pop_lsb(&mut temp_hidden);
+            if let Some(&idx) = self.coords_to_action.get(&vec![sq]) {
+                mask[idx] = 1;
+            }
+        }
+
+        // --------------------------------------------------------
+        // 2. 准备位棋盘数据 (Bitboards Preparation)
+        // --------------------------------------------------------
+        let empty_bb = self.empty_bitboard;
+        let my = player;
+        let opp = player.opposite();
+
+        let my_revealed_bb = *self.revealed_bitboards.get(&my).unwrap();
         
-        // 1. 翻棋 (只要是 Hidden Slot 就可以翻)
-        for sq in self.hidden_vector.ones() {
-            let idx = self.coords_to_action[&vec![sq]];
-            mask[idx] = 1;
+        let my_piece_bb = *self.piece_bitboards.get(&my).unwrap();
+        let opp_piece_bb = *self.piece_bitboards.get(&opp).unwrap();
+
+        // --------------------------------------------------------
+        // 3. 常规移动 (Regular Moves)
+        // 对应 env.py: Loop over piece types, shift bits
+        // --------------------------------------------------------
+        
+        // 计算目标集合 (Target Bitboards)
+        // 规则: 目标可以是 空位 OR 比自己弱/同级的敌方棋子
+        let mut target_bbs: [u64; NUM_PIECE_TYPES] = [0; NUM_PIECE_TYPES];
+        let mut cumulative_targets: u64 = empty_bb; // 初始包含空位
+
+        // 按等级累积敌方棋子: Soldier(0) -> General(6)
+        for pt in 0..NUM_PIECE_TYPES {
+            cumulative_targets |= opp_piece_bb[pt];
+            target_bbs[pt] = cumulative_targets;
         }
         
-        // 2. 移动和吃子
-        self.add_regular_move_masks(&mut mask, player);
+        // 特殊规则修正:
+        // 1. 兵(0) 可以吃 将(6) -> 将 Soldier 的目标加上敌方 General
+        target_bbs[PieceType::Soldier as usize] |= opp_piece_bb[PieceType::General as usize];
+        // 2. 将(6) 不能吃 兵(0) -> 将 General 的目标移除敌方 Soldier
+        target_bbs[PieceType::General as usize] &= !opp_piece_bb[PieceType::Soldier as usize];
+
+        // 移动偏移量与边界检查
+        // env.py: shifts = [-4 (Up), 4 (Down), -1 (Left), 1 (Right)]
+        // Rust: 对应BOARD_COLS
+        let shifts = [
+            -((BOARD_COLS as isize)) as i32, // Up
+            (BOARD_COLS as i32),             // Down
+            -1,                              // Left
+            1                                // Right
+        ];
         
-        mask
-    }
-    
-    fn add_regular_move_masks(&self, mask: &mut Vec<i32>, player: Player) {
-        let target_vectors = self.get_valid_target_vectors(player);
+        // 边界掩码 (防止左右移动穿越棋盘边缘)
+        let not_file_a = BOARD_MASK & !file_mask(0);             // 非第一列
+        let not_file_h = BOARD_MASK & !file_mask(BOARD_COLS - 1); // 非最后一列
         
-        for pt_val in 0..NUM_PIECE_TYPES {
-            let pt = PieceType::from_usize(pt_val).unwrap();
+        // 对应 shifts 的 wrap_check
+        // Up/Down 不需要列掩码，Left 需要 not_file_a，Right 需要 not_file_h
+        let wrap_checks = [BOARD_MASK, BOARD_MASK, not_file_a, not_file_h];
+
+        for pt in 0..NUM_PIECE_TYPES {
+            // 炮(1) 不走常规移动逻辑
+            if pt == PieceType::Cannon as usize { continue; }
             
-            // 炮不使用常规移动，跳过
-            if pt == PieceType::Cannon {
-                continue;
-            }
-            
-            let piece_locs: Vec<usize> = self.piece_vectors[&player][pt_val].ones().collect();
-            let valid_targets = &target_vectors[&pt];
-            
-            for from_sq in piece_locs {
-                let r = from_sq / BOARD_COLS;
-                let c = from_sq % BOARD_COLS;
-                let moves = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+            let from_bb = my_piece_bb[pt];
+            if from_bb == 0 { continue; }
+
+            for (dir_idx, &shift) in shifts.iter().enumerate() {
+                let wrap = wrap_checks[dir_idx];
                 
-                for (dr, dc) in moves.iter() {
-                    let nr = r as i32 + dr;
-                    let nc = c as i32 + dc;
+                let temp_from_bb = from_bb & wrap;
+                if temp_from_bb == 0 { continue; }
+
+                // 计算潜在目标位 (纯位移)
+                let potential_to_bb = if shift > 0 {
+                    (temp_from_bb << (shift as u32)) & BOARD_MASK
+                } else {
+                    (temp_from_bb >> ((-shift) as u32)) & BOARD_MASK
+                };
+
+                // 过滤有效目标 (必须在 target_bbs 中)
+                let mut actual_to_bb = potential_to_bb & target_bbs[pt];
+
+                // 提取结果并设置掩码
+                while actual_to_bb != 0 {
+                    let to_sq = pop_lsb(&mut actual_to_bb);
                     
-                    if nr >= 0 && nr < BOARD_ROWS as i32 && nc >= 0 && nc < BOARD_COLS as i32 {
-                        let to_sq = (nr as usize) * BOARD_COLS + (nc as usize);
-                        
-                        // 目标必须是有效吃子对象 或者 是空位
-                        if valid_targets.contains(to_sq) || self.empty_vector.contains(to_sq) {
-                            if let Some(&idx) = self.coords_to_action.get(&vec![from_sq, to_sq]) {
-                                mask[idx] = 1;
-                            }
+                    // 反推 from_sq
+                    let from_sq = if shift > 0 {
+                        (to_sq as isize - (shift as isize)) as usize
+                    } else {
+                        (to_sq as isize + ((-shift) as isize)) as usize
+                    };
+
+                    if let Some(&idx) = self.coords_to_action.get(&vec![from_sq, to_sq]) {
+                        mask[idx] = 1;
+                    }
+                }
+            }
+        }
+
+        // --------------------------------------------------------
+        // 4. 炮的特殊攻击 (Cannon Attacks)
+        // --------------------------------------------------------
+        let my_cannons_bb = my_piece_bb[PieceType::Cannon as usize];
+        if my_cannons_bb != 0 {
+            let all_pieces_bb = BOARD_MASK & !empty_bb;
+            
+            // 炮的合法目标: 非(己方明子) => 敌方明子 + 任何暗子
+            let valid_cannon_targets = BOARD_MASK & (!my_revealed_bb);
+
+            let mut temp_cannons = my_cannons_bb;
+            while temp_cannons != 0 {
+                let from_sq = pop_lsb(&mut temp_cannons);
+                
+                // 遍历 4 个方向: 0=Up, 1=Down, 2=Left, 3=Right
+                for dir in 0..4 {
+                    let ray_bb = self.ray_attacks[dir][from_sq];
+                    let blockers = ray_bb & all_pieces_bb;
+                    
+                    if blockers == 0 { continue; }
+
+                    // 寻找炮架 (Screen): 离 from_sq 最近的阻挡物
+                    let screen_sq = match dir {
+                        0 | 2 => msb_index(blockers), // Up/Left: 索引减小 -> 离from最近的是最大索引
+                        _ => Some(trailing_zeros(blockers)), // Down/Right: 索引增大 -> 离from最近是最小索引
+                    };
+
+                    if screen_sq.is_none() { continue; }
+                    let screen_sq = screen_sq.unwrap();
+
+                    // 寻找目标 (Target): 炮架后的第一个棋子
+                    let after_screen_ray = self.ray_attacks[dir][screen_sq];
+                    let targets = after_screen_ray & all_pieces_bb;
+                    
+                    if targets == 0 { continue; }
+
+                    // 寻找目标 (Target) - 同样的最近原则
+                    let target_sq = match dir {
+                        0 | 2 => msb_index(targets),
+                        _ => Some(trailing_zeros(targets)),
+                    };
+
+                    if target_sq.is_none() { continue; }
+                    let target_sq = target_sq.unwrap();
+
+                    // 检查目标是否合法 (不能吃己方明子)
+                    if ((ull(target_sq)) & valid_cannon_targets) != 0 {
+                        if let Some(&idx) = self.coords_to_action.get(&vec![from_sq, target_sq]) {
+                            mask[idx] = 1;
                         }
                     }
                 }
             }
         }
-    }
-    
-    /// 验证吃子规则的正确性
-    fn verify_capture_rules(&self, from_sq: usize, to_sq: usize) -> Result<(), String> {
-        let attacker = match &self.board[from_sq] {
-            Slot::Revealed(p) => p,
-            _ => return Err(format!("源位置 {} 不是明子", from_sq)),
-        };
-        
-        let defender = match &self.board[to_sq] {
-            Slot::Revealed(p) => p,
-            Slot::Empty => return Ok(()), // 移动到空位，无需检查吃子规则
-            Slot::Hidden => return Err(format!("不能移动到暗子位置 {}", to_sq)),
-        };
-        
-        // 不能吃自己的棋子
-        if attacker.player == defender.player {
-            return Err(format!("{} 不能吃自己的 {}", attacker.short_name(), defender.short_name()));
-        }
-        
-        // 检查吃子规则
-        let can_capture = match (attacker.piece_type, defender.piece_type) {
-            // 兵可以吃兵和将
-            (PieceType::Soldier, PieceType::Soldier) => true,
-            (PieceType::Soldier, PieceType::General) => true,
-            (PieceType::Soldier, PieceType::Advisor) => false,
-            
-            // 士可以吃兵和士
-            (PieceType::Advisor, PieceType::Soldier) => true,
-            (PieceType::Advisor, PieceType::Advisor) => true,
-            (PieceType::Advisor, PieceType::General) => false,
-            
-            // 将可以吃士和将，不能吃兵
-            (PieceType::General, PieceType::Soldier) => false,
-            (PieceType::General, PieceType::Advisor) => true,
-            (PieceType::General, PieceType::General) => true,
-        };
-        
-        if !can_capture {
-            return Err(format!("{} 不能吃 {} (规则不允许)", 
-                attacker.short_name(), defender.short_name()));
-        }
-        
-        Ok(())
+
+        mask
     }
 
-    fn get_valid_target_vectors(&self, player: Player) -> HashMap<PieceType, FixedBitSet> {
-        let opponent = player.opposite();
-        let mut target_vectors = HashMap::new();
-        
-        let mut cumulative_targets = FixedBitSet::with_capacity(TOTAL_POSITIONS);
-        
-        // Loop 0 (Soldier) -> Can eat Soldier
-        cumulative_targets.union_with(&self.piece_vectors[&opponent][0]);
-        target_vectors.insert(PieceType::Soldier, cumulative_targets.clone());
-        
-        // Loop 1 (Advisor) -> Can eat Soldier + Advisor
-        cumulative_targets.union_with(&self.piece_vectors[&opponent][1]);
-        target_vectors.insert(PieceType::Advisor, cumulative_targets.clone());
-        
-        // Loop 2 (General) -> Can eat Soldier + Advisor + General
-        cumulative_targets.union_with(&self.piece_vectors[&opponent][2]);
-        target_vectors.insert(PieceType::General, cumulative_targets.clone());
-        
-        // 特殊规则修正：
-        // 1. 兵可以吃将
-        let opp_gen = &self.piece_vectors[&opponent][PieceType::General as usize];
-        target_vectors.get_mut(&PieceType::Soldier).unwrap().union_with(opp_gen);
-        
-        // 2. 将不能吃兵
-        let opp_sol = &self.piece_vectors[&opponent][PieceType::Soldier as usize];
-        target_vectors.get_mut(&PieceType::General).unwrap().difference_with(opp_sol);
-        
-        target_vectors
-    }
+
     
     pub fn print_board(&self) {
         println!("\n      0         1         2         3");
@@ -916,6 +1032,15 @@ impl DarkChessEnv {
         &self.dead_pieces[&player]
     }
     
+    /// 获取隐藏棋子（按玩家分类）
+    pub fn get_hidden_pieces(&self, player: Player) -> Vec<PieceType> {
+        self.hidden_pieces
+            .iter()
+            .filter(|p| p.player == player)
+            .map(|p| p.piece_type)
+            .collect()
+    }
+    
     /// 根据坐标获取对应的动作编号
     pub fn get_action_for_coords(&self, coords: &[usize]) -> Option<usize> {
         self.coords_to_action.get(coords).copied()
@@ -928,29 +1053,77 @@ impl DarkChessEnv {
         
         // Hidden 和 Empty
         bitboards.insert("hidden".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.hidden_vector.contains(sq)).collect());
+            (0..TOTAL_POSITIONS).map(|sq| (self.hidden_bitboard & ull(sq)) != 0).collect());
         bitboards.insert("empty".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.empty_vector.contains(sq)).collect());
+            (0..TOTAL_POSITIONS).map(|sq| (self.empty_bitboard & ull(sq)) != 0).collect());
         
-        // 红方明子
+        // 红方明子（全部）
+        let red_revealed = self.revealed_bitboards[&Player::Red];
         bitboards.insert("red_revealed".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.revealed_vectors[&Player::Red].contains(sq)).collect());
-        bitboards.insert("red_soldier".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.piece_vectors[&Player::Red][PieceType::Soldier as usize].contains(sq)).collect());
-        bitboards.insert("red_advisor".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.piece_vectors[&Player::Red][PieceType::Advisor as usize].contains(sq)).collect());
-        bitboards.insert("red_general".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.piece_vectors[&Player::Red][PieceType::General as usize].contains(sq)).collect());
+            (0..TOTAL_POSITIONS).map(|sq| (red_revealed & ull(sq)) != 0).collect());
         
-        // 黑方明子
+        // 红方各类型棋子
+        let red_soldier = self.piece_bitboards[&Player::Red][PieceType::Soldier as usize];
+        bitboards.insert("red_soldier".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (red_soldier & ull(sq)) != 0).collect());
+        
+        let red_cannon = self.piece_bitboards[&Player::Red][PieceType::Cannon as usize];
+        bitboards.insert("red_cannon".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (red_cannon & ull(sq)) != 0).collect());
+        
+        let red_horse = self.piece_bitboards[&Player::Red][PieceType::Horse as usize];
+        bitboards.insert("red_horse".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (red_horse & ull(sq)) != 0).collect());
+        
+        let red_chariot = self.piece_bitboards[&Player::Red][PieceType::Chariot as usize];
+        bitboards.insert("red_chariot".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (red_chariot & ull(sq)) != 0).collect());
+        
+        let red_elephant = self.piece_bitboards[&Player::Red][PieceType::Elephant as usize];
+        bitboards.insert("red_elephant".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (red_elephant & ull(sq)) != 0).collect());
+            
+        let red_advisor = self.piece_bitboards[&Player::Red][PieceType::Advisor as usize];
+        bitboards.insert("red_advisor".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (red_advisor & ull(sq)) != 0).collect());
+            
+        let red_general = self.piece_bitboards[&Player::Red][PieceType::General as usize];
+        bitboards.insert("red_general".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (red_general & ull(sq)) != 0).collect());
+        
+        // 黑方明子（全部）
+        let black_revealed = self.revealed_bitboards[&Player::Black];
         bitboards.insert("black_revealed".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.revealed_vectors[&Player::Black].contains(sq)).collect());
+            (0..TOTAL_POSITIONS).map(|sq| (black_revealed & ull(sq)) != 0).collect());
+        
+        // 黑方各类型棋子
+        let black_soldier = self.piece_bitboards[&Player::Black][PieceType::Soldier as usize];
         bitboards.insert("black_soldier".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.piece_vectors[&Player::Black][PieceType::Soldier as usize].contains(sq)).collect());
+            (0..TOTAL_POSITIONS).map(|sq| (black_soldier & ull(sq)) != 0).collect());
+        
+        let black_cannon = self.piece_bitboards[&Player::Black][PieceType::Cannon as usize];
+        bitboards.insert("black_cannon".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (black_cannon & ull(sq)) != 0).collect());
+        
+        let black_horse = self.piece_bitboards[&Player::Black][PieceType::Horse as usize];
+        bitboards.insert("black_horse".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (black_horse & ull(sq)) != 0).collect());
+        
+        let black_chariot = self.piece_bitboards[&Player::Black][PieceType::Chariot as usize];
+        bitboards.insert("black_chariot".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (black_chariot & ull(sq)) != 0).collect());
+        
+        let black_elephant = self.piece_bitboards[&Player::Black][PieceType::Elephant as usize];
+        bitboards.insert("black_elephant".to_string(), 
+            (0..TOTAL_POSITIONS).map(|sq| (black_elephant & ull(sq)) != 0).collect());
+            
+        let black_advisor = self.piece_bitboards[&Player::Black][PieceType::Advisor as usize];
         bitboards.insert("black_advisor".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.piece_vectors[&Player::Black][PieceType::Advisor as usize].contains(sq)).collect());
+            (0..TOTAL_POSITIONS).map(|sq| (black_advisor & ull(sq)) != 0).collect());
+            
+        let black_general = self.piece_bitboards[&Player::Black][PieceType::General as usize];
         bitboards.insert("black_general".to_string(), 
-            (0..TOTAL_POSITIONS).map(|sq| self.piece_vectors[&Player::Black][PieceType::General as usize].contains(sq)).collect());
+            (0..TOTAL_POSITIONS).map(|sq| (black_general & ull(sq)) != 0).collect());
         
         bitboards
     }
