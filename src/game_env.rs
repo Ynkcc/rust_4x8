@@ -222,6 +222,9 @@ pub struct DarkChessEnv {
     dead_pieces: HashMap<Player, Vec<PieceType>>,
     survival_vectors: HashMap<Player, Vec<f32>>,
     
+    // 血量追踪（减分制，初始60分，被吃子扣血）
+    scores: HashMap<Player, i32>,
+    
     last_action: i32,
 
     // 历史堆叠
@@ -257,6 +260,8 @@ impl DarkChessEnv {
             
             dead_pieces: HashMap::new(),
             survival_vectors: HashMap::new(),
+            
+            scores: HashMap::new(),
             
             last_action: -1,
             
@@ -411,6 +416,10 @@ impl DarkChessEnv {
         
         self.dead_pieces.insert(Player::Red, Vec::new());
         self.dead_pieces.insert(Player::Black, Vec::new());
+        
+        // 初始化血量（减分制）：每方从60分开始
+        self.scores.insert(Player::Red, 60);
+        self.scores.insert(Player::Black, 60);
         
         self.current_player = Player::Red;
         self.move_counter = 0;
@@ -673,6 +682,11 @@ impl DarkChessEnv {
                 
                 self.dead_pieces.get_mut(&defender.player).unwrap().push(defender.piece_type);
                 self.update_survival_vector_on_capture(&defender);
+                
+                // 更新被吃方血量（减分制）
+                let score = self.scores.get_mut(&defender.player).unwrap();
+                *score = score.saturating_sub(defender.piece_type.value());
+                
                 self.move_counter = 0;
             },
             Slot::Hidden => {
@@ -789,7 +803,15 @@ impl DarkChessEnv {
 
     // --- 规则检查 ---
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
-        // 每方共16个棋子: 5兵+2炮+2马+2车+2象+2士+1将 = 16
+        // 1. 血量归零：任一方血量降至0或以下则失败（减分制）
+        if self.scores[&Player::Red] <= 0 {
+            return (true, false, Some(Player::Black.val()));
+        }
+        if self.scores[&Player::Black] <= 0 {
+            return (true, false, Some(Player::Red.val()));
+        }
+        
+        // 2. 全灭判定：每方共16个棋子: 5兵+2炮+2马+2车+2象+2士+1将 = 16
         if self.dead_pieces[&Player::Red].len() == 16 {
             return (true, false, Some(Player::Black.val()));
         }
@@ -797,14 +819,18 @@ impl DarkChessEnv {
             return (true, false, Some(Player::Red.val()));
         }
         
+        // 3. 无棋可走：对手无任何合法动作时，当前玩家获胜
         let masks = self.get_action_masks_for_player(self.current_player);
         if masks.iter().all(|&x| x == 0) {
             return (true, false, Some(self.current_player.opposite().val()));
         }
 
+        // 4. 平局条件：回合限制 - 连续24个回合没有吃子发生
         if self.move_counter >= MAX_CONSECUTIVE_MOVES_FOR_DRAW {
             return (true, false, Some(0));
         }
+        
+        // 5. 平局条件：步数限制 - 游戏总步数达到100步
         if self.total_step_counter >= MAX_STEPS_PER_EPISODE {
             return (false, true, Some(0));
         }
@@ -1025,6 +1051,21 @@ impl DarkChessEnv {
     /// 获取总步数
     pub fn get_total_steps(&self) -> usize {
         self.total_step_counter
+    }
+    
+    /// 获取当前血量（减分制）
+    pub fn get_score(&self, player: Player) -> i32 {
+        *self.scores.get(&player).unwrap_or(&0)
+    }
+    
+    /// 获取双方血量（减分制）
+    pub fn get_scores(&self) -> (i32, i32) {
+        (self.get_score(Player::Red), self.get_score(Player::Black))
+    }
+    
+    /// 获取单个玩家的血量
+    pub fn get_hp(&self, player: Player) -> i32 {
+        self.get_score(player)
     }
     
     /// 获取已阵亡的棋子

@@ -236,6 +236,29 @@ async function updateUI(state) {
   
   document.getElementById('game-status').value = statusText;
   document.getElementById('move-counter').value = state.move_counter;
+  // 更新血量显示（如果后端返回 hp_red / hp_black ）
+  try {
+    const hpRedEl = document.getElementById('hp-red');
+    const hpBlackEl = document.getElementById('hp-black');
+    const hpRedFill = document.getElementById('hp-red-fill');
+    const hpBlackFill = document.getElementById('hp-black-fill');
+    if (hpRedEl && typeof state.hp_red !== 'undefined') {
+      hpRedEl.value = String(state.hp_red);
+      if (hpRedFill) {
+        const pct = Math.max(0, Math.min(100, Math.round((state.hp_red / 60) * 100)));
+        hpRedFill.style.width = pct + "%";
+      }
+    }
+    if (hpBlackEl && typeof state.hp_black !== 'undefined') {
+      hpBlackEl.value = String(state.hp_black);
+      if (hpBlackFill) {
+        const pct = Math.max(0, Math.min(100, Math.round((state.hp_black / 60) * 100)));
+        hpBlackFill.style.width = pct + "%";
+      }
+    }
+  } catch (e) {
+    console.warn('HP update skipped, missing elements or state fields', e);
+  }
 
   // 更新阵亡棋子
   renderFallenPieces('Red', state.dead_red);

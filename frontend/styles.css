@@ -130,6 +130,32 @@ input[readonly] { background: #f9f9f9; border: 1px solid #ddd; padding: 4px; wid
 .indicator-text {
   font-size: 0.9rem;
 }
+/* HP (血量) 显示 */
+.hp-indicator {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 60%;
+}
+.hp-bar-outer {
+  background: #eee;
+  height: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+  width: 100%;
+  border: 1px solid rgba(0,0,0,0.06);
+}
+.hp-bar-fill {
+  height: 100%;
+  width: 100%;
+  transition: width 220ms ease;
+}
+.hp-red-fill {
+  background: linear-gradient(90deg, rgba(211,47,47,0.95), rgba(244,67,54,0.9));
+}
+.hp-black-fill {
+  background: linear-gradient(90deg, rgba(33,33,33,0.95), rgba(66,66,66,0.9));
+}
 textarea { width: 95%; height: 300px; resize: none; border: 1px solid #ddd; font-size: 12px; line-height: 1.4; }
 
 /* 棋盘样式 */

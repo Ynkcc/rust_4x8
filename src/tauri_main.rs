@@ -21,6 +21,8 @@ struct GameState {
     action_masks: Vec<i32>,
     reveal_probabilities: Vec<f32>,
     bitboards: HashMap<String, Vec<bool>>,
+    hp_red: i32,    // 红方血量
+    hp_black: i32,  // 黑方血量
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,6 +243,8 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
     let action_masks = env.action_masks();
     let reveal_probabilities = project_reveal_probabilities(env.get_reveal_probabilities());
     let bitboards = env.get_bitboards();
+    let hp_red = env.get_hp(Player::Red);
+    let hp_black = env.get_hp(Player::Black);
     
     GameState {
         board,
@@ -254,6 +258,8 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
         action_masks,
         reveal_probabilities,
         bitboards,
+        hp_red,
+        hp_black,
     }
 }
 
