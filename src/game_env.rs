@@ -1040,7 +1040,19 @@ impl DarkChessEnv {
         mask
     }
 
-
+    pub fn is_cannon_attack_on_hidden(&self, action: usize) -> bool {
+        if action < REVEAL_ACTIONS_COUNT {
+            return false; // 翻棋动作已经处理
+        }
+        
+        if action < REVEAL_ACTIONS_COUNT + REGULAR_MOVE_ACTIONS_COUNT {
+            return false; // 常规移动不是炮攻击
+        }
+        
+        let coords = &self.action_to_coords[&action];
+        let to_sq = coords[1];
+        matches!(self.board[to_sq], Slot::Hidden)
+    }
     
     pub fn print_board(&self) {
         println!("\n      0         1         2         3");

@@ -345,9 +345,10 @@ impl<E: Evaluator> MCTS<E> {
                     
                     // 判断该动作是否会导致 Chance Node
                     let is_reveal = action_idx < REVEAL_ACTIONS_COUNT;
-                    
+                    let is_cannon_attack_on_hidden = env.is_cannon_attack_on_hidden(action_idx);
+                    let is_chance_node = is_reveal || is_cannon_attack_on_hidden;
                     // Chance Node 存储父节点环境用于扩展，State Node 存储执行动作后的环境
-                    let child_env = if is_reveal {
+                    let child_env = if is_chance_node {
                         Some(env.clone())  // 机会节点存储父节点环境（用于扩展时获取隐藏棋子信息）
                     } else {
                         // 移动节点需要执行动作后存储环境
