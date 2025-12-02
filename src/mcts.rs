@@ -37,7 +37,8 @@ pub struct MctsNode {
     
     // --- 游戏环境 ---
     /// 存储该节点对应的游戏环境状态 (State Node 包含，Chance Node 不包含)
-    pub env: Option<DarkChessEnv>,
+    /// 使用 Box 将大对象移至堆内存，避免栈溢出
+    pub env: Option<Box<DarkChessEnv>>,
 }
 
 impl MctsNode {
@@ -50,13 +51,13 @@ impl MctsNode {
             is_expanded: false,
             is_chance_node,
             possible_states: HashMap::new(),
-            env,
+            env: env.map(Box::new),
         }
     }
     
     /// 获取当前节点对应的玩家
     pub fn player(&self) -> Player {
-        self.env.as_ref().expect("Node must have environment").get_current_player()
+        self.env.as_ref().expect("Node must have environment").as_ref().get_current_player()
     }
 
     /// 获取平均价值 Q(s, a)
@@ -219,8 +220,8 @@ impl<E: Evaluator> MCTS<E> {
         evaluator: &Arc<E>,
         config: &MCTSConfig,
     ) -> (usize, f32) {
-        // 获取当前节点的环境
-        let env = node.env.as_ref().expect("Node must have environment").clone();
+        // 获取当前节点的环境（只在需要时克隆到栈上）
+        let env = node.env.as_ref().expect("Node must have environment").as_ref().clone();
         
         let masks = env.action_masks();
         if masks.iter().all(|&x| x == 0) {
@@ -263,7 +264,7 @@ impl<E: Evaluator> MCTS<E> {
                             .clone();
                         let _ = next_env.step(reveal_pos, Some(specific_piece));
                         
-                        let mut child_node = MctsNode::new(1.0, false, Some(next_env.clone()));
+                        let mut child_node = MctsNode::new(1.0, false, Some(next_env));
                         
                         // 递归模拟子节点（子节点已保存环境，不需要传入）
                         let (child_cost, child_value) = Self::simulate(

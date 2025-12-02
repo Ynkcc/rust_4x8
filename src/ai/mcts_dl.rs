@@ -105,7 +105,7 @@ impl MctsDlPolicy {
     pub fn set_iterations(&mut self, sims: usize) {
         self.num_simulations = sims.max(1);
         // 由于 MCTSConfig 字段是私有的，这里通过重新构建根节点方式更新配置
-        let root_env = self.mcts.root.env.as_ref().unwrap().clone();
+        let root_env = self.mcts.root.env.as_ref().unwrap().as_ref().clone();
         let new_cfg = MCTSConfig { cpuct: self.cpuct, num_simulations: self.num_simulations };
         self.mcts = MCTS::new(&root_env, self.evaluator.clone(), new_cfg);
     }
@@ -118,7 +118,7 @@ impl MctsDlPolicy {
     /// 选择动作：如发现根环境与传入 env 不一致（步数不匹配），重置搜索树
     pub fn choose_action(&mut self, env: &DarkChessEnv) -> Option<usize> {
         // 简单一致性判断：总步数不同 -> 重置
-        if self.mcts.root.env.as_ref().map(|e| e.get_total_steps()) != Some(env.get_total_steps()) {
+        if self.mcts.root.env.as_ref().map(|e| e.as_ref().get_total_steps()) != Some(env.get_total_steps()) {
             self.mcts = MCTS::new(env, self.evaluator.clone(), MCTSConfig { cpuct: self.cpuct, num_simulations: self.num_simulations });
         }
         self.mcts.run()
