@@ -1,9 +1,9 @@
 // code_files/src/tauri_main.rs
 use banqi_4x8::*;
-use banqi_4x8::ai::{Policy, RandomPolicy, RevealFirstPolicy, MctsDlPolicy, ModelWrapper};
+use banqi_4x8::ai::{Policy, RandomPolicy, RevealFirstPolicy};
 use serde::{Serialize, Deserialize}; // Added Deserialize
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{Manager, State};
 // 移除了直接在此处定义的 evaluator 与模型逻辑，转移到 ai/mcts_dl.rs
 
@@ -16,6 +16,8 @@ struct GameState {
     total_step_counter: usize,
     dead_red: Vec<String>,
     dead_black: Vec<String>,
+    hidden_red: Vec<String>,
+    hidden_black: Vec<String>,
     action_masks: Vec<i32>,
     reveal_probabilities: Vec<f32>,
     bitboards: HashMap<String, Vec<bool>>,
@@ -43,7 +45,7 @@ struct AppState {
     game: Mutex<DarkChessEnv>,
     opponent_type: Mutex<OpponentType>,
     // MCTS 配置
-    mcts_num_simulations: Mutex<usize>,
+    // mcts_num_simulations: Mutex<usize>,
     // 已加载的模型（可在选择 MctsDL 时构建策略）
     // model: Mutex<Option<Arc<ModelWrapper>>>,
     // 持久化的 MCTS+DL 策略（包含搜索树）
@@ -88,7 +90,6 @@ fn reset_game(opponent: Option<String>, state: State<AppState>) -> GameState {
 #[tauri::command]
 fn step_game(action: usize, state: State<AppState>) -> Result<StepResult, String> {
     let mut game = state.game.lock().unwrap();
-    let opp_type = *state.opponent_type.lock().unwrap();
 
     match game.step(action, None) {
         Ok((_obs, _reward, terminated, truncated, winner)) => {
@@ -115,6 +116,9 @@ fn bot_move(state: State<AppState>) -> Result<StepResult, String> {
     if opp_type == OpponentType::PvP {
         return Err("当前为本地双人模式，无需 AI 行动".to_string());
     }
+
+    #[allow(unused_variables)]
+    let opp_type_ref = opp_type; // 用于后续可能的扩展
 
     // 调用策略模块选择动作
     let chosen_action = match opp_type {
@@ -222,6 +226,18 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
         .map(|pt| format!("{:?}", pt))
         .collect();
     
+    let hidden_red: Vec<String> = env
+        .get_hidden_pieces(Player::Red)
+        .iter()
+        .map(|pt| format!("{:?}", pt))
+        .collect();
+    
+    let hidden_black: Vec<String> = env
+        .get_hidden_pieces(Player::Black)
+        .iter()
+        .map(|pt| format!("{:?}", pt))
+        .collect();
+    
     let action_masks = env.action_masks();
     let reveal_probabilities = project_reveal_probabilities(env.get_reveal_probabilities());
     let bitboards = env.get_bitboards();
@@ -233,6 +249,8 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
         total_step_counter: env.get_total_steps(),
         dead_red,
         dead_black,
+        hidden_red,
+        hidden_black,
         action_masks,
         reveal_probabilities,
         bitboards,
@@ -312,7 +330,7 @@ pub fn run() {
             app.manage(AppState {
                 game: Mutex::new(env),
                 opponent_type: Mutex::new(OpponentType::PvP),
-                mcts_num_simulations: Mutex::new(200),
+                // mcts_num_simulations: Mutex::new(200),
                 // model: Mutex::new(None),
                 // mcts_policy: Mutex::new(None),
             });

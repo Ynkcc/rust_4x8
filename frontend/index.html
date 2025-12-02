@@ -70,13 +70,16 @@
       </div>
 
       <div class="insights-grid">
-        <div class="group-box reveal-section">
-          <div class="section-heading">
-            <h3>翻开暗子概率</h3>
-            <span class="section-subtitle">实时更新的暗子分布</span>
+        <div class="group-box hidden-section">
+          <h3>隐藏棋子</h3>
+          <div class="fallen-row" id="hidden-red-row">
+            <div class="fallen-row-title">红方隐藏</div>
+            <div class="fallen-list" id="hidden-red"></div>
           </div>
-          <div class="prob-list" id="reveal-prob-list"></div>
-          <div class="prob-empty" id="reveal-prob-empty">暂无可用数据</div>
+          <div class="fallen-row" id="hidden-black-row">
+            <div class="fallen-row-title">黑方隐藏</div>
+            <div class="fallen-list" id="hidden-black"></div>
+          </div>
         </div>
 
         <div class="group-box fallen-section">

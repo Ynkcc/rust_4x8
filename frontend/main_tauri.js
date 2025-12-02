@@ -38,11 +38,6 @@ const actionIndexCache = new Map();
 let moveHighlightMap = new Map();
 let revealHighlightSet = new Set();
 
-const revealProbabilityLabels = [
-  "红兵", "红炮", "红马", "红车", "红象", "红仕", "红帅",
-  "黑卒", "黑砲", "黑馬", "黑車", "黑象", "黑士", "黑将"
-];
-
 const bitboardOrder = [
   { key: 'hidden', label: 'Hidden (暗子)' },
   { key: 'empty', label: 'Empty (空位)' },
@@ -245,6 +240,10 @@ async function updateUI(state) {
   // 更新阵亡棋子
   renderFallenPieces('Red', state.dead_red);
   renderFallenPieces('Black', state.dead_black);
+  
+  // 更新隐藏棋子
+  renderHiddenPieces('Red', state.hidden_red);
+  renderHiddenPieces('Black', state.hidden_black);
 
   // 计算高亮
   revealHighlightSet = computeRevealHighlights(state);
@@ -305,7 +304,6 @@ async function updateUI(state) {
   
   console.log("Board rendered with", boardEl.children.length, "cells");
 
-  renderRevealProbabilities(state.reveal_probabilities || []);
   renderBitboards(state.bitboards);
 }
 
@@ -465,52 +463,42 @@ async function maybeBotTurn() {
   }
 }
 
-function renderRevealProbabilities(probabilities) {
-  const listEl = document.getElementById('reveal-prob-list');
-  const emptyEl = document.getElementById('reveal-prob-empty');
-  if (!listEl) return;
-  listEl.innerHTML = '';
+function renderHiddenPieces(player, hiddenList) {
+  const targetId = player === 'Red' ? 'hidden-red' : 'hidden-black';
+  const container = document.getElementById(targetId);
+  if (!container) return;
+  container.innerHTML = '';
 
-  if (!Array.isArray(probabilities) || probabilities.length === 0) {
-    if (emptyEl) emptyEl.classList.remove('hidden');
-    return;
-  }
-
-  let hasPositive = false;
-  probabilities.forEach((raw, idx) => {
-    const prob = Math.max(0, raw || 0);
-    if (prob > 0.001) {
-      hasPositive = true;
+  const counts = {};
+  pieceTypeOrder.forEach(type => { counts[type] = 0; });
+  (hiddenList || []).forEach(typeName => {
+    if (counts.hasOwnProperty(typeName)) {
+      counts[typeName] += 1;
     }
-    const wrapper = document.createElement('div');
-    wrapper.className = 'prob-item';
-    if (prob <= 0.001) {
-      wrapper.classList.add('low-value');
-    }
-
-    const label = document.createElement('div');
-    label.className = 'prob-label';
-    label.textContent = revealProbabilityLabels[idx] || `未知${idx}`;
-
-    const bar = document.createElement('div');
-    bar.className = 'prob-bar';
-    const barFill = document.createElement('span');
-    barFill.style.width = `${Math.min(1, prob) * 100}%`;
-    bar.appendChild(barFill);
-
-    const value = document.createElement('div');
-    value.className = 'prob-value';
-    value.textContent = `${(prob * 100).toFixed(prob >= 0.1 ? 1 : 2)}%`;
-
-    wrapper.appendChild(label);
-    wrapper.appendChild(bar);
-    wrapper.appendChild(value);
-    listEl.appendChild(wrapper);
   });
 
-  if (emptyEl) {
-    emptyEl.classList.toggle('hidden', hasPositive);
-  }
+  pieceTypeOrder.forEach(typeName => {
+    const meta = pieceTypeMeta[typeName];
+    if (!meta) return;
+    const count = counts[typeName] || 0;
+    const item = document.createElement('div');
+    item.className = 'fallen-item ' + (count > 0 ? 'has-loss' : 'no-loss');
+
+    const icon = document.createElement('span');
+    icon.className = `fallen-icon ${player === 'Red' ? 'red' : 'black'}`;
+    icon.textContent = player === 'Red' ? meta.redChar : meta.blackChar;
+    if (count > 1) {
+      icon.setAttribute('data-count', count);
+    }
+
+    const label = document.createElement('span');
+    label.className = 'fallen-label';
+    label.textContent = player === 'Red' ? meta.redChar : meta.blackChar;
+
+    item.appendChild(icon);
+    item.appendChild(label);
+    container.appendChild(item);
+  });
 }
 
 function renderBitboards(bitboards) {
