@@ -44,10 +44,10 @@ where
 
     let obs = env.get_state();
     let board_tensor = Tensor::from_slice(obs.board.as_slice().unwrap())
-        .view([1, 8, 3, 4])
+        .view([1, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
         .to(device);
     let scalar_tensor = Tensor::from_slice(obs.scalars.as_slice().unwrap())
-        .view([1, 56])
+        .view([1, 388]) // 4x8棋盘: 388个特征
         .to(device);
     let masks: Vec<f32> = env.action_masks().iter().map(|&m| m as f32).collect();
     let mask_tensor = Tensor::from_slice(&masks)
@@ -109,35 +109,35 @@ pub fn validate_model_on_scenarios_with_net(
 
         let obs = env.get_state();
         let board_tensor = Tensor::from_slice(obs.board.as_slice().unwrap())
-            .view([1, 8, 3, 4])
+            .view([1, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
             .to(device);
         let scalar_tensor = Tensor::from_slice(obs.scalars.as_slice().unwrap())
-            .view([1, 56])
+            .view([1, 388]) // 4x8棋盘: 388个特征
             .to(device);
 
         let masks: Vec<f32> = env.action_masks().iter().map(|&m| m as f32).collect();
-        let mask_tensor = Tensor::from_slice(&masks).to(device).view([1, 46]);
+        let mask_tensor = Tensor::from_slice(&masks).to(device).view([1, ACTION_SPACE_SIZE as i64]);
 
         let (logits, value) = tch::no_grad(|| net.forward_inference(&board_tensor, &scalar_tensor));
 
         // 🐛 DEBUG: 打印原始logits
-        let logits_vec: Vec<f32> = (0..46)
-            .map(|i| logits.double_value(&[0, i]) as f32)
+        let logits_vec: Vec<f32> = (0..ACTION_SPACE_SIZE)
+            .map(|i| logits.double_value(&[0, i as i64]) as f32)
             .collect();
         let top_logits = get_top_k_actions(&logits_vec, 5);
         println!("      🐛 原始logits (top-5): {:?}", top_logits);
 
         // 未应用mask的概率分布
         let unmasked_probs_tensor = logits.softmax(-1, Kind::Float);
-        let unmasked_probs: Vec<f32> = (0..46)
-            .map(|i| unmasked_probs_tensor.double_value(&[0, i]) as f32)
+        let unmasked_probs: Vec<f32> = (0..ACTION_SPACE_SIZE)
+            .map(|i| unmasked_probs_tensor.double_value(&[0, i as i64]) as f32)
             .collect();
 
         // 应用mask后的概率分布
         let masked_logits = &logits + (&mask_tensor - 1.0) * 1e9;
         let masked_probs_tensor = masked_logits.softmax(-1, Kind::Float);
-        let masked_probs: Vec<f32> = (0..46)
-            .map(|i| masked_probs_tensor.double_value(&[0, i]) as f32)
+        let masked_probs: Vec<f32> = (0..ACTION_SPACE_SIZE)
+            .map(|i| masked_probs_tensor.double_value(&[0, i as i64]) as f32)
             .collect();
 
         let value_pred: f32 = value.squeeze().double_value(&[]) as f32;
@@ -183,35 +183,35 @@ pub fn validate_model_on_scenarios_with_net(
 
         let obs = env.get_state();
         let board_tensor = Tensor::from_slice(obs.board.as_slice().unwrap())
-            .view([1, 8, 3, 4])
+            .view([1, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
             .to(device);
         let scalar_tensor = Tensor::from_slice(obs.scalars.as_slice().unwrap())
-            .view([1, 56])
+            .view([1, 388]) // 4x8棋盘: 388个特征
             .to(device);
 
         let masks: Vec<f32> = env.action_masks().iter().map(|&m| m as f32).collect();
-        let mask_tensor = Tensor::from_slice(&masks).to(device).view([1, 46]);
+        let mask_tensor = Tensor::from_slice(&masks).to(device).view([1, ACTION_SPACE_SIZE as i64]);
 
         let (logits, value) = tch::no_grad(|| net.forward_inference(&board_tensor, &scalar_tensor));
 
         // 🐛 DEBUG: 打印原始logits
-        let logits_vec: Vec<f32> = (0..46)
-            .map(|i| logits.double_value(&[0, i]) as f32)
+        let logits_vec: Vec<f32> = (0..ACTION_SPACE_SIZE)
+            .map(|i| logits.double_value(&[0, i as i64]) as f32)
             .collect();
         let top_logits = get_top_k_actions(&logits_vec, 5);
         println!("      🐛 原始logits (top-5): {:?}", top_logits);
 
         // 未应用mask的概率分布
         let unmasked_probs_tensor = logits.softmax(-1, Kind::Float);
-        let unmasked_probs: Vec<f32> = (0..46)
-            .map(|i| unmasked_probs_tensor.double_value(&[0, i]) as f32)
+        let unmasked_probs: Vec<f32> = (0..ACTION_SPACE_SIZE)
+            .map(|i| unmasked_probs_tensor.double_value(&[0, i as i64]) as f32)
             .collect();
 
         // 应用mask后的概率分布
         let masked_logits = &logits + (&mask_tensor - 1.0) * 1e9;
         let masked_probs_tensor = masked_logits.softmax(-1, Kind::Float);
-        let masked_probs: Vec<f32> = (0..46)
-            .map(|i| masked_probs_tensor.double_value(&[0, i]) as f32)
+        let masked_probs: Vec<f32> = (0..ACTION_SPACE_SIZE)
+            .map(|i| masked_probs_tensor.double_value(&[0, i as i64]) as f32)
             .collect();
 
         let value_pred: f32 = value.squeeze().double_value(&[]) as f32;

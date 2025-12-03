@@ -55,7 +55,7 @@ const PIECE_MAX_COUNTS: [usize; NUM_PIECE_TYPES] = [
 const SURVIVAL_VECTOR_SIZE: usize = TOTAL_PIECES_PER_PLAYER;
 
 // Scalar 特征数量: 4个全局标量 + 2个存活向量(各16) + 动作掩码长度
-const SCALAR_FEATURE_COUNT: usize = 4 + 2 * SURVIVAL_VECTOR_SIZE + ACTION_SPACE_SIZE;
+pub const SCALAR_FEATURE_COUNT: usize = 4 + 2 * SURVIVAL_VECTOR_SIZE + ACTION_SPACE_SIZE;
 
 // 翻棋概率表大小: 2个玩家 * 7种棋子 = 14
 const REVEAL_PROBABILITY_SIZE: usize = 2 * NUM_PIECE_TYPES;
@@ -71,7 +71,7 @@ const NUM_DIRECTIONS: usize = 4;
 const U64_BITS: usize = 64;
 
 // 棋盘状态张量的通道数: 自己棋子(7) + 对手棋子(7) + 暗子(1) + 空位(1) = 16
-const BOARD_CHANNELS: usize = 2 * NUM_PIECE_TYPES + 2; // 自己 + 对手 + 隐藏 + 空位
+pub const BOARD_CHANNELS: usize = 2 * NUM_PIECE_TYPES + 2; // 自己 + 对手 + 隐藏 + 空位
 
 // 动作空间 (TOTAL_POSITIONS = 32)
 pub const REVEAL_ACTIONS_COUNT: usize = 32;

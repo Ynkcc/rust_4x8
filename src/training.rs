@@ -59,11 +59,11 @@ pub fn train_step(
             continue;
         }
 
-        let mut board_buf = Vec::with_capacity(bsz * 8 * 3 * 4);
-        let mut scalar_buf = Vec::with_capacity(bsz * 56);
-        let mut target_prob_buf = Vec::with_capacity(bsz * 46);
+        let mut board_buf = Vec::with_capacity(bsz * 16 * 4 * 8);
+        let mut scalar_buf = Vec::with_capacity(bsz * 388);
+        let mut target_prob_buf = Vec::with_capacity(bsz * 352);
         let mut target_val_buf = Vec::with_capacity(bsz);
-        let mut mask_buf = Vec::with_capacity(bsz * 46);
+        let mut mask_buf = Vec::with_capacity(bsz * 352);
 
         for (obs, target_probs, target_val, masks) in batch.iter() {
             let board_slice = obs.board.as_slice().expect("board slice");
@@ -85,19 +85,19 @@ pub fn train_step(
         }
 
         let board_tensor = Tensor::from_slice(&board_buf)
-            .view([bsz as i64, 8, 3, 4])
+            .view([bsz as i64, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
             .to(device);
         let scalar_tensor = Tensor::from_slice(&scalar_buf)
-            .view([bsz as i64, 56])
+            .view([bsz as i64, 388]) // 4x8棋盘: 388个特征
             .to(device);
         let target_p = Tensor::from_slice(&target_prob_buf)
-            .view([bsz as i64, 46])
+            .view([bsz as i64, 352]) // 4x8棋盘: 352个动作
             .to(device);
         let target_v = Tensor::from_slice(&target_val_buf)
             .view([bsz as i64, 1])
             .to(device);
         let mask_tensor = Tensor::from_slice(&mask_buf)
-            .view([bsz as i64, 46])
+            .view([bsz as i64, 352]) // 4x8棋盘: 352个动作
             .to(device);
 
         let (logits, value) = net.forward(&board_tensor, &scalar_tensor);

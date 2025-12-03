@@ -3,7 +3,10 @@
 // 提供批量神经网络推理服务，用于支持并行自对弈训练
 // 通过通道收集多个推理请求，批量处理以提高GPU利用率
 
-use crate::game_env::{DarkChessEnv, Observation};
+use crate::game_env::{
+    DarkChessEnv, Observation, ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS,
+    SCALAR_FEATURE_COUNT,
+};
 use crate::mcts::Evaluator;
 use crate::nn_model::BanqiNet;
 use anyhow::Result;
@@ -161,30 +164,35 @@ impl InferenceServer {
         let mut mask_data = Vec::new();
 
         for req in batch {
-            // Board: [STATE_STACK_SIZE, 8, 3, 4] -> flatten
+            // Board: [STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS] -> flatten
             let board_flat: Vec<f32> = req.observation.board.as_slice().unwrap().to_vec();
             board_data.extend_from_slice(&board_flat);
 
-            // Scalars: [STATE_STACK_SIZE * 56]
+            // Scalars: [STATE_STACK_SIZE * SCALAR_FEATURE_COUNT]
             let scalars_flat: Vec<f32> = req.observation.scalars.as_slice().unwrap().to_vec();
             scalar_data.extend_from_slice(&scalars_flat);
 
-            // Masks: [46]
+            // Masks: [ACTION_SPACE_SIZE]
             let masks_f32: Vec<f32> = req.action_masks.iter().map(|&m| m as f32).collect();
             mask_data.extend_from_slice(&masks_f32);
         }
 
         // 构建张量: [batch, C, H, W]
         let board_tensor = Tensor::from_slice(&board_data)
-            .view([batch_len as i64, 8, 3, 4]) // 禁用状态堆叠后: STATE_STACK_SIZE=1, 所以是8通道
+            .view([
+                batch_len as i64,
+                BOARD_CHANNELS as i64,
+                BOARD_ROWS as i64,
+                BOARD_COLS as i64,
+            ])
             .to(self.device);
 
         let scalar_tensor = Tensor::from_slice(&scalar_data)
-            .view([batch_len as i64, 56]) // 禁用状态堆叠后: 56个特征
+            .view([batch_len as i64, SCALAR_FEATURE_COUNT as i64])
             .to(self.device);
 
         let mask_tensor = Tensor::from_slice(&mask_data)
-            .view([batch_len as i64, 46])
+            .view([batch_len as i64, ACTION_SPACE_SIZE as i64])
             .to(self.device);
 
         // 前向推理（推理模式）
@@ -198,10 +206,10 @@ impl InferenceServer {
         // 提取结果并发送响应到各自的通道
         for (i, req) in batch.iter().enumerate() {
             let policy_slice = probs.get(i as i64);
-            let mut policy = vec![0.0f32; 46];
+            let mut policy = vec![0.0f32; ACTION_SPACE_SIZE];
             policy_slice
                 .to_device(Device::Cpu)
-                .copy_data(&mut policy, 46);
+                .copy_data(&mut policy, ACTION_SPACE_SIZE);
 
             let value = values.get(i as i64).squeeze().double_value(&[]) as f32;
 

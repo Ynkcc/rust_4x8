@@ -1,16 +1,17 @@
 // code_files/src/nn_model.rs
 use tch::{nn, Tensor};
 
-const BOARD_CHANNELS: i64 = 8;
+// ========== 4×8 棋盘配置 (对齐 game_env.rs) ==========
+const BOARD_CHANNELS: i64 = 16; // 2*NUM_PIECE_TYPES + 2 = 2*7 + 2 = 16
 const STATE_STACK: i64 = 1; // 禁用状态堆叠 (game_env.rs STATE_STACK_SIZE = 1)
-const TOTAL_CHANNELS: i64 = BOARD_CHANNELS * STATE_STACK; // 8
-const BOARD_H: i64 = 3;
-const BOARD_W: i64 = 4;
-const SCALAR_FEATURES: i64 = 56 * STATE_STACK; // 56
-const ACTION_SIZE: i64 = 46;
+const TOTAL_CHANNELS: i64 = BOARD_CHANNELS * STATE_STACK; // 16
+const BOARD_H: i64 = 4; // BOARD_ROWS
+const BOARD_W: i64 = 8; // BOARD_COLS
+const SCALAR_FEATURES: i64 = 388; // 4 + 2*SURVIVAL_VECTOR_SIZE(16) + ACTION_SPACE_SIZE(352) = 388
+const ACTION_SIZE: i64 = 352; // REVEAL(32) + MOVE(104) + CANNON(216) = 352
 
-// 网络通道数：针对3x4小棋盘，64通道足够
-const HIDDEN_CHANNELS: i64 = 64;
+// 网络通道数：针对 4x8 棋盘，128 通道以捕捉更复杂的空间特征（特别是炮的跳跃攻击）
+const HIDDEN_CHANNELS: i64 = 128;
 
 // 标准残差块：保持通道数不变，加强特征提取
 struct BasicBlock {
@@ -74,7 +75,7 @@ impl BanqiNet {
             ..Default::default()
         };
 
-        // 1. Input Conv: [Batch, 8, 3, 4] -> [Batch, 64, 3, 4]
+        // 1. Input Conv: [Batch, 16, 4, 8] -> [Batch, 128, 4, 8]
         let conv_input = nn::conv2d(
             vs / "conv_input",
             TOTAL_CHANNELS,
@@ -84,23 +85,30 @@ impl BanqiNet {
         );
         let bn_input = nn::batch_norm2d(vs / "bn_input", HIDDEN_CHANNELS, Default::default());
 
-        // 2. 残差塔：3个残差块，保持 [Batch, 64, 3, 4]
+        // 2. 残差塔：3个残差块，保持 [Batch, 128, 4, 8]
         let res_block1 = BasicBlock::new(&(vs / "res1"), HIDDEN_CHANNELS);
         let res_block2 = BasicBlock::new(&(vs / "res2"), HIDDEN_CHANNELS);
         let res_block3 = BasicBlock::new(&(vs / "res3"), HIDDEN_CHANNELS);
 
         // 3. 计算 Flatten 后的尺寸
-        let flat_size = HIDDEN_CHANNELS * BOARD_H * BOARD_W; // 64 * 3 * 4 = 768
-        let total_fc_input = flat_size + SCALAR_FEATURES; // 768 + 56 = 824
+        // flat_size = HIDDEN_CHANNELS * BOARD_H * BOARD_W
+        //           = 128 * 4 * 8 = 4096
+        let flat_size = HIDDEN_CHANNELS * BOARD_H * BOARD_W;
+        
+        // total_fc_input = flat_size + SCALAR_FEATURES
+        //                = 4096 + 388 = 4484
+        let total_fc_input = flat_size + SCALAR_FEATURES;
 
-        // 4. 全连接层：824 -> 256 -> 128
-        // 相比原先的 3128 -> 1024 -> 512 -> 256，参数量大幅减少但保持足够容量
-        let fc1 = nn::linear(vs / "fc1", total_fc_input, 256, Default::default());
-        let fc2 = nn::linear(vs / "fc2", 256, 128, Default::default());
+        // 4. 全连接层：4484 -> 512 -> 256
+        // 第一层需要足够宽以承载卷积特征到抽象逻辑的转换
+        let fc1 = nn::linear(vs / "fc1", total_fc_input, 512, Default::default());
+        let fc2 = nn::linear(vs / "fc2", 512, 256, Default::default());
 
         // 5. 输出头
-        let policy_head = nn::linear(vs / "policy", 128, ACTION_SIZE, Default::default());
-        let value_head = nn::linear(vs / "value", 128, 1, Default::default());
+        // Policy: 256 -> 352 (动作空间)
+        // Value:  256 -> 1   (胜率估值)
+        let policy_head = nn::linear(vs / "policy", 256, ACTION_SIZE, Default::default());
+        let value_head = nn::linear(vs / "value", 256, 1, Default::default());
 
         Self {
             conv_input,
@@ -116,27 +124,35 @@ impl BanqiNet {
     }
 
     fn forward_t(&self, board: &Tensor, scalars: &Tensor, train: bool) -> (Tensor, Tensor) {
+        // 输入形状检查（调试时可启用）:
+        // board:   [Batch, 16, 4, 8]
+        // scalars: [Batch, 388]
+        
         // 1. 输入卷积：提取初始特征
         let x = board
             .apply(&self.conv_input)
             .apply_t(&self.bn_input, train)
             .relu();
 
-        // 2. 通过残差塔：逐步深化特征
+        // 2. 通过残差塔：逐步深化特征 [Batch, 128, 4, 8]
         let x = self.res_block1.forward_t(&x, train);
         let x = self.res_block2.forward_t(&x, train);
         let x = self.res_block3.forward_t(&x, train);
 
-        // 3. 展平卷积特征
-        let x = x.flatten(1, -1); // [Batch, 768]
+        // 3. 展平卷积特征 [Batch, 128*4*8] = [Batch, 4096]
+        let x = x.flatten(1, -1);
 
-        // 4. 拼接标量特征 (当前玩家、存活情况等)
-        let combined = Tensor::cat(&[&x, scalars], 1); // [Batch, 824]
+        // 4. 拼接标量特征 (当前玩家、存活情况、动作掩码等)
+        // combined: [Batch, 4096 + 388] = [Batch, 4484]
+        let combined = Tensor::cat(&[&x, scalars], 1);
 
         // 5. 全连接层：融合所有特征
+        // 4484 -> 512 -> 256
         let shared = combined.apply(&self.fc1).relu().apply(&self.fc2).relu();
 
         // 6. 输出头
+        // policy_logits: [Batch, 352]
+        // value:         [Batch, 1] in range [-1, 1]
         let policy_logits = shared.apply(&self.policy_head);
         let value = shared.apply(&self.value_head).tanh();
 
