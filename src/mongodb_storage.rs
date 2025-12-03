@@ -16,7 +16,8 @@ pub struct SampleDocument {
     pub board_state: Vec<f32>,
     pub scalar_state: Vec<f32>,
     pub policy_probs: Vec<f32>,
-    pub value_target: f32,
+    pub mcts_value: f32,           // MCTS根节点的价值（用于训练）
+    pub game_result_value: f32,    // 游戏结果价值（用于分析）
     pub action_mask: Vec<i32>,
     pub step_in_game: usize,
 }
@@ -82,7 +83,7 @@ impl MongoStorage {
         for episode in episodes {
             let mut sample_docs = Vec::new();
 
-            for (step_idx, (obs, probs, value, mask)) in episode.samples.iter().enumerate() {
+            for (step_idx, (obs, probs, mcts_val, game_result_val, mask)) in episode.samples.iter().enumerate() {
                 let board_state: Vec<f32> = obs.board.as_slice().unwrap().to_vec();
                 let scalar_state: Vec<f32> = obs.scalars.as_slice().unwrap().to_vec();
 
@@ -90,7 +91,8 @@ impl MongoStorage {
                     board_state,
                     scalar_state,
                     policy_probs: probs.clone(),
-                    value_target: *value,
+                    mcts_value: *mcts_val,
+                    game_result_value: *game_result_val,
                     action_mask: mask.clone(),
                     step_in_game: step_idx,
                 });

@@ -22,7 +22,7 @@ pub struct GameStats {
 /// 单局游戏的完整数据（包含样本和元数据）
 #[derive(Debug, Clone)]
 pub struct GameEpisode {
-    pub samples: Vec<(Observation, Vec<f32>, f32, Vec<i32>)>,
+    pub samples: Vec<(Observation, Vec<f32>, f32, f32, Vec<i32>)>, // (观察, 策略概率, MCTS价值, 游戏结果价值, 动作掩码)
     pub game_length: usize,
     pub winner: Option<i32>,
 }
@@ -134,6 +134,9 @@ impl SelfPlayWorker {
             mcts.run();
             let probs = mcts.get_root_probabilities();
             let masks = env.action_masks();
+            
+            // 获取MCTS根节点的价值（从当前玩家视角）
+            let mcts_value = mcts.root.q_value();
 
             // 🐛 DEBUG: 打印MCTS根节点详情
             if debug_first_step && step < 3 {
@@ -144,10 +147,11 @@ impl SelfPlayWorker {
                 // }
             }
 
-            // 保存数据
+            // 保存数据（包含MCTS价值）
             episode_data.push((
                 env.get_state(),
                 probs.clone(),
+                mcts_value,
                 env.get_current_player(),
                 masks,
             ));
@@ -183,7 +187,7 @@ impl SelfPlayWorker {
                         if debug_first_step {
                             let mut red_values = Vec::new();
                             let mut black_values = Vec::new();
-                            for (_, _, player, _) in &episode_data {
+                            for (_, _, _, player, _) in &episode_data {
                                 let val = if player.val() == 1 {
                                     reward_red
                                 } else {
@@ -207,13 +211,13 @@ impl SelfPlayWorker {
 
                         // 回填价值
                         let mut samples = Vec::new();
-                        for (obs, p, player, mask) in episode_data {
-                            let val = if player.val() == 1 {
+                        for (obs, p, mcts_val, player, mask) in episode_data {
+                            let game_result_val = if player.val() == 1 {
                                 reward_red
                             } else {
                                 -reward_red
                             };
-                            samples.push((obs, p, val, mask));
+                            samples.push((obs, p, mcts_val, game_result_val, mask));
                         }
 
                         return GameEpisode {
@@ -238,8 +242,8 @@ impl SelfPlayWorker {
                 // 超过最大步数，游戏平局
                 // println!("  [Worker-{}] 第 {} 局超时: {} 步", self.worker_id, episode_num + 1, step);
                 let mut samples = Vec::new();
-                for (obs, p, _, mask) in episode_data {
-                    samples.push((obs, p, 0.0, mask));
+                for (obs, p, mcts_val, _, mask) in episode_data {
+                    samples.push((obs, p, mcts_val, 0.0, mask));
                 }
                 return GameEpisode {
                     samples,

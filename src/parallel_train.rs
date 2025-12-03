@@ -48,13 +48,13 @@ pub async fn parallel_train_loop() -> Result<()> {
 
     // 训练配置
     let num_workers = 32; // 每个场景一个工作线程
-    let mcts_sims = 800; // MCTS模拟次数
+    let mcts_sims = 200; // MCTS模拟次数
     let num_iterations = 2000; // 训练迭代次数
     let num_episodes_per_iteration = 4; // 每轮每个场景的游戏数
     let inference_batch_size = num_workers / 2;
     let inference_timeout_ms = 5;
-    let batch_size = 128;
-    let epochs_per_iteration = 5;
+    let batch_size = 512;
+    let epochs_per_iteration = 1;
     let max_buffer_games = 1000; // 缓冲区保留最近1000局游戏
     let learning_rate = 1e-4;
     let save_to_mongodb_every = 5; // 每5轮保存一次到MongoDB
@@ -272,7 +272,7 @@ pub async fn parallel_train_loop() -> Result<()> {
             let mut count = 0usize;
             let mut high_conf = 0usize;
             for ep in &filtered_episodes {
-                for (_, probs, _, _) in &ep.samples {
+                for (_, probs, _, _, _) in &ep.samples {
                     // 避免ln(0)
                     let mut e = 0.0_f32;
                     let mut maxp = 0.0_f32;

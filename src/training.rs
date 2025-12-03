@@ -15,7 +15,7 @@ use tch::{nn, Device, Kind, Tensor};
 /// # 参数
 /// - `opt`: 优化器
 /// - `net`: 神经网络模型
-/// - `examples`: 训练样本 (观察, 策略概率, 价值目标, 动作掩码)
+/// - `examples`: 训练样本 (观察, 策略概率, MCTS价值目标, 游戏结果价值, 动作掩码)
 /// - `batch_size`: 批量大小
 /// - `device`: 训练设备 (CPU/GPU)
 /// - `epoch`: 当前epoch编号 (用于动态调整损失权重)
@@ -25,7 +25,7 @@ use tch::{nn, Device, Kind, Tensor};
 pub fn train_step(
     opt: &mut nn::Optimizer,
     net: &BanqiNet,
-    examples: &[(Observation, Vec<f32>, f32, Vec<i32>)],
+    examples: &[(Observation, Vec<f32>, f32, f32, Vec<i32>)],
     batch_size: usize,
     device: Device,
     epoch: usize,
@@ -65,17 +65,17 @@ pub fn train_step(
         let mut target_val_buf = Vec::with_capacity(bsz);
         let mut mask_buf = Vec::with_capacity(bsz * 352);
 
-        for (obs, target_probs, target_val, masks) in batch.iter() {
+        for (obs, target_probs, mcts_val, _game_result_val, masks) in batch.iter() {
             let board_slice = obs.board.as_slice().expect("board slice");
             board_buf.extend_from_slice(board_slice);
             let scalar_slice = obs.scalars.as_slice().expect("scalar slice");
             scalar_buf.extend_from_slice(scalar_slice);
             target_prob_buf.extend_from_slice(target_probs);
-            target_val_buf.push(*target_val);
+            target_val_buf.push(*mcts_val);  // 使用MCTS价值进行训练
             mask_buf.extend(masks.iter().map(|&m| m as f32));
 
             // 🐛 DEBUG: 收集统计数据
-            value_stats.push(*target_val);
+            value_stats.push(*mcts_val);
             let entropy: f32 = target_probs
                 .iter()
                 .filter(|&&p| p > 1e-8)
