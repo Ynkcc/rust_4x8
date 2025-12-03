@@ -73,7 +73,7 @@ impl Default for LRFinderConfig {
 /// # 返回
 /// 学习率扫描结果向量，包含每个学习率下的损失值
 pub fn find_learning_rate(
-    model: &BanqiNet,
+    _model: &BanqiNet,
     examples: &[(Observation, Vec<f32>, f32, Vec<i32>)],
     device: Device,
     config: &LRFinderConfig,
@@ -104,7 +104,7 @@ pub fn find_learning_rate(
     println!("  发散阈值: {}x", config.divergence_threshold);
 
     // 创建模型的副本（用于扫描，不影响原模型）
-    let mut vs = nn::VarStore::new(device);
+    let  vs = nn::VarStore::new(device);
     let test_net = BanqiNet::new(&vs.root());
 
     // 复制模型参数

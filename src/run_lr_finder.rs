@@ -11,9 +11,10 @@
 // 5. 提供学习率选择建议
 
 use anyhow::Result;
-use banqi_3x4::database::load_samples_from_db;
-use banqi_3x4::lr_finder::{find_learning_rate, LRFinderConfig};
-use banqi_3x4::nn_model::BanqiNet;
+use banqi_4x8::database::load_samples_from_db;
+use rusqlite::{ Connection};
+use banqi_4x8::lr_finder::{find_learning_rate, LRFinderConfig};
+use banqi_4x8::nn_model::BanqiNet;
 use std::env;
 use tch::{nn, Device};
 
@@ -36,7 +37,9 @@ fn main() -> Result<()> {
 
     // 加载训练样本
     println!("\n正在从数据库加载训练样本...");
-    let samples = match load_samples_from_db("training_samples.db", None) {
+    let db_path = "training_samples.db";
+    let conn = Connection::open(db_path)?;
+    let samples = match load_samples_from_db(&conn) {
         Ok(samples) => samples,
         Err(e) => {
             eprintln!("❌ 加载样本失败: {}", e);

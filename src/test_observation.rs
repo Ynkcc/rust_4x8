@@ -1,6 +1,6 @@
 // test_observation.rs - 测试 Observation 的编码和解析
 
-use banqi_3x4::game_env::{DarkChessEnv, Player};
+use banqi_4x8::game_env::{DarkChessEnv, Player};
 
 fn main() {
     println!("=== 测试 Observation 编码和解析 ===\n");

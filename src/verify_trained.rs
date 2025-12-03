@@ -1,7 +1,7 @@
 // 验证训练后的模型在特定场景下的先验概率输出
 use anyhow::Result;
-use banqi_3x4::game_env::{DarkChessEnv, Player};
-use banqi_3x4::nn_model::BanqiNet;
+use banqi_4x8::game_env::{DarkChessEnv, Player};
+use banqi_4x8::nn_model::BanqiNet;
 use tch::{nn, Device, Kind, Tensor};
 
 struct NNEvaluator {
