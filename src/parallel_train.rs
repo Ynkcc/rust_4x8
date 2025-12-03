@@ -5,13 +5,16 @@
 // - 工作线程池: 每个线程运行独立的自对弈游戏
 // - 通信: 通过 channel 发送推理请求和接收结果
 // - 批量推理: 收集多个请求后批量处理，提高GPU利用率
+// 
+// 数据存储:
+// - 内存缓冲区: 按整局游戏存储，保留最近1000局
+// - MongoDB: 定期保存游戏数据用于长期存储和分析
 
 use anyhow::Result;
-use banqi_4x8::game_env::Observation;
 use banqi_4x8::inference::{ChannelEvaluator, InferenceServer};
+use banqi_4x8::mongodb_storage::MongoStorage;
 use banqi_4x8::nn_model::BanqiNet;
-use banqi_4x8::scenario_validation::validate_model_on_scenarios_with_net;
-use banqi_4x8::self_play::{ScenarioType, SelfPlayWorker};
+use banqi_4x8::self_play::{GameEpisode, ScenarioType, SelfPlayWorker};
 use banqi_4x8::training::{get_loss_weights, train_step};
 use banqi_4x8::training_log::TrainingLog;
 use std::env;
@@ -22,7 +25,15 @@ use tch::{nn, nn::OptimizerConfig, Device};
 
 // ================ 主训练循环 ================
 
-pub fn parallel_train_loop() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
+    if let Err(e) = parallel_train_loop().await {
+        eprintln!("训练失败: {}", e);
+    }
+    Ok(())
+}
+
+pub async fn parallel_train_loop() -> Result<()> {
     // 设备配置
     let cuda_available = tch::Cuda::is_available();
     println!("CUDA available: {}", cuda_available);
@@ -44,8 +55,9 @@ pub fn parallel_train_loop() -> Result<()> {
     let inference_timeout_ms = 5;
     let batch_size = 128;
     let epochs_per_iteration = 5;
-    let max_buffer_size = 20000;
+    let max_buffer_games = 1000; // 缓冲区保留最近1000局游戏
     let learning_rate = 1e-4;
+    let save_to_mongodb_every = 5; // 每5轮保存一次到MongoDB
 
     println!("\n=== 场景自对弈训练配置 ===");
     println!("工作线程数: {} (全标准环境)", num_workers);
@@ -53,8 +65,15 @@ pub fn parallel_train_loop() -> Result<()> {
     println!("MCTS模拟次数: {}", mcts_sims);
     println!("训练迭代次数: {}", num_iterations);
     println!("推理批量大小: {}", inference_batch_size);
-    println!("经验回放缓冲区: {}", max_buffer_size);
+    println!("游戏缓冲区: 最近 {} 局", max_buffer_games);
+    println!("MongoDB保存频率: 每 {} 轮", save_to_mongodb_every);
     println!("场景: Standard");
+
+    // 连接MongoDB
+    let mongo_uri = env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
+    let mongo_storage = MongoStorage::new(&mongo_uri, "banqi_training", "games").await?;
+    println!("MongoDB连接成功");
+
 
     // 创建模型和优化器
     let mut vs = nn::VarStore::new(device);
@@ -73,8 +92,8 @@ pub fn parallel_train_loop() -> Result<()> {
         }
     }
 
-    // 经验回放缓冲区
-    let mut replay_buffer: Vec<(Observation, Vec<f32>, f32, Vec<i32>)> = Vec::new();
+    // 游戏缓冲区 - 按整局存储
+    let mut game_buffer: Vec<GameEpisode> = Vec::new();
 
     // 主训练循环
     for iteration in 0..num_iterations {
@@ -164,37 +183,43 @@ pub fn parallel_train_loop() -> Result<()> {
         // 清理临时模型文件
         let _ = std::fs::remove_file(&temp_model_path);
 
-        // // 过滤掉平局的游戏 (已注释，使用所有游戏)
-        // let filtered_episodes: Vec<_> = all_episodes.iter()
-        //     .filter(|ep| ep.winner.is_some() && ep.winner.unwrap() != 0)
-        //     .cloned()
-        //     .collect();
-
         // 使用所有游戏（包括平局）
         let filtered_episodes = all_episodes.clone();
 
         println!("  收集了 {} 局游戏", filtered_episodes.len());
 
-        // 提取样本
-        let mut new_samples = Vec::new();
-        for episode in &filtered_episodes {
-            new_samples.extend(episode.samples.clone());
+        // 更新游戏缓冲区 - 按整局存储
+        game_buffer.extend(filtered_episodes.clone());
+        if game_buffer.len() > max_buffer_games {
+            let remove_count = game_buffer.len() - max_buffer_games;
+            game_buffer.drain(0..remove_count);
+        }
+        
+        // 统计缓冲区信息
+        let total_samples: usize = game_buffer.iter().map(|ep| ep.samples.len()).sum();
+        println!("  游戏缓冲区: {} 局游戏, {} 个样本", game_buffer.len(), total_samples);
+
+        // 从游戏缓冲区中提取所有样本用于训练
+        let mut replay_buffer = Vec::new();
+        for episode in &game_buffer {
+            replay_buffer.extend(episode.samples.clone());
         }
 
-        if new_samples.is_empty() {
+        if replay_buffer.is_empty() {
             println!("  ⚠️ 本轮没有收集到有效样本，跳过训练");
             continue;
         }
 
-        println!("  收集了 {} 个训练样本", new_samples.len());
-
-        // 更新经验回放缓冲区
-        replay_buffer.extend(new_samples);
-        if replay_buffer.len() > max_buffer_size {
-            let remove_count = replay_buffer.len() - max_buffer_size;
-            replay_buffer.drain(0..remove_count);
+        // 定期保存到MongoDB
+        if (iteration + 1) % save_to_mongodb_every == 0 {
+            println!("  正在保存数据到MongoDB...");
+            mongo_storage.save_games(iteration, &filtered_episodes).await?;
+            
+            // 获取并打印统计信息
+            if let Ok(stats) = mongo_storage.get_iteration_stats(iteration).await {
+                stats.print();
+            }
         }
-        println!("  经验回放缓冲区: {} 个样本", replay_buffer.len());
 
         // 训练
         println!("  开始训练...");
@@ -219,20 +244,6 @@ pub fn parallel_train_loop() -> Result<()> {
         }
         let train_elapsed = train_start.elapsed();
         println!("  训练完成，耗时 {:.1}s", train_elapsed.as_secs_f64());
-
-        // 验证模型
-        println!("\n  ========== 模型验证 ==========");
-        let (scenario1, scenario2) = validate_model_on_scenarios_with_net(&net, device, iteration);
-        println!(
-            "    场景1 (TwoAdvisors): a38={:.1}%, value={:.3}",
-            scenario1.masked_probs[38] * 100.0,
-            scenario1.value
-        );
-        println!(
-            "    场景2 (HiddenThreats): a3={:.1}%, value={:.3}",
-            scenario2.masked_probs[3] * 100.0,
-            scenario2.value
-        );
 
         // ========== 生成训练日志 ==========
         // 统计对弈整体数据（包含平局）
@@ -294,7 +305,7 @@ pub fn parallel_train_loop() -> Result<()> {
         let avg_value_loss = v_loss_sum / epochs_per_iteration as f64;
         let (plw, vlw) = get_loss_weights(epochs_per_iteration.saturating_sub(1));
 
-        // 从场景验证结果中提取指标
+        // 生成训练日志（移除场景验证字段）
         let log_record = TrainingLog {
             iteration,
             avg_total_loss,
@@ -302,26 +313,25 @@ pub fn parallel_train_loop() -> Result<()> {
             avg_value_loss,
             policy_loss_weight: plw,
             value_loss_weight: vlw,
-            // 场景1 (TwoAdvisors)
-            scenario1_value: scenario1.value,
-            scenario1_unmasked_a38: scenario1.unmasked_probs[38],
-            scenario1_unmasked_a39: scenario1.unmasked_probs[39],
-            scenario1_unmasked_a40: scenario1.unmasked_probs[40],
-            scenario1_masked_a38: scenario1.masked_probs[38],
-            scenario1_masked_a39: scenario1.masked_probs[39],
-            scenario1_masked_a40: scenario1.masked_probs[40],
-            // 场景2 (Hidden Threat)
-            scenario2_value: scenario2.value,
-            scenario2_unmasked_a3: scenario2.unmasked_probs[3],
-            scenario2_unmasked_a5: scenario2.unmasked_probs[5],
-            scenario2_masked_a3: scenario2.masked_probs[3],
-            scenario2_masked_a5: scenario2.masked_probs[5],
+            // 场景验证已移除，使用默认值
+            scenario1_value: 0.0,
+            scenario1_unmasked_a38: 0.0,
+            scenario1_unmasked_a39: 0.0,
+            scenario1_unmasked_a40: 0.0,
+            scenario1_masked_a38: 0.0,
+            scenario1_masked_a39: 0.0,
+            scenario1_masked_a40: 0.0,
+            scenario2_value: 0.0,
+            scenario2_unmasked_a3: 0.0,
+            scenario2_unmasked_a5: 0.0,
+            scenario2_masked_a3: 0.0,
+            scenario2_masked_a5: 0.0,
             // 样本统计
             new_samples_count: filtered_episodes
                 .iter()
                 .map(|ep| ep.samples.len())
                 .sum::<usize>(),
-            replay_buffer_size: replay_buffer.len(),
+            replay_buffer_size: total_samples,
             avg_game_steps: avg_steps,
             red_win_ratio: red_wins as f32 / total_games as f32,
             draw_ratio: draws as f32 / total_games as f32,
@@ -354,10 +364,4 @@ pub fn parallel_train_loop() -> Result<()> {
     println!("  cargo run --bin banqi-verify-trained -- banqi_model_scenario_latest.ot");
 
     Ok(())
-}
-
-fn main() {
-    if let Err(e) = parallel_train_loop() {
-        eprintln!("训练失败: {}", e);
-    }
 }

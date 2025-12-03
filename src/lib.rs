@@ -23,6 +23,7 @@ pub mod nn_model;
 pub mod database;
 pub mod inference;
 pub mod lr_finder;
+pub mod mongodb_storage;
 pub mod scenario_validation;
 pub mod self_play;
 pub mod training;

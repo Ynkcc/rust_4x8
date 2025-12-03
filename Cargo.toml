@@ -63,6 +63,10 @@ anyhow = "1.0"
 tch = {version="0.22"}
 rusqlite = { version = "0.32", features = ["bundled"] }
 num_cpus = "1.17"
+mongodb = "3.4"
+tokio = { version = "1", features = ["full"] }
+bson = "2.15"
+futures = "0.3"
 
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }
