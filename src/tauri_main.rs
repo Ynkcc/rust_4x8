@@ -1,7 +1,7 @@
 // code_files/src/tauri_main.rs
-use banqi_4x8::*;
 use banqi_4x8::ai::{Policy, RandomPolicy, RevealFirstPolicy};
-use serde::{Serialize, Deserialize}; // Added Deserialize
+use banqi_4x8::*;
+use serde::{Deserialize, Serialize}; // Added Deserialize
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -21,8 +21,8 @@ struct GameState {
     action_masks: Vec<i32>,
     reveal_probabilities: Vec<f32>,
     bitboards: HashMap<String, Vec<bool>>,
-    hp_red: i32,    // 红方血量
-    hp_black: i32,  // 黑方血量
+    hp_red: i32,   // 红方血量
+    hp_black: i32, // 黑方血量
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,7 +102,12 @@ fn step_game(action: usize, state: State<AppState>) -> Result<StepResult, String
             //     }
             // }
             let state_data = extract_game_state(&*game);
-            Ok(StepResult { state: state_data, terminated, truncated, winner })
+            Ok(StepResult {
+                state: state_data,
+                terminated,
+                truncated,
+                winner,
+            })
         }
         Err(e) => Err(e),
     }
@@ -113,7 +118,7 @@ fn step_game(action: usize, state: State<AppState>) -> Result<StepResult, String
 fn bot_move(state: State<AppState>) -> Result<StepResult, String> {
     let mut game = state.game.lock().unwrap();
     let opp_type = *state.opponent_type.lock().unwrap();
-    
+
     // 如果处于 PvP，提示前端无需调用 AI
     if opp_type == OpponentType::PvP {
         return Err("当前为本地双人模式，无需 AI 行动".to_string());
@@ -143,8 +148,9 @@ fn bot_move(state: State<AppState>) -> Result<StepResult, String> {
         //     action
         // },
         OpponentType::MctsDL => None, // 暂时禁用 MctsDL
-        OpponentType::PvP => None, // 已在上面返回 Err，这里兜底
-    }.ok_or_else(|| "AI 无棋可走".to_string())?;
+        OpponentType::PvP => None,    // 已在上面返回 Err，这里兜底
+    }
+    .ok_or_else(|| "AI 无棋可走".to_string())?;
 
     match game.step(chosen_action, None) {
         Ok((_obs, _reward, terminated, truncated, winner)) => {
@@ -155,7 +161,12 @@ fn bot_move(state: State<AppState>) -> Result<StepResult, String> {
             //     }
             // }
             let state_data = extract_game_state(&*game);
-            Ok(StepResult { state: state_data, terminated, truncated, winner })
+            Ok(StepResult {
+                state: state_data,
+                terminated,
+                truncated,
+                winner,
+            })
         }
         Err(e) => Err(e),
     }
@@ -210,42 +221,42 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
             Slot::Revealed(piece) => get_piece_short_name(piece),
         })
         .collect();
-    
+
     let current_player = match env.get_current_player() {
         Player::Red => "Red".to_string(),
         Player::Black => "Black".to_string(),
     };
-    
+
     let dead_red: Vec<String> = env
         .get_dead_pieces(Player::Red)
         .iter()
         .map(|pt| format!("{:?}", pt))
         .collect();
-    
+
     let dead_black: Vec<String> = env
         .get_dead_pieces(Player::Black)
         .iter()
         .map(|pt| format!("{:?}", pt))
         .collect();
-    
+
     let hidden_red: Vec<String> = env
         .get_hidden_pieces(Player::Red)
         .iter()
         .map(|pt| format!("{:?}", pt))
         .collect();
-    
+
     let hidden_black: Vec<String> = env
         .get_hidden_pieces(Player::Black)
         .iter()
         .map(|pt| format!("{:?}", pt))
         .collect();
-    
+
     let action_masks = env.action_masks();
     let reveal_probabilities = project_reveal_probabilities(env.get_reveal_probabilities());
     let bitboards = env.get_bitboards();
     let hp_red = env.get_hp(Player::Red);
     let hp_black = env.get_hp(Player::Black);
-    
+
     GameState {
         board,
         current_player,

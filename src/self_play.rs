@@ -4,11 +4,11 @@
 
 use crate::game_env::{DarkChessEnv, Observation, Player};
 use crate::inference::ChannelEvaluator;
-use crate::mcts::{MCTS, MCTSConfig};
+use crate::mcts::{MCTSConfig, MCTS};
+use rand::distributions::WeightedIndex;
+use rand::prelude::*;
 use std::sync::Arc;
 use std::time::Instant;
-use rand::prelude::*;
-use rand::distributions::WeightedIndex;
 
 // ================ 游戏统计信息 ================
 
@@ -16,7 +16,7 @@ use rand::distributions::WeightedIndex;
 #[derive(Debug, Clone)]
 pub struct GameStats {
     pub steps: usize,
-    pub winner: Option<i32>,  // Some(1)=红胜, Some(-1)=黑胜, None/Some(0)=平局
+    pub winner: Option<i32>, // Some(1)=红胜, Some(-1)=黑胜, None/Some(0)=平局
 }
 
 /// 单局游戏的完整数据（包含样本和元数据）
@@ -47,11 +47,11 @@ impl ScenarioType {
         match self {
             ScenarioType::TwoAdvisors => env.setup_two_advisors(Player::Black),
             ScenarioType::HiddenThreats => env.setup_hidden_threats(),
-            ScenarioType::Standard => {},
+            ScenarioType::Standard => {}
         }
         env
     }
-    
+
     /// 获取场景名称
     pub fn name(&self) -> &'static str {
         match self {
@@ -60,7 +60,7 @@ impl ScenarioType {
             ScenarioType::Standard => "Standard",
         }
     }
-    
+
     /// 获取该场景的期望最优动作
     pub fn expected_action(&self) -> usize {
         match self {
@@ -78,15 +78,11 @@ pub struct SelfPlayWorker {
     pub worker_id: usize,
     pub evaluator: Arc<ChannelEvaluator>,
     pub mcts_sims: usize,
-    pub scenario: Option<ScenarioType>,  // 指定场景类型，None 表示使用随机初始化
+    pub scenario: Option<ScenarioType>, // 指定场景类型，None 表示使用随机初始化
 }
 
 impl SelfPlayWorker {
-    pub fn new(
-        worker_id: usize,
-        evaluator: Arc<ChannelEvaluator>,
-        mcts_sims: usize,
-    ) -> Self {
+    pub fn new(worker_id: usize, evaluator: Arc<ChannelEvaluator>, mcts_sims: usize) -> Self {
         Self {
             worker_id,
             evaluator,
@@ -94,7 +90,7 @@ impl SelfPlayWorker {
             scenario: None,
         }
     }
-    
+
     /// 创建使用指定场景的工作器
     pub fn with_scenario(
         worker_id: usize,
@@ -115,27 +111,30 @@ impl SelfPlayWorker {
         let _scenario_name = self.scenario.map(|s| s.name()).unwrap_or("Random");
         // println!("  [Worker-{}] 开始第 {} 局游戏 (场景: {})", self.worker_id, episode_num + 1, _scenario_name);
         let start_time = Instant::now();
-        
+
         // 根据场景类型创建环境
         let mut env = match self.scenario {
             Some(scenario) => scenario.create_env(),
             None => DarkChessEnv::new(),
         };
-        let config = MCTSConfig { num_simulations: self.mcts_sims, cpuct: 1.0 };
+        let config = MCTSConfig {
+            num_simulations: self.mcts_sims,
+            cpuct: 1.0,
+        };
         let mut mcts = MCTS::new(&env, self.evaluator.clone(), config);
-        
+
         let mut episode_data = Vec::new();
         let mut step = 0;
-        
+
         // 🐛 DEBUG: 记录首步MCTS详情
         let debug_first_step = episode_num < 2; // 只调试前2局
-        
+
         loop {
             // 运行MCTS
             mcts.run();
             let probs = mcts.get_root_probabilities();
             let masks = env.action_masks();
-            
+
             // 🐛 DEBUG: 打印MCTS根节点详情
             if debug_first_step && step < 3 {
                 // println!("    [Worker-{}] Step {}: MCTS根节点详情", self.worker_id, step);
@@ -144,7 +143,7 @@ impl SelfPlayWorker {
                 //     println!("      action={}, prob={:.3}", _action, _prob);
                 // }
             }
-            
+
             // 保存数据
             episode_data.push((
                 env.get_state(),
@@ -152,22 +151,22 @@ impl SelfPlayWorker {
                 env.get_current_player(),
                 masks,
             ));
-            
+
             // 选择动作(使用更长的高温探索期,并提高探索温度)
             // 游戏平均步数在13步左右
-            let temperature =if step < 8 { 1.0 } else { 0.1 };
+            let temperature = if step < 8 { 1.0 } else { 0.1 };
             let action = sample_action(&probs, &env, temperature);
-            
+
             // 🐛 DEBUG: 记录动作选择
             if debug_first_step && step < 3 {
                 // println!("      选择: action={}, temp={:.1}", action, temperature);
             }
-            
+
             // 执行动作
             match env.step(action, None) {
                 Ok((_, _, terminated, truncated, winner)) => {
                     mcts.step_next(&env, action);
-                    
+
                     if terminated || truncated {
                         // 分配奖励
                         let reward_red = match winner {
@@ -175,24 +174,28 @@ impl SelfPlayWorker {
                             Some(-1) => -1.0,
                             _ => 0.0,
                         };
-                        
+
                         let _elapsed = start_time.elapsed();
-                        // println!("  [Worker-{}] 第 {} 局结束: {} 步, 胜者={:?}, 耗时 {:.1}s", 
+                        // println!("  [Worker-{}] 第 {} 局结束: {} 步, 胜者={:?}, 耗时 {:.1}s",
                         //     self.worker_id, episode_num + 1, step, winner, _elapsed.as_secs_f64());
-                        
+
                         // 🐛 DEBUG: 检查价值标签分布
                         if debug_first_step {
                             let mut red_values = Vec::new();
                             let mut black_values = Vec::new();
                             for (_, _, player, _) in &episode_data {
-                                let val = if player.val() == 1 { reward_red } else { -reward_red };
+                                let val = if player.val() == 1 {
+                                    reward_red
+                                } else {
+                                    -reward_red
+                                };
                                 if player.val() == 1 {
                                     red_values.push(val);
                                 } else {
                                     black_values.push(val);
                                 }
                             }
-                            // println!("    [Worker-{}] 价值标签统计: 红方样本数={}, 黑方样本数={}", 
+                            // println!("    [Worker-{}] 价值标签统计: 红方样本数={}, 黑方样本数={}",
                             //     self.worker_id, red_values.len(), black_values.len());
                             if !red_values.is_empty() {
                                 // println!("      红方价值标签: {:.2} (winner={:?})", red_values[0], winner);
@@ -201,21 +204,25 @@ impl SelfPlayWorker {
                                 // println!("      黑方价值标签: {:.2} (winner={:?})", black_values[0], winner);
                             }
                         }
-                        
+
                         // 回填价值
                         let mut samples = Vec::new();
                         for (obs, p, player, mask) in episode_data {
-                            let val = if player.val() == 1 { reward_red } else { -reward_red };
+                            let val = if player.val() == 1 {
+                                reward_red
+                            } else {
+                                -reward_red
+                            };
                             samples.push((obs, p, val, mask));
                         }
-                        
+
                         return GameEpisode {
                             samples,
                             game_length: step,
                             winner,
                         };
                     }
-                },
+                }
                 Err(_e) => {
                     // eprintln!("[Worker-{}] 游戏错误: {}", self.worker_id, _e);
                     return GameEpisode {
@@ -225,7 +232,7 @@ impl SelfPlayWorker {
                     };
                 }
             }
-            
+
             step += 1;
             if step > 200 {
                 // 超过最大步数，游戏平局
@@ -249,30 +256,30 @@ impl SelfPlayWorker {
 /// 动作采样（带温度参数）
 pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usize {
     let non_zero_sum: f32 = probs.iter().sum();
-    
+
     if non_zero_sum == 0.0 {
         // 回退：从有效动作中均匀选择
         let masks = env.action_masks();
-        let valid_actions: Vec<usize> = masks.iter()
+        let valid_actions: Vec<usize> = masks
+            .iter()
             .enumerate()
             .filter_map(|(i, &m)| if m == 1 { Some(i) } else { None })
             .collect();
-        
+
         let mut rng = thread_rng();
         *valid_actions.choose(&mut rng).expect("无有效动作")
     } else {
         // 应用温度参数
         let adjusted_probs: Vec<f32> = if temperature != 1.0 {
-            let sum: f32 = probs.iter()
-                .map(|&p| p.powf(1.0 / temperature))
-                .sum();
-            probs.iter()
+            let sum: f32 = probs.iter().map(|&p| p.powf(1.0 / temperature)).sum();
+            probs
+                .iter()
                 .map(|&p| p.powf(1.0 / temperature) / sum)
                 .collect()
         } else {
             probs.to_vec()
         };
-        
+
         let dist = WeightedIndex::new(&adjusted_probs).unwrap();
         let mut rng = thread_rng();
         dist.sample(&mut rng)
@@ -281,10 +288,7 @@ pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usi
 
 /// 🐛 DEBUG: 获取top-k动作
 pub fn get_top_k_actions(probs: &[f32], k: usize) -> Vec<(usize, f32)> {
-    let mut indexed: Vec<(usize, f32)> = probs.iter()
-        .enumerate()
-        .map(|(i, &p)| (i, p))
-        .collect();
+    let mut indexed: Vec<(usize, f32)> = probs.iter().enumerate().map(|(i, &p)| (i, p)).collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     indexed.into_iter().take(k).collect()
 }

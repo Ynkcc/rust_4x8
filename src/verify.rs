@@ -3,10 +3,10 @@
 // output the highest PUCT path, final leaf value, and visit counts per step.
 
 use banqi_4x8::game_env::{DarkChessEnv, Player};
-use banqi_4x8::mcts::{Evaluator, MCTS, MCTSConfig, MctsNode};
+use banqi_4x8::mcts::{Evaluator, MCTSConfig, MctsNode, MCTS};
 use banqi_4x8::nn_model::BanqiNet;
 use std::sync::Arc;
-use tch::{nn, Device, Tensor, Kind};
+use tch::{nn, Device, Kind, Tensor};
 
 // Simple NN evaluator identical structure to training evaluator but untrained.
 struct NNEvaluator {
@@ -16,7 +16,10 @@ struct NNEvaluator {
 
 impl NNEvaluator {
     fn new(vs: &nn::Path, device: Device) -> Self {
-        Self { net: BanqiNet::new(vs), device }
+        Self {
+            net: BanqiNet::new(vs),
+            device,
+        }
     }
 }
 
@@ -48,7 +51,11 @@ impl Evaluator for NNEvaluator {
 
 // Compute the best PUCT path starting from root.
 // Returns vector of (action, q, prior, puct, visit_count)
-fn best_puct_path(root: &MctsNode, cpuct: f32, depth_limit: usize) -> Vec<(usize, f32, f32, f32, u32)> {
+fn best_puct_path(
+    root: &MctsNode,
+    cpuct: f32,
+    depth_limit: usize,
+) -> Vec<(usize, f32, f32, f32, u32)> {
     let mut path = Vec::new();
     let mut current = root;
     let mut depth = 0;
@@ -60,8 +67,10 @@ fn best_puct_path(root: &MctsNode, cpuct: f32, depth_limit: usize) -> Vec<(usize
             let prior = child.prior;
             let puct = q + cpuct * prior * sqrt_total / (1.0 + child.visit_count as f32);
             let vc = child.visit_count;
-            if let Some((_ba,_bq,_bp,_bpuct,_bvc)) = best {
-                if puct > _bpuct { best = Some((action, q, prior, puct, vc)); }
+            if let Some((_ba, _bq, _bp, _bpuct, _bvc)) = best {
+                if puct > _bpuct {
+                    best = Some((action, q, prior, puct, vc));
+                }
             } else {
                 best = Some((action, q, prior, puct, vc));
             }
@@ -81,7 +90,11 @@ fn best_puct_path(root: &MctsNode, cpuct: f32, depth_limit: usize) -> Vec<(usize
 
 fn main() {
     // Device selection (CPU is fine for verification)
-    let device = if tch::Cuda::is_available() { Device::Cuda(0) } else { Device::Cpu };
+    let device = if tch::Cuda::is_available() {
+        Device::Cuda(0)
+    } else {
+        Device::Cpu
+    };
 
     // Build untrained network
     let vs = nn::VarStore::new(device);
@@ -98,9 +111,12 @@ fn main() {
     // Run MCTS with detailed logging
     let cpuct_val = 1.0; // 保存 cpuct 方便后续计算路径
     let num_sims = 10000;
-    let config = MCTSConfig { cpuct: cpuct_val, num_simulations: num_sims }; // 10000 次模拟
+    let config = MCTSConfig {
+        cpuct: cpuct_val,
+        num_simulations: num_sims,
+    }; // 10000 次模拟
     let mut mcts = MCTS::new(&env, evaluator.clone(), config);
-    
+
     println!("\n===== 开始 MCTS 搜索 (配置 {} 次评估) =====", num_sims);
     mcts.run();
 
@@ -108,16 +124,24 @@ fn main() {
     println!("配置的 num_simulations (评估预算): {}", num_sims);
     println!("根节点访问次数 (总模拟次数): {}", mcts.root.visit_count);
 
-
     // Compute best PUCT path
     let path = best_puct_path(&mcts.root, cpuct_val, 20); // depth limit 20
 
     println!("\nPUCT 最高路径 (action, coords, Q, prior, PUCT, visits):");
     for (step_idx, (action, q, prior, puct, visits)) in path.iter().enumerate() {
         let coord_str = if let Some(coords) = env.get_coords_for_action(*action) {
-            if coords.len() == 1 { format!("reveal@{}", coords[0]) } else { format!("move {}->{}", coords[0], coords[1]) }
-        } else { "?".to_string() };
-        println!(" Step {:02}: action {:02} ({}) | Q={:.4} prior={:.4} PUCT={:.4} visits={}" , step_idx, action, coord_str, q, prior, puct, visits);
+            if coords.len() == 1 {
+                format!("reveal@{}", coords[0])
+            } else {
+                format!("move {}->{}", coords[0], coords[1])
+            }
+        } else {
+            "?".to_string()
+        };
+        println!(
+            " Step {:02}: action {:02} ({}) | Q={:.4} prior={:.4} PUCT={:.4} visits={}",
+            step_idx, action, coord_str, q, prior, puct, visits
+        );
     }
 
     // Final leaf value (if any)
@@ -130,10 +154,16 @@ fn main() {
     // Also dump root policy probabilities for reference
     let probs = mcts.get_root_probabilities();
     println!("\n根节点策略概率 (前 20 个非零项):");
-    for (i, p) in probs.iter().enumerate().filter(|(_,p)| **p > 0.0).take(20) {
+    for (i, p) in probs.iter().enumerate().filter(|(_, p)| **p > 0.0).take(20) {
         let coord_str = if let Some(coords) = env.get_coords_for_action(i) {
-            if coords.len() == 1 { format!("reveal@{}", coords[0]) } else { format!("{}->{}", coords[0], coords[1]) }
-        } else { "?".to_string() };
+            if coords.len() == 1 {
+                format!("reveal@{}", coords[0])
+            } else {
+                format!("{}->{}", coords[0], coords[1])
+            }
+        } else {
+            "?".to_string()
+        };
         println!("  action {:02} ({:<10}) prob={:.4}", i, coord_str, p);
     }
 

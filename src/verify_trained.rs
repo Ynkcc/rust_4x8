@@ -1,8 +1,8 @@
 // 验证训练后的模型在特定场景下的先验概率输出
+use anyhow::Result;
 use banqi_3x4::game_env::{DarkChessEnv, Player};
 use banqi_3x4::nn_model::BanqiNet;
-use anyhow::Result;
-use tch::{nn, Device, Tensor, Kind};
+use tch::{nn, Device, Kind, Tensor};
 
 struct NNEvaluator {
     net: BanqiNet,
@@ -11,9 +11,12 @@ struct NNEvaluator {
 
 impl NNEvaluator {
     fn new(vs: &nn::Path, device: Device) -> Self {
-        Self { net: BanqiNet::new(vs), device }
+        Self {
+            net: BanqiNet::new(vs),
+            device,
+        }
     }
-    
+
     fn evaluate(&self, env: &DarkChessEnv) -> (Vec<f32>, f32) {
         let obs = env.get_state();
         let board_tensor = Tensor::from_slice(obs.board.as_slice().unwrap())
@@ -40,14 +43,15 @@ impl NNEvaluator {
 }
 
 fn print_top_priors(env: &DarkChessEnv, probs: &[f32], top_k: usize) {
-    let mut indexed_probs: Vec<(usize, f32)> = probs.iter()
+    let mut indexed_probs: Vec<(usize, f32)> = probs
+        .iter()
         .enumerate()
         .filter(|(_, &p)| p > 0.0)
         .map(|(i, &p)| (i, p))
         .collect();
-    
+
     indexed_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    
+
     println!("\n先验概率 Top {} 动作:", top_k);
     for (i, (action, prob)) in indexed_probs.iter().take(top_k).enumerate() {
         let coord_str = if let Some(coords) = env.get_coords_for_action(*action) {
@@ -59,7 +63,13 @@ fn print_top_priors(env: &DarkChessEnv, probs: &[f32], top_k: usize) {
         } else {
             "?".to_string()
         };
-        println!("  #{}: action {:02} ({:<15}) prob={:.6}", i+1, action, coord_str, prob);
+        println!(
+            "  #{}: action {:02} ({:<15}) prob={:.6}",
+            i + 1,
+            action,
+            coord_str,
+            prob
+        );
     }
 }
 
@@ -67,11 +77,11 @@ fn verify_scenario_1(evaluator: &NNEvaluator) {
     println!("\n{}", "=".repeat(60));
     println!("场景 1: 仅剩 R_A 与 B_A (verify.rs 场景)");
     println!("{}", "=".repeat(60));
-    
+
     let mut env = DarkChessEnv::new();
     env.setup_two_advisors(Player::Black);
     env.print_board();
-    
+
     let (probs, value) = evaluator.evaluate(&env);
     println!("\n模型输出价值估计: {:.4}", value);
     print_top_priors(&env, &probs, 20);
@@ -81,13 +91,13 @@ fn verify_scenario_2(evaluator: &NNEvaluator) {
     println!("\n{}", "=".repeat(60));
     println!("场景 2: 隐藏的威胁 (verify_2.rs 场景)");
     println!("{}", "=".repeat(60));
-    
+
     let mut env = DarkChessEnv::new();
     env.setup_hidden_threats();
     env.print_board();
     println!("Hidden Pieces Pool: {:?}", env.hidden_pieces);
     println!("Reveal Probabilities: {:?}", env.get_reveal_probabilities());
-    
+
     let (probs, value) = evaluator.evaluate(&env);
     println!("\n模型输出价值估计: {:.4}", value);
     print_top_priors(&env, &probs, 20);
@@ -101,9 +111,9 @@ fn main() -> Result<()> {
     } else {
         "banqi_model_latest.ot"
     };
-    
+
     println!("\n加载模型: {}", model_path);
-    
+
     // 设备选择
     let device = if tch::Cuda::is_available() {
         println!("使用 CUDA 设备");
@@ -112,11 +122,11 @@ fn main() -> Result<()> {
         println!("使用 CPU");
         Device::Cpu
     };
-    
+
     // 加载模型
     let mut vs = nn::VarStore::new(device);
     let evaluator = NNEvaluator::new(&vs.root(), device);
-    
+
     match vs.load(model_path) {
         Ok(_) => println!("模型加载成功！\n"),
         Err(e) => {
@@ -125,14 +135,14 @@ fn main() -> Result<()> {
             return Err(e.into());
         }
     }
-    
+
     // 验证两个场景
     verify_scenario_1(&evaluator);
     verify_scenario_2(&evaluator);
-    
+
     println!("\n{}", "=".repeat(60));
     println!("验证完成！");
     println!("{}\n", "=".repeat(60));
-    
+
     Ok(())
 }

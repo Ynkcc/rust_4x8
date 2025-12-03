@@ -6,13 +6,13 @@
 
 use crate::DarkChessEnv;
 
+mod mcts_dl;
 mod random;
 mod reveal_first;
-mod mcts_dl;
 
+pub use mcts_dl::{MctsDlPolicy, ModelWrapper};
 pub use random::RandomPolicy;
 pub use reveal_first::RevealFirstPolicy;
-pub use mcts_dl::{MctsDlPolicy, ModelWrapper};
 
 /// 策略接口：给定环境，返回一个有效动作编号
 pub trait Policy {

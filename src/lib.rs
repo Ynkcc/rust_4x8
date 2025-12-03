@@ -14,38 +14,25 @@
 //! // 进行游戏...
 //! ```
 
-pub mod game_env;
 pub mod ai;
+pub mod game_env;
 pub mod mcts;
 pub mod nn_model;
 
 // 并行训练相关模块
-pub mod inference;
-pub mod training_log;
 pub mod database;
-pub mod self_play;
-pub mod scenario_validation;
-pub mod training;
+pub mod inference;
 pub mod lr_finder;
+pub mod scenario_validation;
+pub mod self_play;
+pub mod training;
+pub mod training_log;
 
 // 重新导出核心类型，方便外部使用
-pub use game_env::{
-    DarkChessEnv,
-    Observation,
-    PieceType,
-    Player,
-    Piece,
-    Slot,
-};
+pub use game_env::{DarkChessEnv, Observation, Piece, PieceType, Player, Slot};
 
 // 导出常量
 pub use game_env::{
-    ACTION_SPACE_SIZE,
-    REVEAL_ACTIONS_COUNT,
-    REGULAR_MOVE_ACTIONS_COUNT,
-    BOARD_ROWS,
-    BOARD_COLS,
-    TOTAL_POSITIONS,
-    NUM_PIECE_TYPES,
-    STATE_STACK_SIZE,
+    ACTION_SPACE_SIZE, BOARD_COLS, BOARD_ROWS, NUM_PIECE_TYPES, REGULAR_MOVE_ACTIONS_COUNT,
+    REVEAL_ACTIONS_COUNT, STATE_STACK_SIZE, TOTAL_POSITIONS,
 };

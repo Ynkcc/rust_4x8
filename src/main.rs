@@ -32,7 +32,7 @@ fn main() {
         }
 
         let action = *valid_actions.choose(&mut rng).unwrap();
-        
+
         let action_desc = if action < REVEAL_ACTIONS_COUNT {
             let sq = action;
             format!("翻棋 (位置 {})", sq)
@@ -40,7 +40,10 @@ fn main() {
             format!("移动/吃子 (动作 {})", action)
         };
 
-        println!("Step {}: 执行动作 {} -> {}\n", step_count, action, action_desc);
+        println!(
+            "Step {}: 执行动作 {} -> {}\n",
+            step_count, action, action_desc
+        );
 
         match env.step(action, None) {
             Ok((_obs, _reward, terminated, truncated, winner)) => {
@@ -50,7 +53,7 @@ fn main() {
                     env.print_board();
                     println!("\n=== 游戏结束 ===");
                     println!("总步数: {}", step_count);
-                    
+
                     if let Some(w) = winner {
                         match w {
                             0 => println!("结果: 和棋"),
@@ -61,7 +64,7 @@ fn main() {
                     }
                     break;
                 }
-            },
+            }
             Err(e) => {
                 panic!("Step 执行逻辑错误: {}", e);
             }
@@ -73,6 +76,6 @@ fn main() {
             break;
         }
     }
-    
+
     println!("\n验证结束。");
 }
