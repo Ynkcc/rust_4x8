@@ -58,6 +58,10 @@ pub async fn parallel_train_loop() -> Result<()> {
     let max_buffer_games = 1000; // 缓冲区保留最近1000局游戏
     let learning_rate = 1e-4;
     let save_to_mongodb_every = 5; // 每5轮保存一次到MongoDB
+    
+    // Dirichlet 噪声参数（替代温度参数）
+    let dirichlet_alpha = 0.3;    // Alpha值，控制噪声的集中度
+    let dirichlet_epsilon = 0.25; // 噪声权重，与先验策略的混合比例
 
     println!("\n=== 场景自对弈训练配置 ===");
     println!("工作线程数: {} (全标准环境)", num_workers);
@@ -67,6 +71,7 @@ pub async fn parallel_train_loop() -> Result<()> {
     println!("推理批量大小: {}", inference_batch_size);
     println!("游戏缓冲区: 最近 {} 局", max_buffer_games);
     println!("MongoDB保存频率: 每 {} 轮", save_to_mongodb_every);
+    println!("Dirichlet噪声: alpha={}, epsilon={}", dirichlet_alpha, dirichlet_epsilon);
     println!("场景: Standard");
 
     // 连接MongoDB
@@ -140,11 +145,19 @@ pub async fn parallel_train_loop() -> Result<()> {
             let (result_tx, result_rx) = mpsc::channel();
             result_rxs.push(result_rx);
             let scenario_copy = *scenario;
+            let alpha = dirichlet_alpha;
+            let epsilon = dirichlet_epsilon;
 
             let handle = thread::spawn(move || {
                 let evaluator = Arc::new(ChannelEvaluator::new(req_tx_clone));
-                let worker =
-                    SelfPlayWorker::with_scenario(worker_id, evaluator, mcts_sims, scenario_copy);
+                let worker = SelfPlayWorker::with_scenario_and_dirichlet(
+                    worker_id,
+                    evaluator,
+                    mcts_sims,
+                    scenario_copy,
+                    alpha,
+                    epsilon,
+                );
 
                 let mut all_episodes = Vec::new();
                 for ep in 0..num_episodes_per_iteration {

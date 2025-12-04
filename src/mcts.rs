@@ -132,6 +132,16 @@ impl Evaluator for RandomEvaluator {
 pub struct MCTSConfig {
     pub cpuct: f32,
     pub num_simulations: usize,
+    /// 虚拟损失值（用于异步MCTS）
+    pub virtual_loss: f32,
+    /// 允许同时等待推理的最大协程数量
+    pub max_concurrent_inferences: usize,
+    /// Dirichlet 噪声 alpha 参数
+    pub dirichlet_alpha: f32,
+    /// Dirichlet 噪声权重（与先验策略的混合比例）
+    pub dirichlet_epsilon: f32,
+    /// 是否为训练模式（训练时添加噪声，对弈时不添加）
+    pub train: bool,
 }
 
 impl Default for MCTSConfig {
@@ -139,6 +149,11 @@ impl Default for MCTSConfig {
         Self {
             cpuct: 1.0,
             num_simulations: 50,
+            virtual_loss: 1.0,
+            max_concurrent_inferences: 8,
+            dirichlet_alpha: 0.3,
+            dirichlet_epsilon: 0.25,
+            train: false,
         }
     }
 }
@@ -335,7 +350,34 @@ impl<E: Evaluator> MCTS<E> {
 
         // 1. 扩展 (Expansion)
         if !node.is_expanded {
-            let (policy_probs, value) = evaluator.evaluate(&env);
+            let (mut policy_probs, value) = evaluator.evaluate(&env);
+
+            // 如果是训练模式且是根节点，添加 Dirichlet 噪声
+            if config.train && incoming_action.is_none() {
+                use rand::distributions::Distribution;
+                use rand_distr::Dirichlet as DirichletDist;
+                
+                // 统计有效动作数量
+                let valid_actions: Vec<usize> = masks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, &mask)| if mask == 1 { Some(idx) } else { None })
+                    .collect();
+                
+                let num_valid = valid_actions.len();
+                if num_valid > 0 {
+                    // 生成 Dirichlet 噪声
+                    let alpha = vec![config.dirichlet_alpha; num_valid];
+                    let dirichlet = DirichletDist::new(&alpha).expect("Invalid Dirichlet alpha");
+                    let noise = dirichlet.sample(&mut rand::thread_rng());
+                    
+                    // 混合先验策略和噪声
+                    for (i, &action_idx) in valid_actions.iter().enumerate() {
+                        policy_probs[action_idx] = (1.0 - config.dirichlet_epsilon) * policy_probs[action_idx]
+                            + config.dirichlet_epsilon * noise[i] as f32;
+                    }
+                }
+            }
 
             for (action_idx, &mask) in masks.iter().enumerate() {
                 if mask == 1 {

@@ -101,6 +101,11 @@ fn main() {
     let config = MCTSConfig {
         cpuct: cpuct_val,
         num_simulations,
+        virtual_loss: 1.0,
+        max_concurrent_inferences: 8,
+        dirichlet_alpha: 0.3,
+        dirichlet_epsilon: 0.25,
+        train: false, // 验证模式，不添加噪声
     };
     let mut mcts = MCTS::new(&env, evaluator.clone(), config);
 

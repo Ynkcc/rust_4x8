@@ -107,6 +107,11 @@ impl MctsDlPolicy {
         let config = MCTSConfig {
             cpuct: 1.0,
             num_simulations,
+            virtual_loss: 1.0,
+            max_concurrent_inferences: 8,
+            dirichlet_alpha: 0.3,
+            dirichlet_epsilon: 0.25,
+            train: false, // 对弈模式，不添加噪声
         };
         let mcts = MCTS::new(env, evaluator.clone(), config);
         Self {
@@ -124,6 +129,11 @@ impl MctsDlPolicy {
         let new_cfg = MCTSConfig {
             cpuct: self.cpuct,
             num_simulations: self.num_simulations,
+            virtual_loss: 1.0,
+            max_concurrent_inferences: 8,
+            dirichlet_alpha: 0.3,
+            dirichlet_epsilon: 0.25,
+            train: false, // 对弈模式，不添加噪声
         };
         self.mcts = MCTS::new(&root_env, self.evaluator.clone(), new_cfg);
     }
@@ -150,6 +160,11 @@ impl MctsDlPolicy {
                 MCTSConfig {
                     cpuct: self.cpuct,
                     num_simulations: self.num_simulations,
+                    virtual_loss: 1.0,
+                    max_concurrent_inferences: 8,
+                    dirichlet_alpha: 0.3,
+                    dirichlet_epsilon: 0.25,
+                    train: false, // 对弈模式，不添加噪声
                 },
             );
         }

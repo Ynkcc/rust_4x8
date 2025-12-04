@@ -79,6 +79,8 @@ pub struct SelfPlayWorker {
     pub evaluator: Arc<ChannelEvaluator>,
     pub mcts_sims: usize,
     pub scenario: Option<ScenarioType>, // 指定场景类型，None 表示使用随机初始化
+    pub dirichlet_alpha: f32,            // Dirichlet 噪声 alpha 参数
+    pub dirichlet_epsilon: f32,          // Dirichlet 噪声权重
 }
 
 impl SelfPlayWorker {
@@ -88,6 +90,8 @@ impl SelfPlayWorker {
             evaluator,
             mcts_sims,
             scenario: None,
+            dirichlet_alpha: 0.3,
+            dirichlet_epsilon: 0.25,
         }
     }
 
@@ -103,6 +107,27 @@ impl SelfPlayWorker {
             evaluator,
             mcts_sims,
             scenario: Some(scenario),
+            dirichlet_alpha: 0.3,
+            dirichlet_epsilon: 0.25,
+        }
+    }
+    
+    /// 创建使用指定场景和 Dirichlet 参数的工作器
+    pub fn with_scenario_and_dirichlet(
+        worker_id: usize,
+        evaluator: Arc<ChannelEvaluator>,
+        mcts_sims: usize,
+        scenario: ScenarioType,
+        dirichlet_alpha: f32,
+        dirichlet_epsilon: f32,
+    ) -> Self {
+        Self {
+            worker_id,
+            evaluator,
+            mcts_sims,
+            scenario: Some(scenario),
+            dirichlet_alpha,
+            dirichlet_epsilon,
         }
     }
 
@@ -120,6 +145,11 @@ impl SelfPlayWorker {
         let config = MCTSConfig {
             num_simulations: self.mcts_sims,
             cpuct: 1.0,
+            virtual_loss: 1.0,
+            max_concurrent_inferences: 8,
+            dirichlet_alpha: self.dirichlet_alpha,
+            dirichlet_epsilon: self.dirichlet_epsilon,
+            train: true, // 自对弈训练时开启 Dirichlet 噪声
         };
         let mut mcts = MCTS::new(&env, self.evaluator.clone(), config);
 
@@ -156,14 +186,13 @@ impl SelfPlayWorker {
                 masks,
             ));
 
-            // 选择动作(使用更长的高温探索期,并提高探索温度)
-            // 游戏平均步数在13步左右
-            let temperature = if step < 8 { 1.0 } else { 0.1 };
-            let action = sample_action(&probs, &env, temperature);
+            // 选择动作（使用访问计数比例，不再使用温度采样）
+            // Dirichlet 噪声已经在 MCTS 根节点扩展时添加
+            let action = sample_action(&probs, &env, 1.0);
 
             // 🐛 DEBUG: 记录动作选择
             if debug_first_step && step < 3 {
-                // println!("      选择: action={}, temp={:.1}", action, temperature);
+                // println!("      选择: action={}", action);
             }
 
             // 执行动作
