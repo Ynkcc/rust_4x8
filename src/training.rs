@@ -15,7 +15,7 @@ use tch::{nn, Device, Kind, Tensor};
 /// # 参数
 /// - `opt`: 优化器
 /// - `net`: 神经网络模型
-/// - `examples`: 训练样本 (观察, 策略概率, MCTS价值目标, 游戏结果价值, 动作掩码)
+/// - `examples`: 训练样本 (观察, 策略概率, MCTS价值目标, 游戏结果价值, 动作掩码) - 可变引用，会被原地打乱
 /// - `batch_size`: 批量大小
 /// - `device`: 训练设备 (CPU/GPU)
 /// - `epoch`: 当前epoch编号 (用于动态调整损失权重)
@@ -25,7 +25,7 @@ use tch::{nn, Device, Kind, Tensor};
 pub fn train_step(
     opt: &mut nn::Optimizer,
     net: &BanqiNet,
-    examples: &[(Observation, Vec<f32>, f32, f32, Vec<i32>)],
+    examples: &mut Vec<(Observation, Vec<f32>, f32, f32, Vec<i32>)>,
     batch_size: usize,
     device: Device,
     epoch: usize,
@@ -34,9 +34,8 @@ pub fn train_step(
         return (0.0, 0.0, 0.0);
     }
 
-    // 打乱训练样本
-    let mut shuffled_examples = examples.to_vec();
-    shuffled_examples.shuffle(&mut thread_rng());
+    // 原地打乱训练样本
+    examples.shuffle(&mut thread_rng());
 
     let mut total_loss_sum = 0.0;
     let mut policy_loss_sum = 0.0;
@@ -51,9 +50,9 @@ pub fn train_step(
     let mut value_stats = Vec::new();
     let mut entropy_stats = Vec::new();
 
-    for batch_start in (0..shuffled_examples.len()).step_by(batch_size) {
-        let batch_end = (batch_start + batch_size).min(shuffled_examples.len());
-        let batch = &shuffled_examples[batch_start..batch_end];
+    for batch_start in (0..examples.len()).step_by(batch_size) {
+        let batch_end = (batch_start + batch_size).min(examples.len());
+        let batch = &examples[batch_start..batch_end];
         let bsz = batch.len();
         if bsz == 0 {
             continue;

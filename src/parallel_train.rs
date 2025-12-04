@@ -94,6 +94,9 @@ pub async fn parallel_train_loop() -> Result<()> {
 
     // 游戏缓冲区 - 按整局存储
     let mut game_buffer: Vec<GameEpisode> = Vec::new();
+    
+    // 训练样本缓冲区 - 在迭代间复用，避免重复分配
+    let mut replay_buffer = Vec::new();
 
     // 主训练循环
     for iteration in 0..num_iterations {
@@ -183,13 +186,18 @@ pub async fn parallel_train_loop() -> Result<()> {
         // 清理临时模型文件
         let _ = std::fs::remove_file(&temp_model_path);
 
-        // 使用所有游戏（包括平局）
-        let filtered_episodes = all_episodes.clone();
+        // 使用所有游戏（包括平局）- 避免不必要的克隆
+        println!("  收集了 {} 局游戏", all_episodes.len());
 
-        println!("  收集了 {} 局游戏", filtered_episodes.len());
+        // 保存用于MongoDB和统计的副本（仅在需要时克隆）
+        let filtered_episodes = if (iteration + 1) % save_to_mongodb_every == 0 {
+            all_episodes.clone() // 只在需要保存到MongoDB时克隆
+        } else {
+            Vec::new() // 否则使用空向量
+        };
 
-        // 更新游戏缓冲区 - 按整局存储
-        game_buffer.extend(filtered_episodes.clone());
+        // 更新游戏缓冲区 - 按整局存储（移动所有权而非克隆）
+        game_buffer.extend(all_episodes);
         if game_buffer.len() > max_buffer_games {
             let remove_count = game_buffer.len() - max_buffer_games;
             game_buffer.drain(0..remove_count);
@@ -199,8 +207,8 @@ pub async fn parallel_train_loop() -> Result<()> {
         let total_samples: usize = game_buffer.iter().map(|ep| ep.samples.len()).sum();
         println!("  游戏缓冲区: {} 局游戏, {} 个样本", game_buffer.len(), total_samples);
 
-        // 从游戏缓冲区中提取所有样本用于训练
-        let mut replay_buffer = Vec::new();
+        // 清空并从游戏缓冲区中提取所有样本用于训练
+        replay_buffer.clear();
         for episode in &game_buffer {
             replay_buffer.extend(episode.samples.clone());
         }
@@ -229,7 +237,7 @@ pub async fn parallel_train_loop() -> Result<()> {
         let mut v_loss_sum = 0.0_f64;
         for epoch in 0..epochs_per_iteration {
             let (loss, p_loss, v_loss) =
-                train_step(&mut opt, &net, &replay_buffer, batch_size, device, epoch);
+                train_step(&mut opt, &net, &mut replay_buffer, batch_size, device, epoch);
             println!(
                 "    Epoch {}/{}: Loss={:.4} (Policy={:.4}, Value={:.4})",
                 epoch + 1,
@@ -247,31 +255,35 @@ pub async fn parallel_train_loop() -> Result<()> {
 
         // ========== 生成训练日志 ==========
         // 统计对弈整体数据（包含平局）
-        let total_games = all_episodes.len().max(1);
-        let red_wins = all_episodes
+        // 注意：all_episodes已经被移动到game_buffer，使用最近的游戏数据
+        let recent_episodes_count = (num_workers * num_episodes_per_iteration).min(game_buffer.len());
+        let recent_episodes = &game_buffer[(game_buffer.len() - recent_episodes_count)..];
+        
+        let total_games = recent_episodes.len().max(1);
+        let red_wins = recent_episodes
             .iter()
             .filter(|ep| ep.winner == Some(1))
             .count();
-        let black_wins = all_episodes
+        let black_wins = recent_episodes
             .iter()
             .filter(|ep| ep.winner == Some(-1))
             .count();
-        let draws = all_episodes
+        let draws = recent_episodes
             .iter()
             .filter(|ep| ep.winner.is_none() || ep.winner == Some(0))
             .count();
-        let avg_steps: f32 = all_episodes
+        let avg_steps: f32 = recent_episodes
             .iter()
             .map(|ep| ep.game_length as f32)
             .sum::<f32>()
             / total_games as f32;
 
         // 针对本轮新样本的策略熵与高置信度比率
-        let (avg_entropy, high_conf_ratio) = if !filtered_episodes.is_empty() {
+        let (avg_entropy, high_conf_ratio) = if !recent_episodes.is_empty() {
             let mut ent_sum = 0.0_f32;
             let mut count = 0usize;
             let mut high_conf = 0usize;
-            for ep in &filtered_episodes {
+            for ep in recent_episodes {
                 for (_, probs, _, _, _) in &ep.samples {
                     // 避免ln(0)
                     let mut e = 0.0_f32;
@@ -327,7 +339,7 @@ pub async fn parallel_train_loop() -> Result<()> {
             scenario2_masked_a3: 0.0,
             scenario2_masked_a5: 0.0,
             // 样本统计
-            new_samples_count: filtered_episodes
+            new_samples_count: recent_episodes
                 .iter()
                 .map(|ep| ep.samples.len())
                 .sum::<usize>(),
