@@ -4,6 +4,7 @@
 
 use crate::game_env::Observation;
 use crate::nn_model::BanqiNet;
+use crate::self_play::GameEpisode;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use tch::{nn, Device, Kind, Tensor};
@@ -15,7 +16,7 @@ use tch::{nn, Device, Kind, Tensor};
 /// # 参数
 /// - `opt`: 优化器
 /// - `net`: 神经网络模型
-/// - `examples`: 训练样本 (观察, 策略概率, MCTS价值目标, 游戏结果价值, 动作掩码) - 可变引用，会被原地打乱
+/// - `game_episodes`: 游戏回合数据（包含所有样本）- 直接从游戏缓冲区训练，避免克隆
 /// - `batch_size`: 批量大小
 /// - `device`: 训练设备 (CPU/GPU)
 /// - `epoch`: 当前epoch编号 (用于动态调整损失权重)
@@ -25,17 +26,28 @@ use tch::{nn, Device, Kind, Tensor};
 pub fn train_step(
     opt: &mut nn::Optimizer,
     net: &BanqiNet,
-    examples: &mut Vec<(Observation, Vec<f32>, f32, f32, Vec<i32>)>,
+    game_episodes: &[GameEpisode],
     batch_size: usize,
     device: Device,
     epoch: usize,
 ) -> (f64, f64, f64) {
-    if examples.is_empty() {
+    // 收集所有样本的引用并创建索引数组用于打乱
+    let mut sample_refs: Vec<&(Observation, Vec<f32>, f32, f32, Vec<i32>)> = Vec::new();
+    for episode in game_episodes {
+        for sample in &episode.samples {
+            sample_refs.push(sample);
+        }
+    }
+    
+    if sample_refs.is_empty() {
         return (0.0, 0.0, 0.0);
     }
 
-    // 原地打乱训练样本
-    examples.shuffle(&mut thread_rng());
+    // 打乱样本引用
+    sample_refs.shuffle(&mut thread_rng());
+
+    // 打乱样本引用
+    sample_refs.shuffle(&mut thread_rng());
 
     let mut total_loss_sum = 0.0;
     let mut policy_loss_sum = 0.0;
@@ -50,9 +62,9 @@ pub fn train_step(
     let mut value_stats = Vec::new();
     let mut entropy_stats = Vec::new();
 
-    for batch_start in (0..examples.len()).step_by(batch_size) {
-        let batch_end = (batch_start + batch_size).min(examples.len());
-        let batch = &examples[batch_start..batch_end];
+    for batch_start in (0..sample_refs.len()).step_by(batch_size) {
+        let batch_end = (batch_start + batch_size).min(sample_refs.len());
+        let batch = &sample_refs[batch_start..batch_end];
         let bsz = batch.len();
         if bsz == 0 {
             continue;
@@ -64,7 +76,7 @@ pub fn train_step(
         let mut target_val_buf = Vec::with_capacity(bsz);
         let mut mask_buf = Vec::with_capacity(bsz * 352);
 
-        for (obs, target_probs, mcts_val, _game_result_val, masks) in batch.iter() {
+        for &(obs, target_probs, mcts_val, _game_result_val, masks) in batch.iter() {
             let board_slice = obs.board.as_slice().expect("board slice");
             board_buf.extend_from_slice(board_slice);
             let scalar_slice = obs.scalars.as_slice().expect("scalar slice");

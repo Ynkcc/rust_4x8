@@ -51,8 +51,8 @@ pub async fn parallel_train_loop() -> Result<()> {
     let mcts_sims = 200; // MCTS模拟次数
     let num_iterations = 2000; // 训练迭代次数
     let num_episodes_per_iteration = 4; // 每轮每个场景的游戏数
-    let inference_batch_size = num_workers / 2;
-    let inference_timeout_ms = 5;
+    let inference_batch_size = 24;
+    let inference_timeout_ms = 4;
     let batch_size = 512;
     let epochs_per_iteration = 1;
     let max_buffer_games = 1000; // 缓冲区保留最近1000局游戏
@@ -97,11 +97,8 @@ pub async fn parallel_train_loop() -> Result<()> {
         }
     }
 
-    // 游戏缓冲区 - 按整局存储
+    // 游戏缓冲区 - 按整局存储，训练时直接使用，避免克隆
     let mut game_buffer: Vec<GameEpisode> = Vec::new();
-    
-    // 训练样本缓冲区 - 在迭代间复用，避免重复分配
-    let mut replay_buffer = Vec::new();
 
     // 主训练循环
     for iteration in 0..num_iterations {
@@ -196,21 +193,29 @@ pub async fn parallel_train_loop() -> Result<()> {
         // 等待推理服务器退出
         inference_handle.join().expect("推理服务器异常");
 
-        // 清理临时模型文件
-        let _ = std::fs::remove_file(&temp_model_path);
+        // 清理临时模型文件（确保删除）
+        if let Err(e) = std::fs::remove_file(&temp_model_path) {
+            eprintln!("  ⚠️ 清理临时模型失败: {} - {}", temp_model_path, e);
+        }
 
         // 使用所有游戏（包括平局）- 避免不必要的克隆
         println!("  收集了 {} 局游戏", all_episodes.len());
 
-        // 保存用于MongoDB和统计的副本（仅在需要时克隆）
-        let filtered_episodes = if (iteration + 1) % save_to_mongodb_every == 0 {
-            all_episodes.clone() // 只在需要保存到MongoDB时克隆
-        } else {
-            Vec::new() // 否则使用空向量
-        };
+        // 定期保存到MongoDB - 在移动 all_episodes 之前保存，避免克隆
+        if (iteration + 1) % save_to_mongodb_every == 0 {
+            println!("  正在保存数据到MongoDB...");
+            mongo_storage.save_games(iteration, &all_episodes).await?;
+            
+            // 获取并打印统计信息
+            if let Ok(stats) = mongo_storage.get_iteration_stats(iteration).await {
+                stats.print();
+            }
+        }
 
         // 更新游戏缓冲区 - 按整局存储（移动所有权而非克隆）
         game_buffer.extend(all_episodes);
+        // all_episodes 已被移动，自动释放
+        
         if game_buffer.len() > max_buffer_games {
             let remove_count = game_buffer.len() - max_buffer_games;
             game_buffer.drain(0..remove_count);
@@ -220,29 +225,12 @@ pub async fn parallel_train_loop() -> Result<()> {
         let total_samples: usize = game_buffer.iter().map(|ep| ep.samples.len()).sum();
         println!("  游戏缓冲区: {} 局游戏, {} 个样本", game_buffer.len(), total_samples);
 
-        // 清空并从游戏缓冲区中提取所有样本用于训练
-        replay_buffer.clear();
-        for episode in &game_buffer {
-            replay_buffer.extend(episode.samples.clone());
-        }
-
-        if replay_buffer.is_empty() {
+        if total_samples == 0 {
             println!("  ⚠️ 本轮没有收集到有效样本，跳过训练");
             continue;
         }
 
-        // 定期保存到MongoDB
-        if (iteration + 1) % save_to_mongodb_every == 0 {
-            println!("  正在保存数据到MongoDB...");
-            mongo_storage.save_games(iteration, &filtered_episodes).await?;
-            
-            // 获取并打印统计信息
-            if let Ok(stats) = mongo_storage.get_iteration_stats(iteration).await {
-                stats.print();
-            }
-        }
-
-        // 训练
+        // 训练 - 直接使用 game_buffer，避免克隆到 replay_buffer
         println!("  开始训练...");
         let train_start = Instant::now();
         let mut loss_sum = 0.0_f64;
@@ -250,7 +238,7 @@ pub async fn parallel_train_loop() -> Result<()> {
         let mut v_loss_sum = 0.0_f64;
         for epoch in 0..epochs_per_iteration {
             let (loss, p_loss, v_loss) =
-                train_step(&mut opt, &net, &mut replay_buffer, batch_size, device, epoch);
+                train_step(&mut opt, &net, &game_buffer, batch_size, device, epoch);
             println!(
                 "    Epoch {}/{}: Loss={:.4} (Policy={:.4}, Value={:.4})",
                 epoch + 1,
@@ -380,6 +368,10 @@ pub async fn parallel_train_loop() -> Result<()> {
             vs.save(&model_path)?;
             println!("  已保存模型: {}", model_path);
         }
+        
+        // 迭代结束时清理本次循环的变量
+        // recent_episodes 是切片引用，不需要 drop
+        // log_record 会自动释放
     }
 
     // 保存最终模型
