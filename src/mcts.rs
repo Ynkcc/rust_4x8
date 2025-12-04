@@ -134,8 +134,8 @@ pub struct MCTSConfig {
     pub num_simulations: usize,
     /// 虚拟损失值（用于异步MCTS）
     pub virtual_loss: f32,
-    /// 允许同时等待推理的最大协程数量
-    pub max_concurrent_inferences: usize,
+   
+    pub num_mcts_workers: usize,
     /// Dirichlet 噪声 alpha 参数
     pub dirichlet_alpha: f32,
     /// Dirichlet 噪声权重（与先验策略的混合比例）
@@ -150,7 +150,7 @@ impl Default for MCTSConfig {
             cpuct: 1.0,
             num_simulations: 50,
             virtual_loss: 1.0,
-            max_concurrent_inferences: 8,
+            num_mcts_workers: 8,
             dirichlet_alpha: 0.3,
             dirichlet_epsilon: 0.25,
             train: false,

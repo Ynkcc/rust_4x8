@@ -108,7 +108,7 @@ impl MctsDlPolicy {
             cpuct: 1.0,
             num_simulations,
             virtual_loss: 1.0,
-            max_concurrent_inferences: 8,
+            num_mcts_workers: 8,
             dirichlet_alpha: 0.3,
             dirichlet_epsilon: 0.25,
             train: false, // 对弈模式，不添加噪声
@@ -130,7 +130,7 @@ impl MctsDlPolicy {
             cpuct: self.cpuct,
             num_simulations: self.num_simulations,
             virtual_loss: 1.0,
-            max_concurrent_inferences: 8,
+            num_mcts_workers: 8,
             dirichlet_alpha: 0.3,
             dirichlet_epsilon: 0.25,
             train: false, // 对弈模式，不添加噪声
@@ -161,7 +161,7 @@ impl MctsDlPolicy {
                     cpuct: self.cpuct,
                     num_simulations: self.num_simulations,
                     virtual_loss: 1.0,
-                    max_concurrent_inferences: 8,
+                    num_mcts_workers: 8,
                     dirichlet_alpha: 0.3,
                     dirichlet_epsilon: 0.25,
                     train: false, // 对弈模式，不添加噪声

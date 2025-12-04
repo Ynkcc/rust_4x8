@@ -146,7 +146,7 @@ impl SelfPlayWorker {
             num_simulations: self.mcts_sims,
             cpuct: 1.0,
             virtual_loss: 1.0,
-            max_concurrent_inferences: 8,
+            num_mcts_workers: 8,
             dirichlet_alpha: self.dirichlet_alpha,
             dirichlet_epsilon: self.dirichlet_epsilon,
             train: true, // 自对弈训练时开启 Dirichlet 噪声

@@ -259,7 +259,7 @@ fn collect_scenario_samples(
                 num_simulations: mcts_sims,
                 cpuct: 1.0,
                 virtual_loss: 1.0,
-                max_concurrent_inferences: 8,
+                num_mcts_workers: 8,
                 dirichlet_alpha: 0.3,
                 dirichlet_epsilon: 0.25,
                 train: true, // 训练模式
@@ -361,7 +361,7 @@ fn collect_scenario_samples(
                 num_simulations: mcts_sims,
                 cpuct: 1.0,
                 virtual_loss: 1.0,
-                max_concurrent_inferences: 8,
+                num_mcts_workers: 8,
                 dirichlet_alpha: 0.3,
                 dirichlet_epsilon: 0.25,
                 train: true, // 训练模式
@@ -729,7 +729,7 @@ pub fn train_loop() -> Result<()> {
                     num_simulations: mcts_sims,
                     cpuct: 1.0,
                     virtual_loss: 1.0,
-                    max_concurrent_inferences: 8,
+                    num_mcts_workers: 8,
                     dirichlet_alpha: 0.3,
                     dirichlet_epsilon: 0.25,
                     train: true, // 训练模式
