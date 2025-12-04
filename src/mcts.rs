@@ -365,7 +365,8 @@ impl<E: Evaluator> MCTS<E> {
                     .collect();
                 
                 let num_valid = valid_actions.len();
-                if num_valid > 0 {
+                // Dirichlet 分布至少需要 2 个元素，且只有一个动作时添加噪声无意义
+                if num_valid > 1 {
                     // 生成 Dirichlet 噪声
                     let alpha = vec![config.dirichlet_alpha; num_valid];
                     let dirichlet = DirichletDist::new(&alpha).expect("Invalid Dirichlet alpha");
