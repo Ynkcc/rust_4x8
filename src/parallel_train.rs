@@ -254,6 +254,10 @@ pub async fn parallel_train_loop() -> Result<()> {
         let train_elapsed = train_start.elapsed();
         println!("  训练完成，耗时 {:.1}s", train_elapsed.as_secs_f64());
 
+        // 🔥 关键修复：每轮训练后手动触发内存清理
+        // 通过 sleep 给 PyTorch 后台线程时间清理缓存
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         // ========== 生成训练日志 ==========
         // 统计对弈整体数据（包含平局）
         // 注意：all_episodes已经被移动到game_buffer，使用最近的游戏数据
@@ -372,6 +376,8 @@ pub async fn parallel_train_loop() -> Result<()> {
         // 迭代结束时清理本次循环的变量
         // recent_episodes 是切片引用，不需要 drop
         // log_record 会自动释放
+        
+        println!("  ======== Iteration {} 完成 ========\n", iteration + 1);
     }
 
     // 保存最终模型

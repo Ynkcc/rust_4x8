@@ -158,66 +158,80 @@ impl InferenceServer {
         // let start_time = Instant::now();
         let batch_len = batch.len();
 
-        // 准备批量输入张量
-        let mut board_data = Vec::new();
-        let mut scalar_data = Vec::new();
-        let mut mask_data = Vec::new();
+        // 🔥 关键修复：在 no_grad 中执行整个推理流程，确保不构建梯度图
+        tch::no_grad(|| {
+            // 准备批量输入张量
+            let mut board_data = Vec::new();
+            let mut scalar_data = Vec::new();
+            let mut mask_data = Vec::new();
 
-        for req in batch {
-            // Board: [STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS] -> flatten
-            let board_flat: Vec<f32> = req.observation.board.as_slice().unwrap().to_vec();
-            board_data.extend_from_slice(&board_flat);
+            for req in batch {
+                // Board: [STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS] -> flatten
+                let board_flat: Vec<f32> = req.observation.board.as_slice().unwrap().to_vec();
+                board_data.extend_from_slice(&board_flat);
 
-            // Scalars: [STATE_STACK_SIZE * SCALAR_FEATURE_COUNT]
-            let scalars_flat: Vec<f32> = req.observation.scalars.as_slice().unwrap().to_vec();
-            scalar_data.extend_from_slice(&scalars_flat);
+                // Scalars: [STATE_STACK_SIZE * SCALAR_FEATURE_COUNT]
+                let scalars_flat: Vec<f32> = req.observation.scalars.as_slice().unwrap().to_vec();
+                scalar_data.extend_from_slice(&scalars_flat);
 
-            // Masks: [ACTION_SPACE_SIZE]
-            let masks_f32: Vec<f32> = req.action_masks.iter().map(|&m| m as f32).collect();
-            mask_data.extend_from_slice(&masks_f32);
-        }
+                // Masks: [ACTION_SPACE_SIZE]
+                let masks_f32: Vec<f32> = req.action_masks.iter().map(|&m| m as f32).collect();
+                mask_data.extend_from_slice(&masks_f32);
+            }
 
-        // 构建张量: [batch, C, H, W]
-        let board_tensor = Tensor::from_slice(&board_data)
-            .view([
-                batch_len as i64,
-                BOARD_CHANNELS as i64,
-                BOARD_ROWS as i64,
-                BOARD_COLS as i64,
-            ])
-            .to(self.device);
+            // 构建张量: [batch, C, H, W]
+            let board_tensor = Tensor::from_slice(&board_data)
+                .view([
+                    batch_len as i64,
+                    BOARD_CHANNELS as i64,
+                    BOARD_ROWS as i64,
+                    BOARD_COLS as i64,
+                ])
+                .to(self.device);
 
-        let scalar_tensor = Tensor::from_slice(&scalar_data)
-            .view([batch_len as i64, SCALAR_FEATURE_COUNT as i64])
-            .to(self.device);
+            let scalar_tensor = Tensor::from_slice(&scalar_data)
+                .view([batch_len as i64, SCALAR_FEATURE_COUNT as i64])
+                .to(self.device);
 
-        let mask_tensor = Tensor::from_slice(&mask_data)
-            .view([batch_len as i64, ACTION_SPACE_SIZE as i64])
-            .to(self.device);
+            let mask_tensor = Tensor::from_slice(&mask_data)
+                .view([batch_len as i64, ACTION_SPACE_SIZE as i64])
+                .to(self.device);
 
-        // 前向推理（推理模式）
-        let (logits, values) =
-            tch::no_grad(|| self.net.forward_inference(&board_tensor, &scalar_tensor));
+            // 前向推理（已在 no_grad 中，无需重复包裹）
+            let (logits, values) = self.net.forward_inference(&board_tensor, &scalar_tensor);
 
-        // 应用掩码并计算概率
-        let masked_logits = &logits + (&mask_tensor - 1.0) * 1e9;
-        let probs = masked_logits.softmax(-1, Kind::Float);
+            // 应用掩码并计算概率
+            let masked_logits = &logits + (&mask_tensor - 1.0) * 1e9;
+            let probs = masked_logits.softmax(-1, Kind::Float);
 
-        // 提取结果并发送响应到各自的通道
-        for (i, req) in batch.iter().enumerate() {
-            let policy_slice = probs.get(i as i64);
-            let mut policy = vec![0.0f32; ACTION_SPACE_SIZE];
-            policy_slice
-                .to_device(Device::Cpu)
-                .copy_data(&mut policy, ACTION_SPACE_SIZE);
+            // 提取结果并发送响应到各自的通道
+            for (i, req) in batch.iter().enumerate() {
+                let policy_slice = probs.get(i as i64);
+                let mut policy = vec![0.0f32; ACTION_SPACE_SIZE];
+                policy_slice
+                    .to_device(Device::Cpu)
+                    .copy_data(&mut policy, ACTION_SPACE_SIZE);
 
-            let value = values.get(i as i64).squeeze().double_value(&[]) as f32;
+                let value = values.get(i as i64).squeeze().double_value(&[]) as f32;
 
-            let response = InferenceResponse { policy, value };
+                let response = InferenceResponse { policy, value };
 
-            // 发送响应到请求者的专属通道（忽略发送失败）
-            let _ = req.response_tx.send(response);
-        }
+                // 发送响应到请求者的专属通道（忽略发送失败）
+                let _ = req.response_tx.send(response);
+                
+                // 🔥 关键修复：显式释放临时切片张量
+                drop(policy_slice);
+            }
+            
+            // 🔥 关键修复：显式释放所有中间张量
+            drop(board_tensor);
+            drop(scalar_tensor);
+            drop(mask_tensor);
+            drop(logits);
+            drop(values);
+            drop(masked_logits);
+            drop(probs);
+        });
 
         // let elapsed = start_time.elapsed();
         // if batch_len >= 4 {  // 只在批量较大时输出日志

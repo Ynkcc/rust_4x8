@@ -62,6 +62,7 @@ pub fn train_step(
     let mut value_stats = Vec::new();
     let mut entropy_stats = Vec::new();
 
+    // 🔥 关键修复：使用 no_grad 包裹统计收集，避免梯度累积
     for batch_start in (0..sample_refs.len()).step_by(batch_size) {
         let batch_end = (batch_start + batch_size).min(sample_refs.len());
         let batch = &sample_refs[batch_start..batch_end];
@@ -126,12 +127,13 @@ pub fn train_step(
         let v_loss = value.mse_loss(&target_v, tch::Reduction::Mean) * (value_weight as f64);
 
         let total_loss = &p_loss + &v_loss;
-        opt.backward_step(&total_loss);
-
-        // 获取batch平均损失值
+        
+        // 🔥 关键修复：在 backward 之前立即提取标量值，断开计算图引用
         let batch_loss_val = total_loss.double_value(&[]);
         let batch_p_loss_val = p_loss.double_value(&[]) / policy_weight as f64;
         let batch_v_loss_val = v_loss.double_value(&[]) / value_weight as f64;
+        
+        opt.backward_step(&total_loss);
 
         // 还原为总和 (乘以 bsz) - 修复统计bug
         // 因为损失已经是Reduction::Mean的结果,需要乘以batch_size还原为总和
@@ -139,6 +141,20 @@ pub fn train_step(
         policy_loss_sum += batch_p_loss_val * bsz as f64;
         value_loss_sum += batch_v_loss_val * bsz as f64;
         num_samples += bsz;
+        
+        // 🔥 关键修复：显式释放本批次的所有中间张量
+        drop(board_tensor);
+        drop(scalar_tensor);
+        drop(target_p);
+        drop(target_v);
+        drop(mask_tensor);
+        drop(logits);
+        drop(value);
+        drop(masked_logits);
+        drop(log_probs);
+        drop(p_loss);
+        drop(v_loss);
+        drop(total_loss);
     }
 
     // 🐛 DEBUG: 输出样本质量统计
