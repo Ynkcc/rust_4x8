@@ -2,3 +2,4 @@ Cargo.lock
 target/
 gen/
 banqi_model_*
+heaptrack*

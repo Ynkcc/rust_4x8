@@ -8,7 +8,7 @@
 // 
 // 数据存储:
 // - 内存缓冲区: 按整局游戏存储，保留最近1000局
-// - MongoDB: 定期保存游戏数据用于长期存储和分析
+// - MongoDB: 每轮训练后同步保存新增游戏数据（无异步/tokio依赖）
 
 use anyhow::Result;
 use banqi_4x8::inference::{ChannelEvaluator, InferenceServer};
@@ -25,15 +25,14 @@ use tch::{nn, nn::OptimizerConfig, Device};
 
 // ================ 主训练循环 ================
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    if let Err(e) = parallel_train_loop().await {
+fn main() -> Result<()> {
+    if let Err(e) = parallel_train_loop() {
         eprintln!("训练失败: {}", e);
     }
     Ok(())
 }
 
-pub async fn parallel_train_loop() -> Result<()> {
+pub fn parallel_train_loop() -> Result<()> {
     // 设备配置
     let cuda_available = tch::Cuda::is_available();
     println!("CUDA available: {}", cuda_available);
@@ -57,7 +56,6 @@ pub async fn parallel_train_loop() -> Result<()> {
     let epochs_per_iteration = 1;
     let max_buffer_games = 1000; // 缓冲区保留最近1000局游戏
     let learning_rate = 1e-4;
-    let save_to_mongodb_every = 5; // 每5轮保存一次到MongoDB
     
     // Dirichlet 噪声参数（替代温度参数）
     let dirichlet_alpha = 0.3;    // Alpha值，控制噪声的集中度
@@ -70,13 +68,12 @@ pub async fn parallel_train_loop() -> Result<()> {
     println!("训练迭代次数: {}", num_iterations);
     println!("推理批量大小: {}", inference_batch_size);
     println!("游戏缓冲区: 最近 {} 局", max_buffer_games);
-    println!("MongoDB保存频率: 每 {} 轮", save_to_mongodb_every);
     println!("Dirichlet噪声: alpha={}, epsilon={}", dirichlet_alpha, dirichlet_epsilon);
     println!("场景: Standard");
 
     // 连接MongoDB
     let mongo_uri = env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
-    let mongo_storage = MongoStorage::new(&mongo_uri, "banqi_training", "games").await?;
+    let mongo_storage = MongoStorage::new(&mongo_uri, "banqi_training", "games")?;
     println!("MongoDB连接成功");
 
 
@@ -201,15 +198,13 @@ pub async fn parallel_train_loop() -> Result<()> {
         // 使用所有游戏（包括平局）- 避免不必要的克隆
         println!("  收集了 {} 局游戏", all_episodes.len());
 
-        // 定期保存到MongoDB - 在移动 all_episodes 之前保存，避免克隆
-        if (iteration + 1) % save_to_mongodb_every == 0 {
-            println!("  正在保存数据到MongoDB...");
-            mongo_storage.save_games(iteration, &all_episodes).await?;
-            
-            // 获取并打印统计信息
-            if let Ok(stats) = mongo_storage.get_iteration_stats(iteration).await {
-                stats.print();
-            }
+        // 每轮立即保存新增的游戏到MongoDB
+        println!("  正在保存数据到MongoDB...");
+        mongo_storage.save_games(iteration, &all_episodes)?;
+        
+        // 获取并打印统计信息
+        if let Ok(stats) = mongo_storage.get_iteration_stats(iteration) {
+            stats.print();
         }
 
         // 更新游戏缓冲区 - 按整局存储（移动所有权而非克隆）
