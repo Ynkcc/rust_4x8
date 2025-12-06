@@ -15,11 +15,12 @@ fn main() {
     println!("初始标量状态形状: {:?}\n", obs.scalars.shape());
 
     let mut step_count = 0;
+    let mut masks = vec![0; banqi_4x8::ACTION_SPACE_SIZE];
 
     loop {
         env.print_board();
 
-        let masks = env.action_masks();
+        env.action_masks_into(&mut masks);
         let valid_actions: Vec<usize> = masks
             .iter()
             .enumerate()

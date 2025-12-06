@@ -72,7 +72,8 @@ impl Evaluator for TchEvaluator {
         let (policy_logits, value_t) = self.model.net.forward_inference(&board_t, &scalars_t);
 
         // 掩码
-        let masks = env.action_masks();
+        let mut masks = vec![0; ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
         let mask_t = Tensor::from_slice(&masks)
             .to_device(self.model.device)
             .to_kind(Kind::Bool)

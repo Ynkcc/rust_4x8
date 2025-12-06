@@ -805,6 +805,15 @@ impl DarkChessEnv {
 
     fn get_scalar_state_vector(&self) -> Vec<f32> {
         let mut vec = Vec::with_capacity(SCALAR_FEATURE_COUNT);
+        self.get_scalar_state_vector_into(&mut vec);
+        vec
+    }
+
+    /// 填充 scalar 状态到提供的缓冲区，避免重复分配
+    fn get_scalar_state_vector_into(&self, vec: &mut Vec<f32>) {
+        vec.clear();
+        vec.reserve(SCALAR_FEATURE_COUNT);
+
         let my = self.current_player;
         let opp = my.opposite();
 
@@ -823,9 +832,9 @@ impl DarkChessEnv {
             }
         }
 
+        // 使用提供的 action_mask 缓冲区
         let action_masks = self.action_masks();
         vec.extend(action_masks.iter().map(|&x| x as f32));
-        vec
     }
 
     pub fn get_state(&self) -> Observation {
@@ -845,6 +854,29 @@ impl DarkChessEnv {
             scalars_data.extend_from_slice(frame);
         }
         let scalars = Array1::from_vec(scalars_data);
+
+        Observation { board, scalars }
+    }
+
+    /// 使用提供的缓冲区填充 Observation，避免重复分配内存
+    pub fn get_state_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) -> Observation {
+        board_data.clear();
+        board_data.reserve(STATE_STACK_SIZE * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
+        for frame in &self.board_history {
+            board_data.extend_from_slice(frame);
+        }
+        let board = Array4::from_shape_vec(
+            (STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
+            board_data.clone(), // ndarray 需要拥有数据
+        )
+        .expect("Failed to reshape board array");
+
+        scalars_data.clear();
+        scalars_data.reserve(STATE_STACK_SIZE * SCALAR_FEATURE_COUNT);
+        for frame in &self.scalar_history {
+            scalars_data.extend_from_slice(frame);
+        }
+        let scalars = Array1::from_vec(scalars_data.clone());
 
         Observation { board, scalars }
     }
@@ -887,11 +919,27 @@ impl DarkChessEnv {
     }
     // --- 动作掩码 ---
     pub fn action_masks(&self) -> Vec<i32> {
-        self.get_action_masks_for_player(self.current_player)
+        let mut mask = vec![0; ACTION_SPACE_SIZE];
+        self.action_masks_into(&mut mask);
+        mask
+    }
+
+    /// 填充动作掩码到提供的缓冲区，避免重复分配
+    pub fn action_masks_into(&self, mask: &mut [i32]) {
+        self.get_action_masks_for_player_into(self.current_player, mask);
     }
 
     fn get_action_masks_for_player(&self, player: Player) -> Vec<i32> {
         let mut mask = vec![0; ACTION_SPACE_SIZE];
+        self.get_action_masks_for_player_into(player, &mut mask);
+        mask
+    }
+
+    fn get_action_masks_for_player_into(&self, player: Player, mask: &mut [i32]) {
+        // 清空缓冲区
+        for m in mask.iter_mut() {
+            *m = 0;
+        }
         let lookup = action_lookup_tables();
 
         // --------------------------------------------------------
@@ -1067,8 +1115,6 @@ impl DarkChessEnv {
                 }
             }
         }
-
-        mask
     }
 
     pub fn is_cannon_attack_on_hidden(&self, action: usize) -> bool {

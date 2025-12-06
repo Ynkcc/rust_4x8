@@ -8,7 +8,8 @@ pub struct RandomPolicy;
 
 impl Policy for RandomPolicy {
     fn choose_action(env: &DarkChessEnv) -> Option<usize> {
-        let masks = env.action_masks();
+        let mut masks = vec![0; crate::game_env::ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
         let valid_actions: Vec<usize> = masks
             .iter()
             .enumerate()

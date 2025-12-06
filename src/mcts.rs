@@ -110,7 +110,8 @@ impl Evaluator for RandomEvaluator {
         let mut rng = rand::thread_rng();
 
         let mut probs = vec![0.0; ACTION_SPACE_SIZE];
-        let masks = env.action_masks();
+        let mut masks = vec![0; ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
         let valid_count = masks.iter().sum::<i32>() as f32;
 
         if valid_count > 0.0 {
@@ -245,7 +246,8 @@ impl<E: Evaluator> MCTS<E> {
             .as_ref()
             .clone();
 
-        let masks = env.action_masks();
+        let mut masks = vec![0; ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
         if masks.iter().all(|&x| x == 0) {
             // 游戏结束（无子可走），判负
             node.visit_count += 1;

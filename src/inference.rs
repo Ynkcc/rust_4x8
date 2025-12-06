@@ -259,9 +259,11 @@ impl Evaluator for ChannelEvaluator {
         let (response_tx, response_rx) = mpsc::channel();
 
         // 发送推理请求
+        let mut masks = vec![0; crate::game_env::ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
         let req = InferenceRequest {
             observation: env.get_state(),
-            action_masks: env.action_masks(),
+            action_masks: masks,
             response_tx,
         };
 

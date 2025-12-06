@@ -159,11 +159,14 @@ impl SelfPlayWorker {
         // 🐛 DEBUG: 记录首步MCTS详情
         let debug_first_step = episode_num < 2; // 只调试前2局
 
+        // 可复用的缓冲区
+        let mut masks = vec![0; crate::game_env::ACTION_SPACE_SIZE];
+
         loop {
             // 运行MCTS
             mcts.run();
             let probs = mcts.get_root_probabilities();
-            let masks = env.action_masks();
+            env.action_masks_into(&mut masks);
             
             // 获取MCTS根节点的价值（从当前玩家视角）
             let mcts_value = mcts.root.q_value();
@@ -183,7 +186,7 @@ impl SelfPlayWorker {
                 probs.clone(),
                 mcts_value,
                 env.get_current_player(),
-                masks,
+                masks.clone(),
             ));
 
             // 选择动作（使用访问计数比例，不再使用温度采样）

@@ -10,7 +10,8 @@ pub struct RevealFirstPolicy;
 
 impl Policy for RevealFirstPolicy {
     fn choose_action(env: &DarkChessEnv) -> Option<usize> {
-        let masks = env.action_masks();
+        let mut masks = vec![0; crate::game_env::ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
         let mut reveal_actions: Vec<usize> = Vec::new();
         let mut fallback_actions: Vec<usize> = Vec::new();
 
