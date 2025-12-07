@@ -47,13 +47,13 @@ pub fn parallel_train_loop() -> Result<()> {
 
     // 训练配置
     let num_workers = 32; // 每个场景一个工作线程
-    let mcts_sims = 200; // MCTS模拟次数
+    let mcts_sims = 800; // MCTS模拟次数
     let num_iterations = 2000; // 训练迭代次数
     let num_episodes_per_iteration = 4; // 每轮每个场景的游戏数
-    let inference_batch_size = 24;
+    let inference_batch_size = 28;
     let inference_timeout_ms = 4;
-    let batch_size = 512;
-    let epochs_per_iteration = 1;
+    let batch_size = 256;
+    let epochs_per_iteration = 10;
     let max_buffer_games = 1000; // 缓冲区保留最近1000局游戏
     let learning_rate = 1e-4;
     
@@ -376,10 +376,10 @@ pub fn parallel_train_loop() -> Result<()> {
     }
 
     // 保存最终模型
-    vs.save("banqi_model_scenario_latest.ot")?;
-    println!("\n训练完成！已保存模型: banqi_model_scenario_latest.ot");
+    vs.save("banqi_model_latest.ot")?;
+    println!("\n训练完成！已保存模型: banqi_model_latest.ot");
     println!("\n请使用以下命令测试模型:");
-    println!("  cargo run --bin banqi-verify-trained -- banqi_model_scenario_latest.ot");
+    println!("  cargo run --bin banqi-verify-trained -- banqi_model_latest.ot");
 
     Ok(())
 }

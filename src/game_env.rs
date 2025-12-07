@@ -54,8 +54,8 @@ const PIECE_MAX_COUNTS: [usize; NUM_PIECE_TYPES] = [
 // 存活向量大小: 5(兵) + 2(炮) + 2(马) + 2(车) + 2(象) + 2(士) + 1(将) = 16
 const SURVIVAL_VECTOR_SIZE: usize = TOTAL_PIECES_PER_PLAYER;
 
-// Scalar 特征数量: 4个全局标量 + 2个存活向量(各16) + 动作掩码长度
-pub const SCALAR_FEATURE_COUNT: usize = 4 + 2 * SURVIVAL_VECTOR_SIZE + ACTION_SPACE_SIZE;
+// Scalar 特征数量: 3个全局标量 + 2个存活向量(各16) + 动作掩码长度
+pub const SCALAR_FEATURE_COUNT: usize = 3 + 2 * SURVIVAL_VECTOR_SIZE + ACTION_SPACE_SIZE;
 
 // 翻棋概率表大小: 2个玩家 * 7种棋子 = 14
 const REVEAL_PROBABILITY_SIZE: usize = 2 * NUM_PIECE_TYPES;
@@ -817,7 +817,6 @@ impl DarkChessEnv {
         let my = self.current_player;
         let opp = my.opposite();
 
-        vec.push(self.total_step_counter as f32 / MAX_STEPS_PER_EPISODE as f32);
         vec.push(self.move_counter as f32 / MAX_CONSECUTIVE_MOVES_FOR_DRAW as f32);
         vec.push(self.get_hp(my) as f32 / INITIAL_HEALTH_POINTS as f32);
         vec.push(self.get_hp(opp) as f32 / INITIAL_HEALTH_POINTS as f32);

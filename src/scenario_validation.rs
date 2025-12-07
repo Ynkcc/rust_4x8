@@ -2,7 +2,10 @@
 //
 // 提供模型在标准场景上的验证功能，用于监控训练进度
 
-use crate::game_env::{DarkChessEnv, Player, ACTION_SPACE_SIZE};
+use crate::game_env::{
+    DarkChessEnv, Player, ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS,
+    SCALAR_FEATURE_COUNT,
+};
 use crate::nn_model::BanqiNet;
 use crate::self_play::get_top_k_actions;
 use tch::{Device, Kind, Tensor};
@@ -44,10 +47,10 @@ where
 
     let obs = env.get_state();
     let board_tensor = Tensor::from_slice(obs.board.as_slice().unwrap())
-        .view([1, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
+        .view([1, BOARD_CHANNELS as i64, BOARD_ROWS as i64, BOARD_COLS as i64])
         .to(device);
     let scalar_tensor = Tensor::from_slice(obs.scalars.as_slice().unwrap())
-        .view([1, 388]) // 4x8棋盘: 388个特征
+        .view([1, SCALAR_FEATURE_COUNT as i64])
         .to(device);
     let masks: Vec<f32> = env.action_masks().iter().map(|&m| m as f32).collect();
     let mask_tensor = Tensor::from_slice(&masks)
@@ -109,10 +112,10 @@ pub fn validate_model_on_scenarios_with_net(
 
         let obs = env.get_state();
         let board_tensor = Tensor::from_slice(obs.board.as_slice().unwrap())
-            .view([1, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
+            .view([1, BOARD_CHANNELS as i64, BOARD_ROWS as i64, BOARD_COLS as i64])
             .to(device);
         let scalar_tensor = Tensor::from_slice(obs.scalars.as_slice().unwrap())
-            .view([1, 388]) // 4x8棋盘: 388个特征
+            .view([1, SCALAR_FEATURE_COUNT as i64])
             .to(device);
 
         let masks: Vec<f32> = env.action_masks().iter().map(|&m| m as f32).collect();
@@ -183,10 +186,10 @@ pub fn validate_model_on_scenarios_with_net(
 
         let obs = env.get_state();
         let board_tensor = Tensor::from_slice(obs.board.as_slice().unwrap())
-            .view([1, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
+            .view([1, BOARD_CHANNELS as i64, BOARD_ROWS as i64, BOARD_COLS as i64])
             .to(device);
         let scalar_tensor = Tensor::from_slice(obs.scalars.as_slice().unwrap())
-            .view([1, 388]) // 4x8棋盘: 388个特征
+            .view([1, SCALAR_FEATURE_COUNT as i64])
             .to(device);
 
         let masks: Vec<f32> = env.action_masks().iter().map(|&m| m as f32).collect();

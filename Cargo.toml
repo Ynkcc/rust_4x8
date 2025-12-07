@@ -51,6 +51,10 @@ path = "src/test_observation.rs"
 name = "banqi-lr-finder"
 path = "src/run_lr_finder.rs"
 
+[[bin]]
+name = "banqi-train-from-db"
+path = "src/train_from_db.rs"
+
 [dependencies]
 rand = "0.8"
 rand_distr = "0.4"

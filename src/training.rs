@@ -2,7 +2,7 @@
 //
 // 提供神经网络训练的核心逻辑，包括批量训练、损失计算等
 
-use crate::game_env::Observation;
+use crate::game_env::{Observation, ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, SCALAR_FEATURE_COUNT};
 use crate::nn_model::BanqiNet;
 use crate::self_play::GameEpisode;
 use rand::seq::SliceRandom;
@@ -71,11 +71,11 @@ pub fn train_step(
             continue;
         }
 
-        let mut board_buf = Vec::with_capacity(bsz * 16 * 4 * 8);
-        let mut scalar_buf = Vec::with_capacity(bsz * 388);
-        let mut target_prob_buf = Vec::with_capacity(bsz * 352);
+        let mut board_buf = Vec::with_capacity(bsz * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
+        let mut scalar_buf = Vec::with_capacity(bsz * SCALAR_FEATURE_COUNT);
+        let mut target_prob_buf = Vec::with_capacity(bsz * ACTION_SPACE_SIZE);
         let mut target_val_buf = Vec::with_capacity(bsz);
-        let mut mask_buf = Vec::with_capacity(bsz * 352);
+        let mut mask_buf = Vec::with_capacity(bsz * ACTION_SPACE_SIZE);
 
         for &(obs, target_probs, mcts_val, _game_result_val, masks) in batch.iter() {
             let board_slice = obs.board.as_slice().expect("board slice");
@@ -97,13 +97,13 @@ pub fn train_step(
         }
 
         let board_tensor = Tensor::from_slice(&board_buf)
-            .view([bsz as i64, 16, 4, 8]) // 4x8棋盘: 16通道, 4行8列
+            .view([bsz as i64, BOARD_CHANNELS as i64, BOARD_ROWS as i64, BOARD_COLS as i64])
             .to(device);
         let scalar_tensor = Tensor::from_slice(&scalar_buf)
-            .view([bsz as i64, 388]) // 4x8棋盘: 388个特征
+            .view([bsz as i64, SCALAR_FEATURE_COUNT as i64])
             .to(device);
         let target_p = Tensor::from_slice(&target_prob_buf)
-            .view([bsz as i64, 352]) // 4x8棋盘: 352个动作
+            .view([bsz as i64, ACTION_SPACE_SIZE as i64])
             .to(device);
         let target_v = Tensor::from_slice(&target_val_buf)
             .view([bsz as i64, 1])

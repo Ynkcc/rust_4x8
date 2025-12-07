@@ -1,14 +1,16 @@
 // code_files/src/nn_model.rs
 use tch::{nn, Tensor};
+use crate::game_env::{
+    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS,
+    SCALAR_FEATURE_COUNT, STATE_STACK_SIZE,
+};
 
-// ========== 4×8 棋盘配置 (对齐 game_env.rs) ==========
-const BOARD_CHANNELS: i64 = 16; // 2*NUM_PIECE_TYPES + 2 = 2*7 + 2 = 16
-const STATE_STACK: i64 = 1; // 禁用状态堆叠 (game_env.rs STATE_STACK_SIZE = 1)
-const TOTAL_CHANNELS: i64 = BOARD_CHANNELS * STATE_STACK; // 16
-const BOARD_H: i64 = 4; // BOARD_ROWS
-const BOARD_W: i64 = 8; // BOARD_COLS
-const SCALAR_FEATURES: i64 = 388; // 4 + 2*SURVIVAL_VECTOR_SIZE(16) + ACTION_SPACE_SIZE(352) = 388
-const ACTION_SIZE: i64 = 352; // REVEAL(32) + MOVE(104) + CANNON(216) = 352
+// ========== 4×8 棋盘配置 (使用 game_env.rs 的常量) ==========
+const TOTAL_CHANNELS: i64 = (BOARD_CHANNELS * STATE_STACK_SIZE) as i64; // 16 * 1 = 16
+const BOARD_H: i64 = BOARD_ROWS as i64; // 4
+const BOARD_W: i64 = BOARD_COLS as i64; // 8
+const SCALAR_FEATURES: i64 = SCALAR_FEATURE_COUNT as i64; // 3 + 2*16 + 352 = 387
+const ACTION_SIZE: i64 = ACTION_SPACE_SIZE as i64; // 352
 
 // 网络通道数：针对 4x8 棋盘，128 通道以捕捉更复杂的空间特征（特别是炮的跳跃攻击）
 const HIDDEN_CHANNELS: i64 = 128;
@@ -96,10 +98,10 @@ impl BanqiNet {
         let flat_size = HIDDEN_CHANNELS * BOARD_H * BOARD_W;
         
         // total_fc_input = flat_size + SCALAR_FEATURES
-        //                = 4096 + 388 = 4484
+        //                = 4096 + 387 = 4483
         let total_fc_input = flat_size + SCALAR_FEATURES;
 
-        // 4. 全连接层：4484 -> 512 -> 256
+        // 4. 全连接层：4483 -> 512 -> 256
         // 第一层需要足够宽以承载卷积特征到抽象逻辑的转换
         let fc1 = nn::linear(vs / "fc1", total_fc_input, 512, Default::default());
         let fc2 = nn::linear(vs / "fc2", 512, 256, Default::default());
@@ -126,7 +128,7 @@ impl BanqiNet {
     fn forward_t(&self, board: &Tensor, scalars: &Tensor, train: bool) -> (Tensor, Tensor) {
         // 输入形状检查（调试时可启用）:
         // board:   [Batch, 16, 4, 8]
-        // scalars: [Batch, 388]
+        // scalars: [Batch, 387]
         
         // 1. 输入卷积：提取初始特征
         let x = board
@@ -143,11 +145,11 @@ impl BanqiNet {
         let x = x.flatten(1, -1);
 
         // 4. 拼接标量特征 (当前玩家、存活情况、动作掩码等)
-        // combined: [Batch, 4096 + 388] = [Batch, 4484]
+        // combined: [Batch, 4096 + 387] = [Batch, 4483]
         let combined = Tensor::cat(&[&x, scalars], 1);
 
         // 5. 全连接层：融合所有特征
-        // 4484 -> 512 -> 256
+        // 4483 -> 512 -> 256
         let shared = combined.apply(&self.fc1).relu().apply(&self.fc2).relu();
 
         // 6. 输出头

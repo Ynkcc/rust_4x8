@@ -63,8 +63,8 @@ impl MongoStorage {
         })
     }
 
-    /// 获取集合引用
-    fn get_collection(&self) -> Collection<Document> {
+    /// 获取集合引用（公开方法供外部使用）
+    pub fn get_collection(&self) -> Collection<Document> {
         self.client
             .database(&self.db_name)
             .collection(&self.collection_name)
