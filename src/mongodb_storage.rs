@@ -80,6 +80,13 @@ impl MongoStorage {
         let mut documents = Vec::new();
 
         for episode in episodes {
+            // 🐛 FIX: 跳过空样本的游戏（由游戏错误导致）
+            if episode.samples.is_empty() {
+                eprintln!("  ⚠️ 跳过保存空样本游戏 (game_length={}, winner={:?})", 
+                    episode.game_length, episode.winner);
+                continue;
+            }
+            
             let mut sample_docs = Vec::new();
 
             for (step_idx, (obs, probs, mcts_val, game_result_val, mask)) in episode.samples.iter().enumerate() {

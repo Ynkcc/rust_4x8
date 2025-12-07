@@ -46,16 +46,13 @@ pub fn train_step(
     // 打乱样本引用
     sample_refs.shuffle(&mut thread_rng());
 
-    // 打乱样本引用
-    sample_refs.shuffle(&mut thread_rng());
-
     let mut total_loss_sum = 0.0;
     let mut policy_loss_sum = 0.0;
     let mut value_loss_sum = 0.0;
     let mut num_samples = 0;
 
-    // 动态调整策略权重: 早期更注重策略学习,后期平衡
-    let policy_weight = 1.5 + (epoch as f32 * 0.1).min(1.0); // 从1.5逐渐增加到2.5
+    // 策略和价值权重保持恒定，避免epoch内loss单调增长
+    let policy_weight = 1.0;
     let value_weight = 1.0;
 
     // 🐛 DEBUG: 检查样本统计

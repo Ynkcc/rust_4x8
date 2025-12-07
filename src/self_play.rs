@@ -259,8 +259,10 @@ impl SelfPlayWorker {
                         };
                     }
                 }
-                Err(_e) => {
-                    // eprintln!("[Worker-{}] 游戏错误: {}", self.worker_id, _e);
+                Err(e) => {
+                    eprintln!("  ⚠️ [Worker-{}] 游戏错误 (step={}, action={}): {}", 
+                        self.worker_id, step, action, e);
+                    // 返回空 episode，稍后会被过滤掉
                     return GameEpisode {
                         samples: Vec::new(),
                         game_length: step,

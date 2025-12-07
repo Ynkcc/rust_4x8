@@ -196,7 +196,16 @@ pub fn parallel_train_loop() -> Result<()> {
         }
 
         // 使用所有游戏（包括平局）- 避免不必要的克隆
-        println!("  收集了 {} 局游戏", all_episodes.len());
+        let total_games = all_episodes.len();
+        let valid_games = all_episodes.iter().filter(|ep| !ep.samples.is_empty()).count();
+        let error_games = total_games - valid_games;
+        
+        println!("  收集了 {} 局游戏 (有效: {}, 错误: {})", 
+            total_games, valid_games, error_games);
+        
+        if error_games > 0 {
+            eprintln!("  ⚠️ 发现 {} 局错误游戏（samples为空），将被跳过保存", error_games);
+        }
 
         // 每轮立即保存新增的游戏到MongoDB
         println!("  正在保存数据到MongoDB...");
@@ -257,9 +266,16 @@ pub fn parallel_train_loop() -> Result<()> {
         // 统计对弈整体数据（包含平局）
         // 注意：all_episodes已经被移动到game_buffer，使用最近的游戏数据
         let recent_episodes_count = (num_workers * num_episodes_per_iteration).min(game_buffer.len());
+        
+        // 🐛 FIX: 处理空缓冲区的情况
+        if game_buffer.is_empty() || recent_episodes_count == 0 {
+            println!("  ⚠️ 缓冲区为空，跳过统计和日志记录");
+            continue;
+        }
+        
         let recent_episodes = &game_buffer[(game_buffer.len() - recent_episodes_count)..];
         
-        let total_games = recent_episodes.len().max(1);
+        let total_games = recent_episodes.len();
         let red_wins = recent_episodes
             .iter()
             .filter(|ep| ep.winner == Some(1))
@@ -303,9 +319,11 @@ pub fn parallel_train_loop() -> Result<()> {
                     }
                 }
             }
+            // 🐛 FIX: 添加额外的除零保护
             if count > 0 {
                 (ent_sum / count as f32, high_conf as f32 / count as f32)
             } else {
+                eprintln!("  ⚠️ 本轮所有游戏样本为空，熵统计无效");
                 (0.0, 0.0)
             }
         } else {
