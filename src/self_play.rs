@@ -1,6 +1,11 @@
-// self_play.rs - 自对弈工作器模块
+// src/self_play.rs - 自对弈与数据生成模块
 //
-// 提供自对弈游戏的执行逻辑，包括工作器管理、动作采样、场景类型等
+// 本模块实现了并行的自对弈（Self-Play）逻辑，用于生成强化学习所需的训练数据。
+// 主要功能包括：
+// 1. 定义游戏数据结构 (`GameEpisode`)，用于存储一局游戏的完整样本。
+// 2. 定义特定的训练场景 (`ScenarioType`)，用于针对性地训练模型在特定局面下的表现。
+// 3. 实现自对弈工作器 (`SelfPlayWorker`)，结合 MCTS 和神经网络进行对局。
+// 4. 提供动作采样策略，包括基于温度参数的随机采样。
 
 use crate::game_env::{DarkChessEnv, Observation, Player};
 use crate::inference::ChannelEvaluator;
@@ -10,49 +15,59 @@ use rand::prelude::*;
 use std::sync::Arc;
 use std::time::Instant;
 
-// ================ 游戏统计信息 ================
+// ================ 数据结构定义 ================
 
-/// 游戏统计信息
+/// 游戏简要统计信息
 #[derive(Debug, Clone)]
 pub struct GameStats {
+    /// 游戏总步数
     pub steps: usize,
-    pub winner: Option<i32>, // Some(1)=红胜, Some(-1)=黑胜, None/Some(0)=平局
-}
-
-/// 单局游戏的完整数据（包含样本和元数据）
-#[derive(Debug, Clone)]
-pub struct GameEpisode {
-    pub samples: Vec<(Observation, Vec<f32>, f32, f32, Vec<i32>)>, // (观察, 策略概率, MCTS价值, 游戏结果价值, 动作掩码)
-    pub game_length: usize,
+    /// 获胜方: Some(1)=红胜, Some(-1)=黑胜, None/Some(0)=平局
     pub winner: Option<i32>,
 }
 
-// ================ 场景环境枚举 ================
+/// 单局游戏的完整数据记录
+///
+/// 包含该局游戏中每一步的观测状态、MCTS 搜索产生的策略概率、
+/// MCTS 估算的根节点价值以及最终的游戏结果。
+#[derive(Debug, Clone)]
+pub struct GameEpisode {
+    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, 最终回报, 动作掩码)
+    pub samples: Vec<(Observation, Vec<f32>, f32, f32, Vec<i32>)>,
+    /// 游戏总步数
+    pub game_length: usize,
+    /// 获胜方
+    pub winner: Option<i32>,
+}
 
-/// 场景类型枚举，用于指定自对弈使用的场景
+// ================ 场景定义 ================
+
+/// 训练场景类型枚举
+///
+/// 用于在自对弈开始时设置特定的棋盘局面，以便模型能针对性地学习某些特定战术或残局。
 #[derive(Debug, Clone, Copy)]
 pub enum ScenarioType {
-    /// 场景1: R_A vs B_A (红仕对黑仕)
+    /// 场景1: 双士残局 (R_A vs B_A) - 测试基本的移动和吃子逻辑
     TwoAdvisors,
-    /// 场景2: Hidden Threat (隐藏威胁)
+    /// 场景2: 隐藏威胁 (Hidden Threat) - 测试翻棋与炮击等复杂逻辑
     HiddenThreats,
-    /// 标准开局
+    /// 标准开局 - 正常的完整游戏
     Standard,
 }
 
 impl ScenarioType {
-    /// 创建对应场景的环境
+    /// 根据枚举值创建对应的游戏环境
     pub fn create_env(&self) -> DarkChessEnv {
         let mut env = DarkChessEnv::new();
         match self {
             ScenarioType::TwoAdvisors => env.setup_two_advisors(Player::Black),
             ScenarioType::HiddenThreats => env.setup_hidden_threats(),
-            ScenarioType::Standard => {}
+            ScenarioType::Standard => {} // 默认为标准开局
         }
         env
     }
 
-    /// 获取场景名称
+    /// 获取场景的描述名称
     pub fn name(&self) -> &'static str {
         match self {
             ScenarioType::TwoAdvisors => "TwoAdvisors (R_A vs B_A)",
@@ -61,30 +76,41 @@ impl ScenarioType {
         }
     }
 
-    /// 获取该场景的期望最优动作
+    /// 获取该场景下的期望最优动作索引 (用于验证/调试)
     pub fn expected_action(&self) -> usize {
         match self {
             ScenarioType::TwoAdvisors => 38,
             ScenarioType::HiddenThreats => 3,
-            ScenarioType::Standard => 0,
+            ScenarioType::Standard => 0, // 标准开局无特定单一最优解，此处仅为占位
         }
     }
 }
 
-// ================ 并行自对弈工作器 ================
+// ================ 自对弈工作器 ================
 
 /// 自对弈工作器
+///
+/// 负责执行通过 MCTS + 神经网络进行自我对弈的逻辑。
+/// 支持配置 MCTS 模拟次数、特定场景、Dirichlet 噪声以及温度采样策略。
 pub struct SelfPlayWorker {
+    /// 工作器 ID，用于日志区分
     pub worker_id: usize,
+    /// 神经网络评估器，通过通道与推理服务器通信
     pub evaluator: Arc<ChannelEvaluator>,
+    /// 每次决策执行的 MCTS 模拟次数
     pub mcts_sims: usize,
-    pub scenario: Option<ScenarioType>, // 指定场景类型，None 表示使用随机初始化
-    pub dirichlet_alpha: f32,            // Dirichlet 噪声 alpha 参数
-    pub dirichlet_epsilon: f32,          // Dirichlet 噪声权重
-    pub temperature_steps: usize,        // 前 N 步使用温度采样 τ=1，之后 τ=0
+    /// 指定的训练场景 (None 表示随机/标准)
+    pub scenario: Option<ScenarioType>,
+    /// MCTS 根节点 Dirichlet 噪声的 Alpha 参数 (控制噪声分布的集中程度)
+    pub dirichlet_alpha: f32,
+    /// MCTS 根节点 Dirichlet 噪声的权重 (Epsilon)
+    pub dirichlet_epsilon: f32,
+    /// 温度采样的步数阈值。前 N 步使用温度=1进行探索，之后使用温度=0进行贪婪选择。
+    pub temperature_steps: usize,
 }
 
 impl SelfPlayWorker {
+    /// 创建一个新的自对弈工作器 (默认参数)
     pub fn new(worker_id: usize, evaluator: Arc<ChannelEvaluator>, mcts_sims: usize) -> Self {
         Self {
             worker_id,
@@ -97,7 +123,7 @@ impl SelfPlayWorker {
         }
     }
 
-    /// 创建使用指定场景的工作器
+    /// 创建指定场景的工作器
     pub fn with_scenario(
         worker_id: usize,
         evaluator: Arc<ChannelEvaluator>,
@@ -115,7 +141,7 @@ impl SelfPlayWorker {
         }
     }
     
-    /// 创建使用指定场景和 Dirichlet 参数的工作器
+    /// 创建指定场景并自定义 Dirichlet 噪声参数的工作器
     pub fn with_scenario_and_dirichlet(
         worker_id: usize,
         evaluator: Arc<ChannelEvaluator>,
@@ -135,7 +161,7 @@ impl SelfPlayWorker {
         }
     }
     
-    /// 创建使用指定场景、Dirichlet 参数和温度采样步数的工作器
+    /// 全配置构造函数：场景、噪声参数、温度采样步数
     pub fn with_scenario_dirichlet_and_temperature(
         worker_id: usize,
         evaluator: Arc<ChannelEvaluator>,
@@ -156,17 +182,24 @@ impl SelfPlayWorker {
         }
     }
 
-    /// 运行一局自对弈游戏，返回GameEpisode
+    /// 执行一局完整的自对弈
+    ///
+    /// # 参数
+    /// - `episode_num`: 当前局数的索引 (主要用于日志)
+    ///
+    /// # 返回
+    /// - `GameEpisode`: 包含本局游戏的所有训练样本和结果
     pub fn play_episode(&self, episode_num: usize) -> GameEpisode {
         let _scenario_name = self.scenario.map(|s| s.name()).unwrap_or("Random");
-        // println!("  [Worker-{}] 开始第 {} 局游戏 (场景: {})", self.worker_id, episode_num + 1, _scenario_name);
         let start_time = Instant::now();
 
-        // 根据场景类型创建环境
+        // 1. 初始化环境
         let mut env = match self.scenario {
             Some(scenario) => scenario.create_env(),
             None => DarkChessEnv::new(),
         };
+
+        // 2. 配置 MCTS
         let config = MCTSConfig {
             num_simulations: self.mcts_sims,
             cpuct: 1.0,
@@ -174,38 +207,33 @@ impl SelfPlayWorker {
             num_mcts_workers: 8,
             dirichlet_alpha: self.dirichlet_alpha,
             dirichlet_epsilon: self.dirichlet_epsilon,
-            train: true, // 自对弈训练时开启 Dirichlet 噪声
+            train: true, // 开启训练模式，会在根节点添加噪声
         };
         let mut mcts = MCTS::new(&env, self.evaluator.clone(), config);
 
         let mut episode_data = Vec::new();
         let mut step = 0;
+        let debug_first_step = episode_num < 2; 
 
-        // 🐛 DEBUG: 记录首步MCTS详情
-        let debug_first_step = episode_num < 2; // 只调试前2局
-
-        // 可复用的缓冲区
+        // 预分配掩码缓冲区
         let mut masks = vec![0; crate::game_env::ACTION_SPACE_SIZE];
 
+        // 3. 游戏主循环
         loop {
-            // 运行MCTS
+            // --- MCTS 搜索 ---
             mcts.run();
             let probs = mcts.get_root_probabilities();
             env.action_masks_into(&mut masks);
             
-            // 获取MCTS根节点的价值（从当前玩家视角）
+            // 获取当前局面的评估价值 (用于训练 Value Head 的辅助目标)
             let mcts_value = mcts.root.q_value();
 
-            // 🐛 DEBUG: 打印MCTS根节点详情
             if debug_first_step && step < 3 {
-                // println!("    [Worker-{}] Step {}: MCTS根节点详情", self.worker_id, step);
-                let _top_actions = get_top_k_actions(&probs, 5);
-                // for (_action, _prob) in _top_actions {
-                //     println!("      action={}, prob={:.3}", _action, _prob);
-                // }
+                // 调试输出 (可选)
             }
 
-            // 保存数据（包含MCTS价值）
+            // --- 收集样本数据 ---
+            // 存储当前状态、MCTS计算出的策略概率、MCTS价值、当前玩家、动作掩码
             episode_data.push((
                 env.get_state(),
                 probs.clone(),
@@ -214,7 +242,8 @@ impl SelfPlayWorker {
                 masks.clone(),
             ));
 
-            // 选择动作：前 N 步使用温度采样 τ=1，之后 τ=0
+            // --- 动作选择 ---
+            // 根据当前步数决定使用探索性采样 (Temperature=1) 还是贪婪采样 (Temperature=0)
             let current_step = env.get_total_steps();
             let temperature = if current_step < self.temperature_steps {
                 1.0
@@ -223,18 +252,16 @@ impl SelfPlayWorker {
             };
             let action = sample_action(&probs, &env, temperature);
 
-            // 🐛 DEBUG: 记录动作选择
-            if debug_first_step && step < 3 {
-                // println!("      选择: action={}", action);
-            }
-
-            // 执行动作
+            // --- 执行动作 ---
             match env.step(action, None) {
                 Ok((_, _, terminated, truncated, winner)) => {
+                    // 推进 MCTS 树 (复用子树)
                     mcts.step_next(&env, action);
 
                     if terminated || truncated {
-                        // 分配奖励
+                        // --- 游戏结束处理 ---
+                        
+                        // 计算红方视角的最终奖励
                         let reward_red = match winner {
                             Some(1) => 1.0,
                             Some(-1) => -1.0,
@@ -242,36 +269,10 @@ impl SelfPlayWorker {
                         };
 
                         let _elapsed = start_time.elapsed();
-                        // println!("  [Worker-{}] 第 {} 局结束: {} 步, 胜者={:?}, 耗时 {:.1}s",
-                        //     self.worker_id, episode_num + 1, step, winner, _elapsed.as_secs_f64());
 
-                        // 🐛 DEBUG: 检查价值标签分布
-                        if debug_first_step {
-                            let mut red_values = Vec::new();
-                            let mut black_values = Vec::new();
-                            for (_, _, _, player, _) in &episode_data {
-                                let val = if player.val() == 1 {
-                                    reward_red
-                                } else {
-                                    -reward_red
-                                };
-                                if player.val() == 1 {
-                                    red_values.push(val);
-                                } else {
-                                    black_values.push(val);
-                                }
-                            }
-                            // println!("    [Worker-{}] 价值标签统计: 红方样本数={}, 黑方样本数={}",
-                            //     self.worker_id, red_values.len(), black_values.len());
-                            if !red_values.is_empty() {
-                                // println!("      红方价值标签: {:.2} (winner={:?})", red_values[0], winner);
-                            }
-                            if !black_values.is_empty() {
-                                // println!("      黑方价值标签: {:.2} (winner={:?})", black_values[0], winner);
-                            }
-                        }
-
-                        // 回填价值
+                        // --- 回填价值 (Value Backfilling) ---
+                        // 将最终的游戏结果 (Win/Loss/Draw) 作为真实的 Value Target 回填给每一步
+                        // 注意：价值是相对于当前行动玩家的，所以需要根据玩家身份翻转符号
                         let mut samples = Vec::new();
                         for (obs, p, mcts_val, player, mask) in episode_data {
                             let game_result_val = if player.val() == 1 {
@@ -292,7 +293,7 @@ impl SelfPlayWorker {
                 Err(e) => {
                     eprintln!("  ⚠️ [Worker-{}] 游戏错误 (step={}, action={}): {}", 
                         self.worker_id, step, action, e);
-                    // 返回空 episode，稍后会被过滤掉
+                    // 发生错误，丢弃本局数据
                     return GameEpisode {
                         samples: Vec::new(),
                         game_length: step,
@@ -301,10 +302,10 @@ impl SelfPlayWorker {
                 }
             }
 
+            // --- 步数限制检查 ---
             step += 1;
             if step > 200 {
-                // 超过最大步数，游戏平局
-                // println!("  [Worker-{}] 第 {} 局超时: {} 步", self.worker_id, episode_num + 1, step);
+                // 超过最大步数强制平局
                 let mut samples = Vec::new();
                 for (obs, p, mcts_val, _, mask) in episode_data {
                     samples.push((obs, p, mcts_val, 0.0, mask));
@@ -321,14 +322,21 @@ impl SelfPlayWorker {
 
 // ================ 辅助函数 ================
 
-/// 动作采样（带温度参数）
-/// 温度 τ=0 时选择最大概率动作（贪心），τ=1 时按概率分布采样
+/// 动作采样函数
+///
+/// 根据概率分布 `probs` 和温度参数 `temperature` 选择一个动作。
+/// - `temperature = 0`: 贪婪选择，直接选概率最大的动作。
+/// - `temperature = 1`: 按照概率分布进行随机采样。
+/// - `temperature > 1`: 使分布更平滑，增加探索。
+/// - `temperature < 1`: 使分布更尖锐，减少探索。
+///
+/// 始终会应用动作掩码 `env.action_masks()` 以确保采样的合法性。
 pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usize {
     // 1. 获取合法动作掩码
     let masks = env.action_masks();
     
     // 2. 应用掩码过滤概率 (Probs * Mask)
-    // 这一步确保绝对不会采样到非法动作，即使 MCTS 返回了微小的噪音
+    // 确保不会采样到非法动作
     let masked_probs: Vec<f32> = probs
         .iter()
         .zip(masks.iter())
@@ -338,7 +346,8 @@ pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usi
     let non_zero_sum: f32 = masked_probs.iter().sum();
 
     if non_zero_sum == 0.0 {
-        // 回退：从有效动作中均匀选择
+        // 防御性编程：如果所有合法动作概率均为0 (MCTS异常)，则均匀随机选择一个合法动作
+        eprint!("⚠️ 警告: 所有合法动作概率均为0，执行均匀随机选择动作。");
         let valid_actions: Vec<usize> = masks
             .iter()
             .enumerate()
@@ -356,15 +365,16 @@ pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usi
             .map(|(idx, _)| idx)
             .expect("无有效动作")
     } else {
-        // 应用温度参数
+        // 应用温度参数调整分布
         let adjusted_probs: Vec<f32> = if temperature != 1.0 {
+            // p^(1/T)
             let sum: f32 = masked_probs.iter().map(|&p| p.powf(1.0 / temperature)).sum();
             masked_probs
                 .iter()
                 .map(|&p| p.powf(1.0 / temperature) / sum)
                 .collect()
         } else {
-            // 需要归一化，因为 mask 可能过滤掉了一些非零值（虽然理论上不该发生）
+            // 仅做归一化
             masked_probs.iter().map(|&p| p / non_zero_sum).collect()
         };
 
@@ -374,8 +384,7 @@ pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usi
     }
 }
 
-// ... (rest of the file)
-/// 🐛 DEBUG: 获取top-k动作
+/// 获取 Top-K 动作 (用于调试)
 pub fn get_top_k_actions(probs: &[f32], k: usize) -> Vec<(usize, f32)> {
     let mut indexed: Vec<(usize, f32)> = probs.iter().enumerate().map(|(i, &p)| (i, p)).collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());

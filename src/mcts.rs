@@ -15,34 +15,42 @@ use std::sync::Arc;
 // ============================================================================
 
 /// MCTS 树节点
+///
+/// 包含搜索树节点的统计信息、子节点指针以及对应的游戏状态。
+/// 支持两种节点类型：
+/// - **决策节点 (State Node)**: 玩家采取行动的节点。
+/// - **机会节点 (Chance Node)**: 处理随机事件（如翻棋）的节点，其分支代表不同的随机结果。
 #[derive(Debug, Clone)]
 pub struct MctsNode {
     /// 访问次数 (N)
     pub visit_count: u32,
-    /// 价值总和 (W)
+    /// 价值总和 (W) - 从该节点对应玩家的视角累积
     pub value_sum: f32,
-    /// 先验概率 (P)
+    /// 先验概率 (P) - 由神经网络策略头输出
     pub prior: f32,
-    /// 当前节点的动作-子节点映射 (针对 State Node)
-    /// Key: Action Index
+    /// 子节点映射 (针对 State Node)
+    /// Key: 动作索引 (Action Index), Value: 对应的子节点
     pub children: HashMap<usize, MctsNode>,
-    /// 标记是否已扩展
+    /// 标记该节点是否已经扩展过（即是否已经计算过子节点的先验概率）
     pub is_expanded: bool,
 
     // --- Chance Node 相关属性 ---
     /// 是否为机会节点 (Chance Node)
+    /// 当上一步动作包含不确定性（如翻开暗子）时，当前节点为机会节点。
     pub is_chance_node: bool,
-    /// 可能的状态映射 (针对 Chance Node)
-    /// Key: Outcome ID (表示具体的翻棋结果), Value: (Probability, ChildNode)
+    /// 可能的后续状态映射 (针对 Chance Node)
+    /// Key: 结果 ID (Outcome ID, 代表具体的棋子类型), Value: (该结果的概率, 对应的子节点)
     pub possible_states: HashMap<usize, (f32, MctsNode)>,
 
     // --- 游戏环境 ---
-    /// 存储该节点对应的游戏环境状态 (State Node 包含，Chance Node 不包含)
-    /// 使用 Box 将大对象移至堆内存，避免栈溢出
+    /// 存储该节点对应的游戏环境状态
+    /// State Node 通常持有环境快照。
+    /// 使用 Box 将大对象移至堆内存，防止深层递归导致栈溢出。
     pub env: Option<Box<DarkChessEnv>>,
 }
 
 impl MctsNode {
+    /// 创建新节点
     pub fn new(prior: f32, is_chance_node: bool, env: Option<DarkChessEnv>) -> Self {
         Self {
             visit_count: 0,
@@ -56,7 +64,7 @@ impl MctsNode {
         }
     }
 
-    /// 获取当前节点对应的玩家
+    /// 获取当前节点对应的行动玩家
     pub fn player(&self) -> Player {
         self.env
             .as_ref()
@@ -65,7 +73,8 @@ impl MctsNode {
             .get_current_player()
     }
 
-    /// 获取平均价值 Q(s, a)
+    /// 获取节点的平均价值 Q(s, a)
+    /// 计算公式: W / N
     pub fn q_value(&self) -> f32 {
         if self.visit_count == 0 {
             0.0
@@ -75,8 +84,11 @@ impl MctsNode {
     }
 }
 
-// 辅助函数：为翻开的棋子生成唯一 ID
-// 0-6: Red [Sol, Can, Hor, Cha, Ele, Adv, Gen]; 7-13: Black [Sol, Can, Hor, Cha, Ele, Adv, Gen]
+/// 辅助函数：为翻开的棋子生成唯一 ID
+/// 用于在 Chance Node 中区分不同的翻棋结果 (Outcome)。
+/// 映射规则:
+/// 0-6: 红方 [兵, 炮, 马, 车, 象, 士, 将]
+/// 7-13: 黑方 [兵, 炮, 马, 车, 象, 士, 将]
 fn get_outcome_id(piece: &Piece) -> usize {
     let type_idx = match piece.piece_type {
         PieceType::Soldier => 0,
@@ -98,10 +110,14 @@ fn get_outcome_id(piece: &Piece) -> usize {
 // 2. 评估接口 (Evaluation Interface)
 // ============================================================================
 
+/// 状态评估器 trait
+/// 用于抽象神经网络或其他估值函数的接口。
 pub trait Evaluator {
+    /// 评估给定状态，返回 (策略概率分布, 状态价值)
     fn evaluate(&self, env: &DarkChessEnv) -> (Vec<f32>, f32);
 }
 
+/// 随机评估器 (用于测试或无模型情况)
 pub struct RandomEvaluator;
 
 impl Evaluator for RandomEvaluator {
@@ -130,18 +146,21 @@ impl Evaluator for RandomEvaluator {
 // MCTS 主逻辑
 // ============================================================================
 
+/// MCTS 配置参数
 pub struct MCTSConfig {
+    /// PUCT 探索常数 (C_puct)
     pub cpuct: f32,
+    /// 每次搜索的模拟次数
     pub num_simulations: usize,
-    /// 虚拟损失值（用于异步MCTS）
+    /// 虚拟损失值（用于异步MCTS防止过度探索同一路径，这里主要预留）
     pub virtual_loss: f32,
-   
+    /// 并行 Worker 数量 (预留)
     pub num_mcts_workers: usize,
-    /// Dirichlet 噪声 alpha 参数
+    /// Dirichlet 噪声参数 alpha (控制噪声分布的集中程度)
     pub dirichlet_alpha: f32,
-    /// Dirichlet 噪声权重（与先验策略的混合比例）
+    /// Dirichlet 噪声权重 epsilon (混合比例)
     pub dirichlet_epsilon: f32,
-    /// 是否为训练模式（训练时添加噪声，对弈时不添加）
+    /// 是否为训练模式 (训练模式下会在根节点添加噪声)
     pub train: bool,
 }
 
@@ -159,13 +178,15 @@ impl Default for MCTSConfig {
     }
 }
 
+/// 蒙特卡洛树搜索 (MCTS) 主结构
 pub struct MCTS<E: Evaluator> {
-    pub root: MctsNode, // made public for debug access if needed
+    pub root: MctsNode, // 公开以便于调试或提取统计信息
     evaluator: Arc<E>,
     config: MCTSConfig,
 }
 
 impl<E: Evaluator> MCTS<E> {
+    /// 创建新的 MCTS 实例
     pub fn new(env: &DarkChessEnv, evaluator: Arc<E>, config: MCTSConfig) -> Self {
         let root = MctsNode::new(1.0, false, Some(env.clone()));
         Self {
@@ -175,52 +196,60 @@ impl<E: Evaluator> MCTS<E> {
         }
     }
 
-    /// 支持搜索树复用：根据动作将根节点推进一步
+    /// 推进搜索树 (Tree Reuse)
+    /// 当实际游戏执行了某个动作后，将根节点移动到对应的子节点，保留子树统计信息。
+    /// 对于机会节点，需要根据实际翻出的棋子来选择正确的分支。
     pub fn step_next(&mut self, env: &DarkChessEnv, action: usize) {
         if let Some(mut child) = self.root.children.remove(&action) {
             if child.is_chance_node {
-                // 如果是 Chance Node，说明上一步动作是翻棋或炮攻击暗子
-                // 我们需要检查当前环境实际翻出了什么棋子，从而选择正确的子节点
+                // 如果子节点是 Chance Node，说明上一步动作触发了不确定性事件（如翻棋）
+                // 我们需要检查当前环境实际翻出了什么棋子，从而选择正确的后续状态节点
 
-                // 使用 get_target_slot 获取动作目标位置的 Slot
+                // 使用 env 获取动作目标位置的实际 Slot
                 let slot = env.get_target_slot(action);
 
                 match slot {
                     Slot::Revealed(piece) => {
                         let outcome_id = get_outcome_id(&piece);
                         if let Some((_, next_node)) = child.possible_states.remove(&outcome_id) {
-                            // 成功找到对应的后续状态节点
+                            // 成功找到对应的后续状态节点，将其设为新的根
                             self.root = next_node;
                             return;
                         }
                     }
                     _ => {
-                        // 理论上不会进入这里，除非外部状态同步错误
+                        // 理论上不会进入这里，除非外部状态同步错误或逻辑异常
+                        panic!("Expected revealed piece at action position in Chance Node");
                     }
                 }
-                // 如果没找到对应分支（比如之前没探索到），则重置
+                // 如果没找到对应分支（例如之前搜索未覆盖到该结果），则无法复用，重置树
                 self.root = MctsNode::new(1.0, false, Some(env.clone()));
             } else {
-                // 确定性节点（移动），直接复用
+                // 确定性节点（如普通移动），直接复用该子节点
                 self.root = child;
             }
         } else {
-            // 树中没有该动作，重置
+            // 树中没有该动作的分支，无法复用，重置树
             self.root = MctsNode::new(1.0, false, Some(env.clone()));
         }
     }
 
+    /// 执行 MCTS 搜索
+    /// 进行 num_simulations 次模拟，并返回访问次数最多的动作。
     pub fn run(&mut self) -> Option<usize> {
         let mut total_used = 0;
 
         while total_used < self.config.num_simulations {
+            // 执行一次从根节点开始的模拟
             let (cost, _value) =
                 Self::simulate(&mut self.root, None, &self.evaluator, &self.config);
 
-            // simulate内部已经更新了所有节点的统计信息
+            // simulate 内部已经更新了路径上所有节点的统计信息
+            // cost 表示本次模拟消耗的评估次数（通常为1，除非在机会节点展开了多个分支）
             total_used += cost;
         }
 
+        // 搜索结束，选择访问次数 (N) 最大的动作作为最佳动作（鲁棒性最强）
         self.root
             .children
             .iter()
@@ -228,16 +257,25 @@ impl<E: Evaluator> MCTS<E> {
             .map(|(action, _)| *action)
     }
 
-    /// 递归模拟
-    /// incoming_action: 进入该节点的前置动作（用于 Chance Node 确定位置）
-    /// 返回值: (cost, value) - cost 是消耗的评估次数，value 是相对于当前节点行动方的价值
+    /// 递归模拟函数
+    ///
+    /// # 参数
+    /// - `node`: 当前访问的节点
+    /// - `incoming_action`: 进入该节点的前置动作（用于 Chance Node 确定翻棋位置）
+    /// - `evaluator`: 评估器
+    /// - `config`: 配置
+    ///
+    /// # 返回
+    /// (cost, value)
+    /// - cost: 本次递归消耗的计算量（评估次数）
+    /// - value: 叶节点相对于当前节点行动方的价值 [-1, 1]
     fn simulate(
         node: &mut MctsNode,
         incoming_action: Option<usize>,
         evaluator: &Arc<E>,
         config: &MCTSConfig,
     ) -> (usize, f32) {
-        // 获取当前节点的环境（只在需要时克隆到栈上）
+        // 获取当前节点的环境（只在需要时克隆到栈上，避免不必要的开销）
         let env = node
             .env
             .as_ref()
@@ -245,6 +283,7 @@ impl<E: Evaluator> MCTS<E> {
             .as_ref()
             .clone();
 
+        // 检查游戏是否结束
         let mut masks = vec![0; ACTION_SPACE_SIZE];
         env.action_masks_into(&mut masks);
         if masks.iter().all(|&x| x == 0) {
@@ -255,14 +294,16 @@ impl<E: Evaluator> MCTS<E> {
         }
 
         // ========================================================================
-        // Case A: Chance Node (上一步是翻棋)
+        // Case A: Chance Node (机会节点)
+        // 这里的逻辑处理翻棋后的不确定性
         // ========================================================================
         if node.is_chance_node {
             let reveal_pos = incoming_action.expect("Chance node must have incoming action");
 
-            // 1. 如果尚未扩展，则进行全量扩展
+            // 1. 如果尚未扩展，则进行全量扩展 (Full Expansion)
+            // 即枚举所有可能翻出的棋子，并计算它们的概率
             if !node.is_expanded {
-                // 统计剩余棋子种类和数量（7种棋子 x 2方 = 14）
+                // 统计剩余隐藏棋子种类和数量（7种棋子 x 2方 = 14种 Outcome）
                 let mut counts = [0; 14];
                 for p in &env.hidden_pieces {
                     counts[get_outcome_id(p)] += 1;
@@ -272,12 +313,13 @@ impl<E: Evaluator> MCTS<E> {
                 let mut total_eval_cost = 0;
                 let mut total_weighted_value = 0.0;
 
-                // 对每一种可能的 outcome 进行扩展和评估
+                // 对每一种可能的 Outcome 进行扩展和评估
                 for outcome_id in 0..14 {
                     if counts[outcome_id] > 0 {
+                        // 计算该结果的概率
                         let prob = counts[outcome_id] as f32 / total_hidden;
 
-                        // 构造该 outcome 对应的环境
+                        // 构造该 Outcome 对应的确定性环境
                         let mut next_env = env.clone();
                         let specific_piece = next_env
                             .hidden_pieces
@@ -285,21 +327,26 @@ impl<E: Evaluator> MCTS<E> {
                             .find(|p| get_outcome_id(p) == outcome_id)
                             .expect("指定类型的棋子不在隐藏池中")
                             .clone();
+                        // 在环境中强制执行翻出该特定棋子
                         let _ = next_env.step(reveal_pos, Some(specific_piece));
 
+                        // 创建子节点（确定性状态节点）
                         let mut child_node = MctsNode::new(1.0, false, Some(next_env));
 
-                        // 递归模拟子节点（子节点已保存环境，不需要传入）
+                        // 递归模拟子节点
                         let (child_cost, child_value) =
                             Self::simulate(&mut child_node, None, evaluator, config);
 
                         total_eval_cost += child_cost;
+
+                        // 关键：价值对齐
+                        // 计算子节点价值相对于当前节点视角的价值
                         let aligned_value = Self::value_from_child_perspective(
                             node.player(),
                             child_node.player(),
                             child_value,
                         );
-                        // 机会节点的价值是加权平均（根据玩家关系决定是否取反）
+                        // 机会节点的价值是所有可能子节点价值的加权平均
                         total_weighted_value += prob * aligned_value;
 
                         node.possible_states.insert(outcome_id, (prob, child_node));
@@ -315,20 +362,21 @@ impl<E: Evaluator> MCTS<E> {
                 return (total_eval_cost, total_weighted_value);
             }
 
-            // 2. 如果已扩展，则对字典中所有可能的子节点进行MCTS搜索
+            // 2. 如果已扩展，则继续向下搜索
+            // 对于 Chance Node，我们通常需要遍历所有可能的分支来获得准确的期望值
             let mut total_cost = 0;
             let mut total_weighted_value = 0.0;
 
-            // 先获取父节点玩家，避免后续借用冲突
+            // 先获取父节点玩家，避免后续借用检查冲突
             let parent_player = node.player();
 
-            // 对每个可能的 outcome 进行搜索
+            // 遍历所有已展开的可能结果
             for (_, (prob, child_node)) in &mut node.possible_states {
-                // 递归搜索该子节点（子节点已保存环境，直接使用）
+                // 递归搜索该子节点
                 let (child_cost, child_value) = Self::simulate(child_node, None, evaluator, config);
 
                 total_cost += child_cost;
-                // 加权平均价值（根据玩家关系决定是否取反）
+                // 加权累加价值
                 let aligned_value = Self::value_from_child_perspective(
                     parent_player,
                     child_node.player(),
@@ -346,19 +394,21 @@ impl<E: Evaluator> MCTS<E> {
         }
 
         // ========================================================================
-        // Case B: State Node (普通节点)
+        // Case B: State Node (决策节点)
+        // 这里的逻辑处理普通的动作选择 (PUCT)
         // ========================================================================
 
         // 1. 扩展 (Expansion)
         if !node.is_expanded {
+            // 使用评估器（神经网络）获取当前状态的策略和价值
             let (mut policy_probs, value) = evaluator.evaluate(&env);
 
-            // 如果是训练模式且是根节点，添加 Dirichlet 噪声
+            // 如果是训练模式且是根节点，添加 Dirichlet 噪声以增加探索性
             if config.train && incoming_action.is_none() {
                 use rand::distributions::Distribution;
                 use rand_distr::Dirichlet as DirichletDist;
                 
-                // 统计有效动作数量
+                // 统计有效动作
                 let valid_actions: Vec<usize> = masks
                     .iter()
                     .enumerate()
@@ -366,14 +416,14 @@ impl<E: Evaluator> MCTS<E> {
                     .collect();
                 
                 let num_valid = valid_actions.len();
-                // Dirichlet 分布至少需要 2 个元素，且只有一个动作时添加噪声无意义
+                // Dirichlet 分布至少需要 2 个元素
                 if num_valid > 1 {
-                    // 生成 Dirichlet 噪声
+                    // 生成噪声
                     let alpha = vec![config.dirichlet_alpha; num_valid];
                     let dirichlet = DirichletDist::new(&alpha).expect("Invalid Dirichlet alpha");
                     let noise = dirichlet.sample(&mut rand::thread_rng());
                     
-                    // 混合先验策略和噪声
+                    // 混合先验概率和噪声: P(a) = (1-ε)*P(a) + ε*Noise
                     for (i, &action_idx) in valid_actions.iter().enumerate() {
                         policy_probs[action_idx] = (1.0 - config.dirichlet_epsilon) * policy_probs[action_idx]
                             + config.dirichlet_epsilon * noise[i] as f32;
@@ -381,40 +431,43 @@ impl<E: Evaluator> MCTS<E> {
                 }
             }
 
+            // 为每个合法动作创建子节点
             for (action_idx, &mask) in masks.iter().enumerate() {
                 if mask == 1 {
                     let prior = policy_probs[action_idx];
 
-                    // 判断该动作是否会导致 Chance Node
+                    // 判断该动作是否会导致进入 Chance Node
+                    // 如果目标位置是暗子 (Hidden)，则该动作的结果是不确定的
                     let target_is_hidden = matches!(env.get_target_slot(action_idx), Slot::Hidden);
                     let is_chance_node = target_is_hidden;
-                    // Chance Node 存储父节点环境用于扩展，State Node 存储执行动作后的环境
+
+                    // 准备子节点的环境
                     let child_env = if is_chance_node {
-                        Some(env.clone()) // 机会节点存储父节点环境（用于扩展时获取隐藏棋子信息）
+                        // 机会节点需要存储父节点的环境（未执行动作前），以便后续扩展时可以穷举所有可能的翻棋结果
+                        Some(env.clone())
                     } else {
-                        // 移动节点需要执行动作后存储环境
+                        // 确定性节点（移动/吃子），直接执行动作并存储新环境
                         let mut temp_env = env.clone();
                         let _ = temp_env.step(action_idx, None);
                         Some(temp_env)
                     };
 
-                    // 🔥 修复：这里必须传入 is_chance_node，而不是 is_reveal
-                    // 之前的写法导致"炮击暗子"被错误标记为确定性节点，从而复用了错误的父环境
+                    // 创建并插入子节点
                     let child_node = MctsNode::new(prior, is_chance_node, child_env);
                     node.children.insert(action_idx, child_node);
                 }
             }
             node.is_expanded = true;
 
-            // 更新节点统计信息
+            // 更新当前节点统计信息
             node.visit_count += 1;
             node.value_sum += value;
 
             return (1, value);
         }
 
-        // 2. 选择 (Selection)
-        let parent_player = node.player(); // 先获取父节点玩家，避免借用冲突
+        // 2. 选择 (Selection) - 使用 PUCT 算法
+        let parent_player = node.player(); // 获取当前节点行动方
         let (action, best_child) = {
             let sqrt_total_visits = (node.visit_count as f32).sqrt();
             let mut best_action = None;
@@ -424,11 +477,14 @@ impl<E: Evaluator> MCTS<E> {
                 let child_q = child.q_value();
                 let child_player = child.player();
 
-                // 将子节点的 Q 值转换为父节点玩家视角
-                // 如果父子玩家不同，需要取反
+                // 关键：视角转换
+                // MCTS 树中每层可能由不同玩家行动（红/黑交替）
+                // 子节点的 Q 值是相对于子节点行动方的，需要转换回父节点行动方的视角
                 let adjusted_q =
                     Self::value_from_child_perspective(parent_player, child_player, child_q);
 
+                // PUCT 公式: Q + U
+                // U = c_puct * P * sqrt(N_parent) / (1 + N_child)
                 let u_score = config.cpuct * child.prior * sqrt_total_visits
                     / (1.0 + child.visit_count as f32);
                 let score = adjusted_q + u_score;
@@ -443,20 +499,22 @@ impl<E: Evaluator> MCTS<E> {
             (best_action, node.children.get_mut(&best_action).unwrap())
         };
 
-        // 3. 递归到子节点（子节点已保存环境，直接递归）
+        // 3. 递归 (Recursion)
         let (cost, child_v) = Self::simulate(best_child, Some(action), evaluator, config);
 
-        // 根据父子节点的行动方关系决定是否取反
+        // 4. 反向传播 (Backpropagation)
+        // 将子节点返回的价值转换回当前节点视角
         let my_value =
             Self::value_from_child_perspective(parent_player, best_child.player(), child_v);
 
-        // 更新当前节点的统计信息
+        // 更新统计信息
         node.visit_count += 1;
         node.value_sum += my_value;
 
         (cost, my_value)
     }
 
+    /// 获取根节点的访问概率分布（即策略 π）
     pub fn get_root_probabilities(&self) -> Vec<f32> {
         let mut probs = vec![0.0; ACTION_SPACE_SIZE];
         let total = self.root.visit_count as f32;
@@ -474,7 +532,11 @@ impl<E: Evaluator> MCTS<E> {
 }
 
 impl<E: Evaluator> MCTS<E> {
-    /// 将子节点价值转换为父节点玩家视角
+    /// 价值视角转换辅助函数
+    ///
+    /// 在零和博弈中，如果不改变视角，子节点的“好”对父节点来说就是“坏”。
+    /// 如果父子节点是同一玩家（例如连续行动），价值不变。
+    /// 如果父子节点是不同玩家（红/黑交替），价值取反。
     fn value_from_child_perspective(
         parent_player: Player,
         child_player: Player,
