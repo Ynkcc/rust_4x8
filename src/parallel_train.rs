@@ -91,10 +91,14 @@ pub fn parallel_train_loop() -> Result<()> {
     if args.len() > 1 {
         let model_path = &args[1];
         println!("正在加载模型: {}", model_path);
-        if let Err(e) = vs.load(model_path) {
-            eprintln!("加载模型失败: {}", e);
-        } else {
-            println!("模型加载成功！");
+        match vs.load(model_path) {
+            Ok(_) => println!("模型加载成功！"),
+            Err(e) => {
+                eprintln!("❌ 加载模型失败: {}", e);
+                eprintln!("提示: 如果您希望从随机模型开始训练，请不要指定模型路径参数。");
+                eprintln!("      如果您希望微调现有模型，请确保路径正确且模型文件完整。");
+                panic!("模型加载失败，程序终止。如需从头训练请移除命令行参数。");
+            }
         }
     }
 
@@ -182,9 +186,10 @@ pub fn parallel_train_loop() -> Result<()> {
 
         // 收集所有工作线程的结果
         let mut all_episodes = Vec::new();
-        for result_rx in result_rxs {
-            if let Ok(episodes) = result_rx.recv() {
-                all_episodes.extend(episodes);
+        for (i, result_rx) in result_rxs.into_iter().enumerate() {
+            match result_rx.recv() {
+                Ok(episodes) => all_episodes.extend(episodes),
+                Err(e) => eprintln!("⚠️ [Main] 无法从 Worker-{} 接收数据 (线程可能已崩溃): {}", i, e),
             }
         }
 
@@ -218,8 +223,9 @@ pub fn parallel_train_loop() -> Result<()> {
         mongo_storage.save_games(iteration, &all_episodes)?;
         
         // 获取并打印统计信息
-        if let Ok(stats) = mongo_storage.get_iteration_stats(iteration) {
-            stats.print();
+        match mongo_storage.get_iteration_stats(iteration) {
+            Ok(stats) => stats.print(),
+            Err(e) => eprintln!("⚠️ 获取 Iteration 统计信息失败: {}", e),
         }
 
         // 更新游戏缓冲区 - 按整局存储（移动所有权而非克隆）
@@ -378,7 +384,9 @@ pub fn parallel_train_loop() -> Result<()> {
 
         // 写入CSV
         let csv_path = "training_log.csv";
-        let _ = TrainingLog::write_header(csv_path);
+        if let Err(e) = TrainingLog::write_header(csv_path) {
+            eprintln!("  ⚠️ 初始化训练日志表头失败: {}", e);
+        }
         if let Err(e) = log_record.append_to_csv(csv_path) {
             eprintln!("  ⚠️ 写入训练日志失败: {}", e);
         } else {

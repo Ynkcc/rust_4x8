@@ -216,8 +216,10 @@ impl InferenceServer {
 
                 let response = InferenceResponse { policy, value };
 
-                // 发送响应到请求者的专属通道（忽略发送失败）
-                let _ = req.response_tx.send(response);
+                // 发送响应到请求者的专属通道
+                if let Err(e) = req.response_tx.send(response) {
+                    eprintln!("  ⚠️ [InferenceServer] 发送推理响应失败 (接收者可能已断开): {}", e);
+                }
                 
                 // 🔥 关键修复：显式释放临时切片张量
                 drop(policy_slice);

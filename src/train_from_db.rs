@@ -411,7 +411,9 @@ pub fn train_from_database() -> Result<()> {
 
         // 写入CSV日志
         let csv_path = "training_from_db_log.csv";
-        let _ = TrainingLog::write_header(csv_path);
+        if let Err(e) = TrainingLog::write_header(csv_path) {
+            eprintln!("  ⚠️ 初始化训练日志表头失败: {}", e);
+        }
         if let Err(e) = log_record.append_to_csv(csv_path) {
             eprintln!("  ⚠️ 写入训练日志失败: {}", e);
         }
