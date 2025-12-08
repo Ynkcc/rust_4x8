@@ -1116,18 +1116,21 @@ impl DarkChessEnv {
         }
     }
 
-    pub fn is_cannon_attack_on_hidden(&self, action: usize) -> bool {
+    /// 获取动作的目标位置的 Slot
+    /// 翻棋动作返回翻开棋子位置的 Slot
+    /// 其他动作返回 to_sq 的 Slot
+    pub fn get_target_slot(&self, action: usize) -> Slot {
+        let coords = &action_lookup_tables().action_to_coords[action];
+        
         if action < REVEAL_ACTIONS_COUNT {
-            return false; // 翻棋动作已经处理
+            // 翻棋动作：只有一个坐标，就是要翻开的位置
+            let sq = coords[0];
+            self.board[sq].clone()
+        } else {
+            // 移动/攻击动作：有两个坐标，返回目标位置
+            let to_sq = coords[1];
+            self.board[to_sq].clone()
         }
-
-        if action < REVEAL_ACTIONS_COUNT + REGULAR_MOVE_ACTIONS_COUNT {
-            return false; // 常规移动不是炮攻击
-        }
-
-    let coords = &action_lookup_tables().action_to_coords[action];
-        let to_sq = coords[1];
-        matches!(self.board[to_sq], Slot::Hidden)
     }
 
     pub fn print_board(&self) {

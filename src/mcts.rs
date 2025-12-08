@@ -179,16 +179,15 @@ impl<E: Evaluator> MCTS<E> {
     pub fn step_next(&mut self, env: &DarkChessEnv, action: usize) {
         if let Some(mut child) = self.root.children.remove(&action) {
             if child.is_chance_node {
-                // 如果是 Chance Node，说明上一步动作是翻棋
+                // 如果是 Chance Node，说明上一步动作是翻棋或炮攻击暗子
                 // 我们需要检查当前环境实际翻出了什么棋子，从而选择正确的子节点
 
-                // 获取动作对应的位置（假设 action < 12 时 action 即为位置）
-                let sq = action;
-                let slot = &env.get_board_slots()[sq];
+                // 使用 get_target_slot 获取动作目标位置的 Slot
+                let slot = env.get_target_slot(action);
 
                 match slot {
                     Slot::Revealed(piece) => {
-                        let outcome_id = get_outcome_id(piece);
+                        let outcome_id = get_outcome_id(&piece);
                         if let Some((_, next_node)) = child.possible_states.remove(&outcome_id) {
                             // 成功找到对应的后续状态节点
                             self.root = next_node;
@@ -388,8 +387,8 @@ impl<E: Evaluator> MCTS<E> {
 
                     // 判断该动作是否会导致 Chance Node
                     let is_reveal = action_idx < REVEAL_ACTIONS_COUNT;
-                    let is_cannon_attack_on_hidden = env.is_cannon_attack_on_hidden(action_idx);
-                    let is_chance_node = is_reveal || is_cannon_attack_on_hidden;
+                    let target_is_hidden = matches!(env.get_target_slot(action_idx), Slot::Hidden);
+                    let is_chance_node = target_is_hidden;
                     // Chance Node 存储父节点环境用于扩展，State Node 存储执行动作后的环境
                     let child_env = if is_chance_node {
                         Some(env.clone()) // 机会节点存储父节点环境（用于扩展时获取隐藏棋子信息）
