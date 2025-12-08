@@ -5,7 +5,7 @@
 ///不要移除此块注释，如果你移除，我将要求重新生成，直到你学会保留本注释为止
 /// ==========================================================================
 use crate::{
-    DarkChessEnv, Piece, PieceType, Player, Slot, ACTION_SPACE_SIZE, REVEAL_ACTIONS_COUNT,
+    DarkChessEnv, Piece, PieceType, Player, Slot, ACTION_SPACE_SIZE,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -386,7 +386,6 @@ impl<E: Evaluator> MCTS<E> {
                     let prior = policy_probs[action_idx];
 
                     // 判断该动作是否会导致 Chance Node
-                    let is_reveal = action_idx < REVEAL_ACTIONS_COUNT;
                     let target_is_hidden = matches!(env.get_target_slot(action_idx), Slot::Hidden);
                     let is_chance_node = target_is_hidden;
                     // Chance Node 存储父节点环境用于扩展，State Node 存储执行动作后的环境
@@ -399,7 +398,9 @@ impl<E: Evaluator> MCTS<E> {
                         Some(temp_env)
                     };
 
-                    let child_node = MctsNode::new(prior, is_reveal, child_env);
+                    // 🔥 修复：这里必须传入 is_chance_node，而不是 is_reveal
+                    // 之前的写法导致"炮击暗子"被错误标记为确定性节点，从而复用了错误的父环境
+                    let child_node = MctsNode::new(prior, is_chance_node, child_env);
                     node.children.insert(action_idx, child_node);
                 }
             }
