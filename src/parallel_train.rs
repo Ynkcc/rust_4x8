@@ -60,6 +60,9 @@ pub fn parallel_train_loop() -> Result<()> {
     // Dirichlet 噪声参数（替代温度参数）
     let dirichlet_alpha = 0.3;    // Alpha值，控制噪声的集中度
     let dirichlet_epsilon = 0.25; // 噪声权重，与先验策略的混合比例
+    
+    // 温度采样配置
+    let temperature_steps = 10;   // 前 N 步使用温度采样 τ=1，之后 τ=0
 
     println!("\n=== 场景自对弈训练配置 ===");
     println!("工作线程数: {} (全标准环境)", num_workers);
@@ -69,6 +72,7 @@ pub fn parallel_train_loop() -> Result<()> {
     println!("推理批量大小: {}", inference_batch_size);
     println!("游戏缓冲区: 最近 {} 局", max_buffer_games);
     println!("Dirichlet噪声: alpha={}, epsilon={}", dirichlet_alpha, dirichlet_epsilon);
+    println!("温度采样: 前 {} 步 τ=1 (探索), 之后 τ=0 (贪心)", temperature_steps);
     println!("场景: Standard");
 
     // 连接MongoDB
@@ -141,16 +145,18 @@ pub fn parallel_train_loop() -> Result<()> {
             let scenario_copy = *scenario;
             let alpha = dirichlet_alpha;
             let epsilon = dirichlet_epsilon;
+            let temp_steps = temperature_steps;
 
             let handle = thread::spawn(move || {
                 let evaluator = Arc::new(ChannelEvaluator::new(req_tx_clone));
-                let worker = SelfPlayWorker::with_scenario_and_dirichlet(
+                let worker = SelfPlayWorker::with_scenario_dirichlet_and_temperature(
                     worker_id,
                     evaluator,
                     mcts_sims,
                     scenario_copy,
                     alpha,
                     epsilon,
+                    temp_steps,
                 );
 
                 let mut all_episodes = Vec::new();

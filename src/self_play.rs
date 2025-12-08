@@ -81,6 +81,7 @@ pub struct SelfPlayWorker {
     pub scenario: Option<ScenarioType>, // 指定场景类型，None 表示使用随机初始化
     pub dirichlet_alpha: f32,            // Dirichlet 噪声 alpha 参数
     pub dirichlet_epsilon: f32,          // Dirichlet 噪声权重
+    pub temperature_steps: usize,        // 前 N 步使用温度采样 τ=1，之后 τ=0
 }
 
 impl SelfPlayWorker {
@@ -92,6 +93,7 @@ impl SelfPlayWorker {
             scenario: None,
             dirichlet_alpha: 0.3,
             dirichlet_epsilon: 0.25,
+            temperature_steps: 10,
         }
     }
 
@@ -109,6 +111,7 @@ impl SelfPlayWorker {
             scenario: Some(scenario),
             dirichlet_alpha: 0.3,
             dirichlet_epsilon: 0.25,
+            temperature_steps: 10,
         }
     }
     
@@ -128,6 +131,28 @@ impl SelfPlayWorker {
             scenario: Some(scenario),
             dirichlet_alpha,
             dirichlet_epsilon,
+            temperature_steps: 10,
+        }
+    }
+    
+    /// 创建使用指定场景、Dirichlet 参数和温度采样步数的工作器
+    pub fn with_scenario_dirichlet_and_temperature(
+        worker_id: usize,
+        evaluator: Arc<ChannelEvaluator>,
+        mcts_sims: usize,
+        scenario: ScenarioType,
+        dirichlet_alpha: f32,
+        dirichlet_epsilon: f32,
+        temperature_steps: usize,
+    ) -> Self {
+        Self {
+            worker_id,
+            evaluator,
+            mcts_sims,
+            scenario: Some(scenario),
+            dirichlet_alpha,
+            dirichlet_epsilon,
+            temperature_steps,
         }
     }
 
@@ -189,9 +214,14 @@ impl SelfPlayWorker {
                 masks.clone(),
             ));
 
-            // 选择动作（使用访问计数比例，不再使用温度采样）
-            // Dirichlet 噪声已经在 MCTS 根节点扩展时添加
-            let action = sample_action(&probs, &env, 1.0);
+            // 选择动作：前 N 步使用温度采样 τ=1，之后 τ=0
+            let current_step = env.get_total_steps();
+            let temperature = if current_step < self.temperature_steps {
+                1.0
+            } else {
+                0.0
+            };
+            let action = sample_action(&probs, &env, temperature);
 
             // 🐛 DEBUG: 记录动作选择
             if debug_first_step && step < 3 {
@@ -292,12 +322,23 @@ impl SelfPlayWorker {
 // ================ 辅助函数 ================
 
 /// 动作采样（带温度参数）
+/// 温度 τ=0 时选择最大概率动作（贪心），τ=1 时按概率分布采样
 pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usize {
-    let non_zero_sum: f32 = probs.iter().sum();
+    // 1. 获取合法动作掩码
+    let masks = env.action_masks();
+    
+    // 2. 应用掩码过滤概率 (Probs * Mask)
+    // 这一步确保绝对不会采样到非法动作，即使 MCTS 返回了微小的噪音
+    let masked_probs: Vec<f32> = probs
+        .iter()
+        .zip(masks.iter())
+        .map(|(&p, &m)| if m == 1 { p } else { 0.0 })
+        .collect();
+
+    let non_zero_sum: f32 = masked_probs.iter().sum();
 
     if non_zero_sum == 0.0 {
         // 回退：从有效动作中均匀选择
-        let masks = env.action_masks();
         let valid_actions: Vec<usize> = masks
             .iter()
             .enumerate()
@@ -306,16 +347,25 @@ pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usi
 
         let mut rng = thread_rng();
         *valid_actions.choose(&mut rng).expect("无有效动作")
+    } else if temperature == 0.0 {
+        // τ=0: 贪心选择最大概率动作
+        masked_probs
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(idx, _)| idx)
+            .expect("无有效动作")
     } else {
         // 应用温度参数
         let adjusted_probs: Vec<f32> = if temperature != 1.0 {
-            let sum: f32 = probs.iter().map(|&p| p.powf(1.0 / temperature)).sum();
-            probs
+            let sum: f32 = masked_probs.iter().map(|&p| p.powf(1.0 / temperature)).sum();
+            masked_probs
                 .iter()
                 .map(|&p| p.powf(1.0 / temperature) / sum)
                 .collect()
         } else {
-            probs.to_vec()
+            // 需要归一化，因为 mask 可能过滤掉了一些非零值（虽然理论上不该发生）
+            masked_probs.iter().map(|&p| p / non_zero_sum).collect()
         };
 
         let dist = WeightedIndex::new(&adjusted_probs).unwrap();
@@ -324,6 +374,7 @@ pub fn sample_action(probs: &[f32], env: &DarkChessEnv, temperature: f32) -> usi
     }
 }
 
+// ... (rest of the file)
 /// 🐛 DEBUG: 获取top-k动作
 pub fn get_top_k_actions(probs: &[f32], k: usize) -> Vec<(usize, f32)> {
     let mut indexed: Vec<(usize, f32)> = probs.iter().enumerate().map(|(i, &p)| (i, p)).collect();
