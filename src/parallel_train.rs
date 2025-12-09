@@ -65,17 +65,17 @@ pub fn parallel_train_loop() -> Result<()> {
     // 这些参数控制训练的规模、速度和探索程度
     
     // 并行度配置
-    let num_workers = 32;          // 并行工作线程数，建议根据 CPU 核心数调整
+    let num_workers = 64;          // 并行工作线程数，建议根据 CPU 核心数调整
     
     // MCTS 配置
-    let mcts_sims = 800;           // 每次决策进行的模拟次数，越高越强但越慢
+    let mcts_sims = 200;           // 每次决策进行的模拟次数，越高越强但越慢
     
     // 训练流程配置
     let num_iterations = 2000;         // 总迭代轮数
     let num_episodes_per_iteration = 4; // 每轮每个 Worker 生成的对局数 (总数 = workers * episodes_per_worker)
     
     // 推理服务配置
-    let inference_batch_size = 28;     // 推理服务器最大组批大小
+    let inference_batch_size = 64;     // 推理服务器最大组批大小
     let inference_timeout_ms = 4;      // 组批等待超时时间 (毫秒)，平衡延迟和吞吐量
     
     // 神经网络训练配置
@@ -93,7 +93,7 @@ pub fn parallel_train_loop() -> Result<()> {
     
     // 温度采样配置 (Temperature Sampling)
     // 前 N 步使用 τ=1 按概率采样，保证开局多样性；之后使用 τ=0 贪婪选择，保证棋力
-    let temperature_steps = 10;   
+    let temperature_steps = 4;   
 
     println!("\n=== 场景自对弈训练配置 ===");
     println!("工作线程数: {} (全标准环境)", num_workers);

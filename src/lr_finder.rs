@@ -4,7 +4,7 @@
 // 算法基于 Leslie Smith 的论文 "Cyclical Learning Rates for Training Neural Networks"
 //
 // 使用方法:
-// 1. 准备一个训练样本集（从数据库或自对弈获取）
+// 1. 准备一个训练样本集（从MongoDB数据库或自对弈获取）
 // 2. 调用 `find_learning_rate()` 执行扫描
 // 3. 查看生成的 `lr_finder_results.csv` 文件
 // 4. 绘制学习率-损失曲线，找到损失下降最快的区间
@@ -16,6 +16,7 @@
 
 use crate::game_env::Observation;
 use crate::nn_model::BanqiNet;
+use crate::self_play::GameEpisode;
 use anyhow::Result;
 use std::fs::File;
 use std::io::Write;
@@ -60,6 +61,50 @@ impl Default for LRFinderConfig {
             divergence_threshold: 4.0,
         }
     }
+}
+
+/// 从GameEpisode提取训练样本
+/// 返回: (Observation, 策略概率, 最终回报, 动作掩码)
+fn extract_samples_from_episodes(
+    episodes: &[GameEpisode],
+) -> Vec<(Observation, Vec<f32>, f32, Vec<i32>)> {
+    let mut samples = Vec::new();
+    for episode in episodes {
+        for (obs, policy_probs, _mcts_value, game_result, action_mask) in &episode.samples {
+            // 使用game_result作为目标价值
+            samples.push((obs.clone(), policy_probs.clone(), *game_result, action_mask.clone()));
+        }
+    }
+    samples
+}
+
+/// 执行学习率扫描（从GameEpisode）
+///
+/// # 参数
+/// - `model`: 要测试的神经网络模型
+/// - `episodes`: 游戏局数据
+/// - `device`: 训练设备 (CPU/GPU)
+/// - `config`: 学习率扫描配置
+///
+/// # 返回
+/// 学习率扫描结果向量，包含每个学习率下的损失值
+pub fn find_learning_rate_from_episodes(
+    _model: &BanqiNet,
+    episodes: &[GameEpisode],
+    device: Device,
+    config: &LRFinderConfig,
+) -> Result<Vec<LRFinderResult>> {
+    // 提取所有样本
+    let examples = extract_samples_from_episodes(episodes);
+    
+    if examples.is_empty() {
+        anyhow::bail!("从游戏局中提取的训练样本为空");
+    }
+
+    println!("\n从 {} 局游戏中提取了 {} 个训练样本", episodes.len(), examples.len());
+    
+    // 调用原有的扫描函数
+    find_learning_rate(_model, &examples, device, config)
 }
 
 /// 执行学习率扫描
@@ -243,12 +288,21 @@ fn prepare_batch(
     batch: &[(Observation, Vec<f32>, f32, Vec<i32>)],
     device: Device,
 ) -> (Tensor, Tensor, Tensor, Tensor, Tensor) {
+    use crate::game_env::{ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, SCALAR_FEATURE_COUNT, STATE_STACK_SIZE};
+    
     let bsz = batch.len();
-    let mut board_buf = Vec::with_capacity(bsz * 8 * 3 * 4);
-    let mut scalar_buf = Vec::with_capacity(bsz * 56);
-    let mut target_prob_buf = Vec::with_capacity(bsz * 46);
+    
+    // 计算缓冲区大小
+    // board: [batch, STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS]
+    let board_size = bsz * STATE_STACK_SIZE * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS;
+    let scalar_size = bsz * SCALAR_FEATURE_COUNT;
+    let action_size = bsz * ACTION_SPACE_SIZE;
+    
+    let mut board_buf = Vec::with_capacity(board_size);
+    let mut scalar_buf = Vec::with_capacity(scalar_size);
+    let mut target_prob_buf = Vec::with_capacity(action_size);
     let mut target_val_buf = Vec::with_capacity(bsz);
-    let mut mask_buf = Vec::with_capacity(bsz * 46);
+    let mut mask_buf = Vec::with_capacity(action_size);
 
     for (obs, target_probs, target_val, masks) in batch.iter() {
         let board_slice = obs.board.as_slice().expect("board slice");
@@ -260,20 +314,21 @@ fn prepare_batch(
         mask_buf.extend(masks.iter().map(|&m| m as f32));
     }
 
+    // 创建张量，形状为 [batch, STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS]
     let board_tensor = Tensor::from_slice(&board_buf)
-        .view([bsz as i64, 8, 3, 4])
+        .view([bsz as i64, STATE_STACK_SIZE as i64, BOARD_CHANNELS as i64, BOARD_ROWS as i64, BOARD_COLS as i64])
         .to(device);
     let scalar_tensor = Tensor::from_slice(&scalar_buf)
-        .view([bsz as i64, 56])
+        .view([bsz as i64, SCALAR_FEATURE_COUNT as i64])
         .to(device);
     let target_p = Tensor::from_slice(&target_prob_buf)
-        .view([bsz as i64, 46])
+        .view([bsz as i64, ACTION_SPACE_SIZE as i64])
         .to(device);
     let target_v = Tensor::from_slice(&target_val_buf)
         .view([bsz as i64, 1])
         .to(device);
     let mask_tensor = Tensor::from_slice(&mask_buf)
-        .view([bsz as i64, 46])
+        .view([bsz as i64, ACTION_SPACE_SIZE as i64])
         .to(device);
 
     (board_tensor, scalar_tensor, target_p, target_v, mask_tensor)
