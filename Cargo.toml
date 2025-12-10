@@ -71,8 +71,14 @@ num_cpus = "1.17"
 mongodb = { version = "3.4", features = ["sync"] }
 bson = "2.15"
 
+# gRPC 依赖 - 用于与 Python 服务通信
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
+
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }
+tonic-build = "0.12"
 
 [dev-dependencies]
 # 用于测试和示例

@@ -17,4 +17,13 @@ fn main() {
         }
         _ => {}
     }
+
+    // gRPC code generation
+    tonic_build::configure()
+        .build_server(false)  // Rust 只作为客户端
+        .build_client(true)
+        .compile_protos(&["proto/banqi.proto"], &["proto"])
+        .unwrap_or_else(|e| panic!("Failed to compile protos: {}", e));
+
+    println!("cargo:rerun-if-changed=proto/banqi.proto");
 }

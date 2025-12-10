@@ -1,0 +1,25 @@
+# Python 依赖包列表 - 用于推理和训练服务
+
+# 深度学习框架
+torch>=2.0.0
+torchvision>=0.15.0
+
+# gRPC 通信
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+protobuf>=4.25.0
+
+# 数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+
+# 数据库
+pymongo>=4.6.0
+
+# 日志和监控
+tensorboard>=2.15.0
+wandb>=0.16.0  # 可选，用于实验跟踪
+
+# 工具
+tqdm>=4.66.0
+pyyaml>=6.0

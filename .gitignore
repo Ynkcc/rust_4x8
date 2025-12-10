@@ -3,3 +3,6 @@ target/
 gen/
 banqi_model_*
 heaptrack*
+__pycache__/
+banqi_pb2_grpc.py
+banqi_pb2.py
