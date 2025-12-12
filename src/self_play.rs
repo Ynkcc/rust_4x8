@@ -1,15 +1,13 @@
 // src/self_play.rs - 自对弈与数据生成模块
 //
 // 本模块实现了并行的自对弈（Self-Play）逻辑，用于生成强化学习所需的训练数据。
-// 主要功能包括：
-// 1. 定义游戏数据结构 (`GameEpisode`)，用于存储一局游戏的完整样本。
-// 2. 定义特定的训练场景 (`ScenarioType`)，用于针对性地训练模型在特定局面下的表现。
-// 3. 实现自对弈工作器 (`SelfPlayWorker`)，结合 MCTS 和神经网络进行对局。
-// 4. 提供动作采样策略，包括基于温度参数的随机采样。
+//
+// 更新说明：
+// - SelfPlayWorker 改为泛型 Struct，支持任意实现了 Evaluator trait 的评估器。
+// - play_episode 改为 async 方法，以支持异步 MCTS。
 
 use crate::game_env::{DarkChessEnv, Observation, Player};
-use crate::inference::ChannelEvaluator;
-use crate::mcts::{MCTSConfig, MCTS};
+use crate::mcts::{Evaluator, MCTSConfig, MCTS};
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use std::sync::Arc;
@@ -86,17 +84,16 @@ impl ScenarioType {
     }
 }
 
-// ================ 自对弈工作器 ================
+// ================ 自对弈工作器 (泛型 & 异步) ================
 
 /// 自对弈工作器
 ///
-/// 负责执行通过 MCTS + 神经网络进行自我对弈的逻辑。
-/// 支持配置 MCTS 模拟次数、特定场景、Dirichlet 噪声以及温度采样策略。
-pub struct SelfPlayWorker {
+/// 泛型参数 `E`: 必须实现 `Evaluator` trait (如 ChannelEvaluator 或 GrpcEvaluator)
+pub struct SelfPlayWorker<E: Evaluator> {
     /// 工作器 ID，用于日志区分
     pub worker_id: usize,
     /// 神经网络评估器，通过通道与推理服务器通信
-    pub evaluator: Arc<ChannelEvaluator>,
+    pub evaluator: Arc<E>,
     /// 每次决策执行的 MCTS 模拟次数
     pub mcts_sims: usize,
     /// 指定的训练场景 (None 表示随机/标准)
@@ -109,9 +106,9 @@ pub struct SelfPlayWorker {
     pub temperature_steps: usize,
 }
 
-impl SelfPlayWorker {
+impl<E: Evaluator + 'static> SelfPlayWorker<E> {
     /// 创建一个新的自对弈工作器 (默认参数)
-    pub fn new(worker_id: usize, evaluator: Arc<ChannelEvaluator>, mcts_sims: usize) -> Self {
+    pub fn new(worker_id: usize, evaluator: Arc<E>, mcts_sims: usize) -> Self {
         Self {
             worker_id,
             evaluator,
@@ -126,7 +123,7 @@ impl SelfPlayWorker {
     /// 创建指定场景的工作器
     pub fn with_scenario(
         worker_id: usize,
-        evaluator: Arc<ChannelEvaluator>,
+        evaluator: Arc<E>,
         mcts_sims: usize,
         scenario: ScenarioType,
     ) -> Self {
@@ -144,7 +141,7 @@ impl SelfPlayWorker {
     /// 创建指定场景并自定义 Dirichlet 噪声参数的工作器
     pub fn with_scenario_and_dirichlet(
         worker_id: usize,
-        evaluator: Arc<ChannelEvaluator>,
+        evaluator: Arc<E>,
         mcts_sims: usize,
         scenario: ScenarioType,
         dirichlet_alpha: f32,
@@ -164,7 +161,7 @@ impl SelfPlayWorker {
     /// 全配置构造函数：场景、噪声参数、温度采样步数
     pub fn with_scenario_dirichlet_and_temperature(
         worker_id: usize,
-        evaluator: Arc<ChannelEvaluator>,
+        evaluator: Arc<E>,
         mcts_sims: usize,
         scenario: ScenarioType,
         dirichlet_alpha: f32,
@@ -182,14 +179,14 @@ impl SelfPlayWorker {
         }
     }
 
-    /// 执行一局完整的自对弈
+    /// 执行一局完整的自对弈 (异步)
     ///
     /// # 参数
     /// - `episode_num`: 当前局数的索引 (主要用于日志)
     ///
     /// # 返回
     /// - `GameEpisode`: 包含本局游戏的所有训练样本和结果
-    pub fn play_episode(&self, episode_num: usize) -> GameEpisode {
+    pub async fn play_episode(&self, _episode_num: usize) -> GameEpisode {
         let _scenario_name = self.scenario.map(|s| s.name()).unwrap_or("Random");
         let start_time = Instant::now();
 
@@ -207,30 +204,25 @@ impl SelfPlayWorker {
             num_mcts_workers: 8,
             dirichlet_alpha: self.dirichlet_alpha,
             dirichlet_epsilon: self.dirichlet_epsilon,
-            train: true, // 开启训练模式，会在根节点添加噪声
+            train: true,
+            max_pending_inference: 32,
         };
         let mut mcts = MCTS::new(&env, self.evaluator.clone(), config);
 
         let mut episode_data = Vec::new();
         let mut step = 0;
-        let debug_first_step = episode_num < 2; 
 
         // 预分配掩码缓冲区
         let mut masks = vec![0; crate::game_env::ACTION_SPACE_SIZE];
 
         // 3. 游戏主循环
         loop {
-            // --- MCTS 搜索 ---
-            mcts.run();
-            let probs = mcts.get_root_probabilities();
-            env.action_masks_into(&mut masks);
+            // --- MCTS 搜索 (异步等待) ---
+            mcts.run().await;
             
-            // 获取当前局面的评估价值 (用于训练 Value Head 的辅助目标)
-            let mcts_value = mcts.root.q_value();
-
-            if debug_first_step && step < 3 {
-                // 调试输出 (可选)
-            }
+            let probs = mcts.get_root_probabilities().await;
+            env.action_masks_into(&mut masks);
+            let mcts_value = mcts.root.read().await.q_value();
 
             // --- 收集样本数据 ---
             // 存储当前状态、MCTS计算出的策略概率、MCTS价值、当前玩家、动作掩码
@@ -255,8 +247,8 @@ impl SelfPlayWorker {
             // --- 执行动作 ---
             match env.step(action, None) {
                 Ok((_, _, terminated, truncated, winner)) => {
-                    // 推进 MCTS 树 (复用子树)
-                    mcts.step_next(&env, action);
+                    // 推进 MCTS 树 (异步)
+                    mcts.step_next(&env, action).await;
 
                     if terminated || truncated {
                         // --- 游戏结束处理 ---

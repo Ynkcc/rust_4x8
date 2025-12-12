@@ -14,20 +14,23 @@
 //! // 进行游戏...
 //! ```
 
-pub mod ai;
 pub mod game_env;
 pub mod mcts;
-pub mod nn_model;
-
-// 并行训练相关模块
-pub mod database;
-pub mod inference;
-pub mod lr_finder;
 pub mod mongodb_storage;
-pub mod scenario_validation;
 pub mod self_play;
+
+// gRPC 模块
+pub mod rpc;
+
+// tch 相关模块 - 仅在启用 torch 特性时编译
+#[cfg(feature = "torch")]
+pub mod ai;
+#[cfg(feature = "torch")]
+pub mod nn_model;
+#[cfg(feature = "torch")]
+pub mod inference;
+#[cfg(feature = "torch")]
 pub mod training;
-pub mod training_log;
 
 // 重新导出核心类型，方便外部使用
 pub use game_env::{DarkChessEnv, Observation, Piece, PieceType, Player, Slot};

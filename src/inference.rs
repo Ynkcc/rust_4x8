@@ -268,8 +268,9 @@ impl ChannelEvaluator {
     }
 }
 
+#[async_trait::async_trait]
 impl Evaluator for ChannelEvaluator {
-    fn evaluate(&self, env: &DarkChessEnv) -> (Vec<f32>, f32) {
+    async fn evaluate(&self, env: &DarkChessEnv) -> (Vec<f32>, f32) {
         // 创建一次性通道用于接收结果
         let (response_tx, response_rx) = mpsc::channel();
 

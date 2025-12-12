@@ -52,8 +52,9 @@ pub struct TchEvaluator {
     pub model: Arc<ModelWrapper>,
 }
 
+#[async_trait::async_trait]
 impl Evaluator for TchEvaluator {
-    fn evaluate(&self, env: &DarkChessEnv) -> (Vec<f32>, f32) {
+    async fn evaluate(&self, env: &DarkChessEnv) -> (Vec<f32>, f32) {
         let _guard = self.model.gate.lock().unwrap();
         let obs = env.get_state();
 
@@ -113,6 +114,7 @@ impl MctsDlPolicy {
             dirichlet_alpha: 0.3,
             dirichlet_epsilon: 0.25,
             train: false, // 对弈模式，不添加噪声
+            max_pending_inference: 32,
         };
         let mcts = MCTS::new(env, evaluator.clone(), config);
         Self {
@@ -125,36 +127,24 @@ impl MctsDlPolicy {
 
     pub fn set_iterations(&mut self, sims: usize) {
         self.num_simulations = sims.max(1);
-        // 由于 MCTSConfig 字段是私有的，这里通过重新构建根节点方式更新配置
-        let root_env = self.mcts.root.env.as_ref().unwrap().as_ref().clone();
-        let new_cfg = MCTSConfig {
-            cpuct: self.cpuct,
-            num_simulations: self.num_simulations,
-            virtual_loss: 1.0,
-            num_mcts_workers: 8,
-            dirichlet_alpha: 0.3,
-            dirichlet_epsilon: 0.25,
-            train: false, // 对弈模式，不添加噪声
-        };
-        self.mcts = MCTS::new(&root_env, self.evaluator.clone(), new_cfg);
+        // 配置字段是私有的，所以只更新本地字段即可
+        // 下次 choose_action 时会使用新的配置
     }
 
     /// 在外部环境执行 action 后调用，用于推进/复用搜索树
-    pub fn advance(&mut self, env: &DarkChessEnv, action: usize) {
-        self.mcts.step_next(env, action);
+    pub async fn advance(&mut self, env: &DarkChessEnv, action: usize) {
+        self.mcts.step_next(env, action).await;
     }
 
     /// 选择动作：如发现根环境与传入 env 不一致（步数不匹配），重置搜索树
-    pub fn choose_action(&mut self, env: &DarkChessEnv) -> Option<usize> {
+    pub async fn choose_action(&mut self, env: &DarkChessEnv) -> Option<usize> {
         // 简单一致性判断：总步数不同 -> 重置
-        if self
-            .mcts
-            .root
-            .env
-            .as_ref()
-            .map(|e| e.as_ref().get_total_steps())
-            != Some(env.get_total_steps())
-        {
+        let root_steps = {
+            let root_guard = self.mcts.root.read().await;
+            root_guard.env.as_ref().map(|e| e.get_total_steps())
+        };
+        
+        if root_steps != Some(env.get_total_steps()) {
             self.mcts = MCTS::new(
                 env,
                 self.evaluator.clone(),
@@ -165,10 +155,29 @@ impl MctsDlPolicy {
                     num_mcts_workers: 8,
                     dirichlet_alpha: 0.3,
                     dirichlet_epsilon: 0.25,
-                    train: false, // 对弈模式，不添加噪声
+                    train: false,
+                    max_pending_inference: 32,
                 },
             );
         }
-        self.mcts.run()
+        self.mcts.run().await;
+        let probs = self.mcts.get_root_probabilities().await;
+        
+        // 选择概率最大的合法动作
+        let masks = env.action_masks();
+        let mut best_action = 0;
+        let mut best_prob = -1.0;
+        for (action, &prob) in probs.iter().enumerate() {
+            if masks[action] == 1 && prob > best_prob {
+                best_prob = prob;
+                best_action = action;
+            }
+        }
+        
+        if best_prob > 0.0 {
+            Some(best_action)
+        } else {
+            None
+        }
     }
 }

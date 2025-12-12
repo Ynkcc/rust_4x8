@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package banqi.inference;
+
+// The inference service definition.
+service InferenceService {
+  // Performs inference on a single game state
+  rpc Predict (PredictRequest) returns (PredictResponse);
+  
+  // Triggers the server to reload model weights from disk
+  rpc ReloadModel (Empty) returns (Status);
+}
+
+// Request message containing the game state
+message PredictRequest {
+  // Flattened board tensor [Channels * H * W]
+  repeated float board = 1;
+  
+  // Flattened scalar features [FeatureCount]
+  repeated float scalars = 2;
+  
+  // Action masks (1 for valid, 0 for invalid) [ActionSpaceSize]
+  repeated int32 masks = 3;
+}
+
+// Response message containing policy and value
+message PredictResponse {
+  // Probability distribution over actions (Softmaxed and Masked)
+  repeated float policy = 1;
+  
+  // Value evaluation [-1, 1]
+  float value = 2;
+}
+
+message Empty {}
+
+message Status {
+  bool success = 1;
+  string message = 2;
+}

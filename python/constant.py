@@ -61,11 +61,3 @@ SCALAR_FEATURE_COUNT = 3 + (2 * SURVIVAL_VECTOR_SIZE) + ACTION_SPACE_SIZE
 # --- Model Hyperparameters ---
 # ==============================================================================
 HIDDEN_CHANNELS = 128
-
-# ==============================================================================
-# --- Inference Server Configuration ---
-# ==============================================================================
-SERVER_ADDRESS = '[::]:50051'
-INFERENCE_BATCH_SIZE = 16       # 积攒多少个请求后立即执行
-INFERENCE_TIMEOUT = 0.005       # 最长等待时间 (秒)，例如 5ms
-MODEL_PATH = "banqi_model_15.ot"  # 模型权重路径

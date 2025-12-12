@@ -15,11 +15,11 @@ fi
 source venv/bin/activate
 python -m grpc_tools.protoc \
     -I proto \
-    --python_out=python/generated \
-    --grpc_python_out=python/generated \
+    --python_out=python \
+    --grpc_python_out=python \
     proto/banqi.proto
 
-echo "✅ Python 代码生成: python/generated/banqi_pb2.py, python/generated/banqi_pb2_grpc.py"
+echo "✅ Python 代码生成: python/banqi_pb2.py, python/banqi_pb2_grpc.py"
 # Rust (通过 cargo build 自动生成)
 echo ""
 echo "🦀 生成 Rust gRPC 代码..."
