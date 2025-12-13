@@ -80,7 +80,7 @@ serde_json = "1.0"
 anyhow = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 num_cpus = "1.17"
-mongodb = { version = "3.4", features = ["sync"] }
+mongodb = { version = "3.4" }
 bson = "2.15"
 
 # gRPC 依赖 - 用于与 Python 服务通信
