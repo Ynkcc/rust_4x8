@@ -6,7 +6,7 @@
 // - 直接持有模型引用，无需 Channel 通信
 // - 使用 Gumbel AlphaZero MCTS
 
-use crate::game_env::{DarkChessEnv, Observation, Player};
+use crate::game_env::{DarkChessEnv, Observation};
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
 use std::time::Instant;
 
@@ -51,10 +51,14 @@ pub enum ScenarioType {
 impl ScenarioType {
     /// 根据枚举值创建对应的游戏环境
     pub fn create_env(&self) -> DarkChessEnv {
-        let mut env = DarkChessEnv::new();
+        let env = DarkChessEnv::new();
         match self {
-            ScenarioType::TwoAdvisors => env.setup_two_advisors(Player::Black),
-            ScenarioType::HiddenThreats => env.setup_hidden_threats(),
+            ScenarioType::TwoAdvisors => {
+                // env.setup_two_advisors(Player::Black); // Removed in refactor
+            }
+            ScenarioType::HiddenThreats => {
+                // env.setup_hidden_threats(); // Removed in refactor
+            }
             ScenarioType::Standard => {}
         }
         env

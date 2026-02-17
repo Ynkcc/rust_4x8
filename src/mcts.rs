@@ -60,6 +60,10 @@ pub struct MctsNode {
     /// 游戏环境
     /// 该节点对应的游戏状态环境。
     pub env: Option<Box<DarkChessEnv>>,
+    /// 当前玩家
+    pub player: Player,
+    /// 是否为终局状态
+    pub is_terminal: bool,
 }
 
 impl MctsNode {
@@ -73,6 +77,13 @@ impl MctsNode {
     /// * `env` - 游戏环境状态 (Optional)
     /// * `is_root_node` - 是否为根节点
     pub fn new(prior: f32, logit: f32, is_chance_node: bool, env: Option<DarkChessEnv>, is_root_node: bool) -> Self {
+        let (player, is_terminal) = if let Some(ref e) = env {
+            let (terminated, truncated, _) = e.check_game_over_conditions();
+            (e.get_current_player(), terminated || truncated)
+        } else {
+            (Player::Red, false)
+        };
+
         Self {
             visit_count: 0,
             value_sum: 0.0,
@@ -84,16 +95,14 @@ impl MctsNode {
             is_root_node,
             possible_states: HashMap::new(),
             env: env.map(Box::new),
+            player,
+            is_terminal,
         }
     }
 
     /// 获取当前节点对应的玩家
-    ///
-    /// # Panics
-    ///
-    /// 如果节点没有关联的环境 (`env` 为 None)，则会 panic。
     pub fn player(&self) -> Player {
-        self.env.as_ref().expect("Node must have environment").as_ref().get_current_player()
+        self.player
     }
 
     /// 计算当前节点的平均 Q 值 (动作价值)
@@ -480,8 +489,8 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     fn expand_chance_node(node: &mut MctsNode, action: usize) {
         let env = node.env.as_ref().expect("Chance node must have env").as_ref();
         let mut counts = [0; 14];
-        for p in &env.hidden_pieces { counts[get_outcome_id(p)] += 1; }
-        let total_hidden = env.hidden_pieces.len() as f32;
+        for p in env.get_hidden_pieces_raw() { counts[get_outcome_id(p)] += 1; }
+        let total_hidden = env.get_hidden_pieces_raw().len() as f32;
         if total_hidden == 0.0 {
             node.is_expanded = true;
             return;
@@ -492,7 +501,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             if counts[outcome_id] > 0 {
                 let prob = counts[outcome_id] as f32 / total_hidden;
                 let mut next_env = env.clone();
-                let specific_piece = next_env.hidden_pieces.iter()
+                let specific_piece = next_env.get_hidden_pieces_raw().iter()
                     .find(|p| get_outcome_id(p) == outcome_id)
                     .expect("Piece not found").clone();
                 let _ = next_env.step(action, Some(specific_piece));
@@ -582,7 +591,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             if masks.iter().all(|&x| x == 0) {
                 let leaf_player = node.player();
                 let path_clone = path.clone();
-                drop(node);
+                let _ = node;
                 Self::backprop_from_path(self.root.as_mut(), &path_clone, leaf_player, -1.0);
                 return;
             }
@@ -762,18 +771,44 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let mut masks = vec![0; ACTION_SPACE_SIZE];
         env.action_masks_into(&mut masks);
 
+        // 1. 收集合法动作的 Q 值并计算最小/最大值
+        let mut valid_actions = Vec::with_capacity(masks.len());
+        let mut min_q = f32::INFINITY;
+        let mut max_q = f32::NEG_INFINITY;
+
+        for action in 0..ACTION_SPACE_SIZE {
+            if masks[action] == 1 {
+                let q = self.completed_q(action);
+                if q < min_q { min_q = q; }
+                if q > max_q { max_q = q; }
+                valid_actions.push((action, q));
+            }
+        }
+
+        if valid_actions.is_empty() {
+            return policy;
+        }
+
+        // 2. 使用较大的缩放因子修正 Logits
+        let sigma_scale = self.config.c_visit;
+
         let mut scores = vec![f32::NEG_INFINITY; ACTION_SPACE_SIZE];
         let mut max_score = f32::NEG_INFINITY;
 
-        for action in 0..ACTION_SPACE_SIZE {
-            if masks[action] != 1 { continue; }
+        for (action, q) in valid_actions {
             if let Some(child) = self.root.children.get(&action) {
-                let score = child.logit + self.config.c_scale * self.completed_q(action);
+                let normalized_q = if max_q > min_q {
+                    (q - min_q) / (max_q - min_q)
+                } else {
+                    0.0
+                };
+                let score = child.logit + sigma_scale * normalized_q;
                 scores[action] = score;
                 if score > max_score { max_score = score; }
             }
         }
 
+        // 3. 计算 Softmax（带数值稳定性）
         if !max_score.is_finite() { return policy; }
 
         let mut sum = 0.0;
@@ -786,8 +821,18 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             }
         }
 
+        // 4. 归一化概率，异常时回退到均匀分布
         if sum > 0.0 {
             for p in policy.iter_mut() { *p /= sum; }
+        } else {
+            let count = masks.iter().sum::<i32>() as f32;
+            if count > 0.0 {
+                for i in 0..ACTION_SPACE_SIZE {
+                    if masks[i] == 1 {
+                        policy[i] = 1.0 / count;
+                    }
+                }
+            }
         }
 
         policy
