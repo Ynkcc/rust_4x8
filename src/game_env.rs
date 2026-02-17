@@ -3,7 +3,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -22,8 +22,7 @@ pub const NUM_PIECE_TYPES: usize = 7;
 /// 判和步数限制：连续多少步无吃子则判和
 pub const MAX_CONSECUTIVE_MOVES_FOR_DRAW: usize = 24; // 参照 README.md
 
-/// 状态堆叠帧数 (1 表示只使用当前帧，不包含历史帧)
-pub const STATE_STACK_SIZE: usize = 1; 
+ 
 /// 每局游戏最大总步数限制 (防止死循环)
 const MAX_STEPS_PER_EPISODE: usize = 100;
 /// 初始随机翻开的棋子数量 (用于加速开局)
@@ -214,6 +213,13 @@ impl Player {
     pub fn val(&self) -> i32 {
         *self as i32
     }
+
+    pub fn idx(&self) -> usize {
+        match self {
+            Player::Red => 0,
+            Player::Black => 1,
+        }
+    }
 }
 
 impl fmt::Display for Player {
@@ -226,7 +232,7 @@ impl fmt::Display for Player {
 }
 
 /// 棋子结构体
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Piece {
     pub piece_type: PieceType,
     pub player: Player,
@@ -256,7 +262,7 @@ impl Piece {
 }
 
 /// 棋盘格状态枚举
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Slot {
     Empty,           // 空位
     Hidden,          // 暗子 (未翻开)
@@ -401,9 +407,9 @@ fn build_ray_attacks() -> Vec<Vec<u64>> {
 /// 观察空间数据结构 (Neural Network Input)
 #[derive(Debug, Clone)]
 pub struct Observation {
-    /// 棋盘特征张量: (Stack, Channels, H, W)
+    /// 棋盘特征张量: (Channels, H, W)
     pub board: Array4<f32>,
-    /// 全局标量特征: (Stack, Features)
+    /// 全局标量特征: (Features,)
     pub scalars: Array1<f32>,
 }
 
@@ -411,7 +417,7 @@ pub struct Observation {
 pub struct DarkChessEnv {
     // --- 游戏核心状态 ---
     /// 棋盘格子状态 (Empty, Hidden, Revealed)
-    board: Vec<Slot>,
+    board: [Slot; TOTAL_POSITIONS],
     /// 当前玩家
     current_player: Player,
     /// 连续无吃子步数 (用于判和)
@@ -421,9 +427,9 @@ pub struct DarkChessEnv {
 
     // --- 位棋盘 (Bitboards) 用于加速计算 ---
     /// 按 [Player][PieceType] 索引的位棋盘
-    piece_bitboards: HashMap<Player, [u64; NUM_PIECE_TYPES]>,
+    piece_bitboards: [[u64; NUM_PIECE_TYPES]; 2],
     /// 按 [Player] 索引的明子位棋盘
-    revealed_bitboards: HashMap<Player, u64>,
+    revealed_bitboards: [u64; 2],
     /// 所有暗子位置
     hidden_bitboard: u64,
     /// 所有空位位置
@@ -431,45 +437,42 @@ pub struct DarkChessEnv {
 
     // --- 游戏统计与记录 ---
     /// 阵亡棋子列表
-    dead_pieces: HashMap<Player, Vec<PieceType>>,
+    dead_pieces: [Vec<PieceType>; 2],
     /// 玩家分数/血量 (减分制)
-    scores: HashMap<Player, i32>,
+    scores: [i32; 2],
     /// 上一步动作
     last_action: i32,
 
-    // --- 历史堆叠 (State Stacking) ---
-    board_history: VecDeque<Vec<f32>>,
-    scalar_history: VecDeque<Vec<f32>>,
+
 
     // --- 概率相关 (Bag Model) ---
     /// 隐藏棋子池: 翻棋时从此池中抽取 (模拟未知状态)
     pub hidden_pieces: Vec<Piece>,
     /// 翻棋概率表 (用于 Observation 输入)
-    reveal_probabilities: Vec<f32>,
+    reveal_probabilities: [f32; REVEAL_PROBABILITY_SIZE],
 }
 
 impl DarkChessEnv {
     pub fn new() -> Self {
         let mut env = Self {
-            board: vec![Slot::Empty; TOTAL_POSITIONS], // 初始填充，reset时会覆盖
+            board: [Slot::Empty; TOTAL_POSITIONS], // 初始填充，reset时会覆盖
             current_player: Player::Red,
             move_counter: 0,
             total_step_counter: 0,
 
-            piece_bitboards: HashMap::new(),
-            revealed_bitboards: HashMap::new(),
+            piece_bitboards: [[0; NUM_PIECE_TYPES]; 2],
+            revealed_bitboards: [0; 2],
             hidden_bitboard: 0,
             empty_bitboard: 0,
 
-            dead_pieces: HashMap::new(),
-            scores: HashMap::new(),
+            dead_pieces: [Vec::new(), Vec::new()],
+            scores: [0; 2],
             last_action: -1,
 
-            board_history: VecDeque::with_capacity(STATE_STACK_SIZE),
-            scalar_history: VecDeque::with_capacity(STATE_STACK_SIZE),
+
 
             hidden_pieces: Vec::new(),
-            reveal_probabilities: vec![0.0; REVEAL_PROBABILITY_SIZE],
+            reveal_probabilities: [0.0; REVEAL_PROBABILITY_SIZE],
         };
 
         // 确保单例表已初始化
@@ -497,36 +500,28 @@ impl DarkChessEnv {
 
     /// 重置内部状态变量
     fn reset_internal_state(&mut self) {
-        self.board = vec![Slot::Empty; TOTAL_POSITIONS];
+        self.board = [Slot::Empty; TOTAL_POSITIONS];
 
         // 初始化 Bitboards
-        self.piece_bitboards
-            .insert(Player::Red, [0; NUM_PIECE_TYPES]);
-        self.piece_bitboards
-            .insert(Player::Black, [0; NUM_PIECE_TYPES]);
-
-        self.revealed_bitboards.insert(Player::Red, 0);
-        self.revealed_bitboards.insert(Player::Black, 0);
+        self.piece_bitboards = [[0; NUM_PIECE_TYPES]; 2];
+        self.revealed_bitboards = [0; 2];
 
         self.hidden_bitboard = 0;
         self.empty_bitboard = 0;
 
-        self.dead_pieces.insert(Player::Red, Vec::new());
-        self.dead_pieces.insert(Player::Black, Vec::new());
+        self.dead_pieces = [Vec::new(), Vec::new()];
 
         // 初始化血量（减分制）
-        self.scores.insert(Player::Red, INITIAL_HEALTH_POINTS);
-        self.scores.insert(Player::Black, INITIAL_HEALTH_POINTS);
+        self.scores = [INITIAL_HEALTH_POINTS, INITIAL_HEALTH_POINTS];
 
         self.current_player = Player::Red;
         self.move_counter = 0;
         self.total_step_counter = 0;
         self.last_action = -1;
 
-        self.board_history.clear();
-        self.scalar_history.clear();
+
         self.hidden_pieces.clear();
-        self.reveal_probabilities = vec![0.0; REVEAL_PROBABILITY_SIZE];
+        self.reveal_probabilities = [0.0; REVEAL_PROBABILITY_SIZE];
     }
 
     /// 初始化棋盘布局 (Shuffle Bag Model)
@@ -577,16 +572,6 @@ impl DarkChessEnv {
     pub fn reset(&mut self) -> Observation {
         self.reset_internal_state();
         self.initialize_board();
-
-        let initial_board = self.get_board_state_tensor();
-        let initial_scalar = self.get_scalar_state_vector();
-
-        // 填充历史帧
-        for _ in 0..STATE_STACK_SIZE {
-            self.board_history.push_back(initial_board.clone());
-            self.scalar_history.push_back(initial_scalar.clone());
-        }
-
         self.get_state()
     }
 
@@ -623,11 +608,11 @@ impl DarkChessEnv {
         let mask = ull(sq);
         self.hidden_bitboard &= !mask;
 
-        let p_bb = self.revealed_bitboards.get_mut(&piece.player).unwrap();
+        let p_bb = &mut self.revealed_bitboards[piece.player.idx()];
         *p_bb |= mask;
 
         let pt_bb =
-            &mut self.piece_bitboards.get_mut(&piece.player).unwrap()[piece.piece_type as usize];
+            &mut self.piece_bitboards[piece.player.idx()][piece.piece_type as usize];
         *pt_bb |= mask;
 
         // 更新棋盘状态
@@ -642,7 +627,7 @@ impl DarkChessEnv {
         let total_hidden = self.hidden_pieces.len();
 
         if total_hidden == 0 {
-            self.reveal_probabilities = vec![0.0; REVEAL_PROBABILITY_SIZE];
+            self.reveal_probabilities = [0.0; REVEAL_PROBABILITY_SIZE];
             return;
         }
 
@@ -672,7 +657,7 @@ impl DarkChessEnv {
         }
     }
 
-    pub fn get_reveal_probabilities(&self) -> &Vec<f32> {
+    pub fn get_reveal_probabilities(&self) -> &[f32] {
         &self.reveal_probabilities
     }
 
@@ -709,7 +694,6 @@ impl DarkChessEnv {
 
         // 切换玩家
         self.current_player = self.current_player.opposite();
-        self.update_history();
 
         // 检查游戏结束条件
         let (terminated, truncated, winner) = self.check_game_over_conditions();
@@ -739,10 +723,10 @@ impl DarkChessEnv {
         let pt = attacker.piece_type as usize;
 
         // 1. 更新源位置 (Attacker leaves from_sq)
-        let my_revealed_bb = self.revealed_bitboards.get_mut(&p).unwrap();
+        let my_revealed_bb = &mut self.revealed_bitboards[p.idx()];
         *my_revealed_bb &= !attacker_mask;
 
-        let my_pt_bb = &mut self.piece_bitboards.get_mut(&p).unwrap()[pt];
+        let my_pt_bb = &mut self.piece_bitboards[p.idx()][pt];
         *my_pt_bb &= !attacker_mask;
 
         self.empty_bitboard |= attacker_mask;
@@ -763,19 +747,16 @@ impl DarkChessEnv {
                 let opp_pt = defender.piece_type as usize;
 
                 // 移除被吃子
-                let opp_revealed_bb = self.revealed_bitboards.get_mut(&opp).unwrap();
+                let opp_revealed_bb = &mut self.revealed_bitboards[opp.idx()];
                 *opp_revealed_bb &= !defender_mask;
 
-                let opp_pt_bb = &mut self.piece_bitboards.get_mut(&opp).unwrap()[opp_pt];
+                let opp_pt_bb = &mut self.piece_bitboards[opp.idx()][opp_pt];
                 *opp_pt_bb &= !defender_mask;
 
-                self.dead_pieces
-                    .get_mut(&defender.player)
-                    .unwrap()
-                    .push(defender.piece_type);
+                self.dead_pieces[defender.player.idx()].push(defender.piece_type);
 
                 // 更新被吃方血量（减分制）
-                let score = self.scores.get_mut(&defender.player).unwrap();
+                let score = &mut self.scores[defender.player.idx()];
                 *score = score.saturating_sub(defender.piece_type.value());
 
                 // 吃子重置判和计数
@@ -787,18 +768,7 @@ impl DarkChessEnv {
         }
     }
 
-    fn update_history(&mut self) {
-        let board_state = self.get_board_state_tensor();
-        let scalar_state = self.get_scalar_state_vector();
 
-        self.board_history.push_back(board_state);
-        self.scalar_history.push_back(scalar_state);
-
-        if self.board_history.len() > STATE_STACK_SIZE {
-            self.board_history.pop_front();
-            self.scalar_history.pop_front();
-        }
-    }
 
     // --- 状态特征提取 ---
 
@@ -818,11 +788,11 @@ impl DarkChessEnv {
         // 通道顺序:
         // 1. 己方7种棋子 (Revealed)
         for pt in 0..NUM_PIECE_TYPES {
-            push_bitboard(self.piece_bitboards[&my][pt]);
+            push_bitboard(self.piece_bitboards[my.idx()][pt]);
         }
         // 2. 敌方7种棋子 (Revealed)
         for pt in 0..NUM_PIECE_TYPES {
-            push_bitboard(self.piece_bitboards[&opp][pt]);
+            push_bitboard(self.piece_bitboards[opp.idx()][pt]);
         }
         // 3. 暗子位置
         push_bitboard(self.hidden_bitboard);
@@ -854,7 +824,7 @@ impl DarkChessEnv {
 
         // 存活向量 (Bag Encoding)
         for &player in &[my, opp] {
-            let bitboards = &self.piece_bitboards[&player];
+            let bitboards = &self.piece_bitboards[player.idx()];
             for pt in 0..NUM_PIECE_TYPES {
                 let count = bitboards[pt].count_ones() as usize;
                 let max_count = PIECE_MAX_COUNTS[pt];
@@ -870,21 +840,14 @@ impl DarkChessEnv {
     }
 
     pub fn get_state(&self) -> Observation {
-        let mut board_data =
-            Vec::with_capacity(STATE_STACK_SIZE * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
-        for frame in &self.board_history {
-            board_data.extend_from_slice(frame);
-        }
+        let board_data = self.get_board_state_tensor();
         let board = Array4::from_shape_vec(
-            (STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
+            (1, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
             board_data,
         )
         .expect("Failed to reshape board array");
 
-        let mut scalars_data = Vec::with_capacity(STATE_STACK_SIZE * SCALAR_FEATURE_COUNT);
-        for frame in &self.scalar_history {
-            scalars_data.extend_from_slice(frame);
-        }
+        let scalars_data = self.get_scalar_state_vector();
         let scalars = Array1::from_vec(scalars_data);
 
         Observation { board, scalars }
@@ -893,21 +856,18 @@ impl DarkChessEnv {
     /// 使用提供的缓冲区填充 Observation，避免重复分配内存 (优化性能)
     pub fn get_state_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) -> Observation {
         board_data.clear();
-        board_data.reserve(STATE_STACK_SIZE * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
-        for frame in &self.board_history {
-            board_data.extend_from_slice(frame);
-        }
+        board_data.reserve(BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
+        board_data.extend_from_slice(&self.get_board_state_tensor());
+        
         let board = Array4::from_shape_vec(
-            (STATE_STACK_SIZE, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
+            (1, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
             board_data.clone(),
         )
         .expect("Failed to reshape board array");
 
         scalars_data.clear();
-        scalars_data.reserve(STATE_STACK_SIZE * SCALAR_FEATURE_COUNT);
-        for frame in &self.scalar_history {
-            scalars_data.extend_from_slice(frame);
-        }
+        scalars_data.reserve(SCALAR_FEATURE_COUNT);
+        scalars_data.extend_from_slice(&self.get_scalar_state_vector());
         let scalars = Array1::from_vec(scalars_data.clone());
 
         Observation { board, scalars }
@@ -919,18 +879,18 @@ impl DarkChessEnv {
     /// 返回: (terminated, truncated, winner)
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
         // 1. 血量归零判定
-        if self.scores[&Player::Red] <= 0 {
+        if self.scores[Player::Red.idx()] <= 0 {
             return (true, false, Some(Player::Black.val()));
         }
-        if self.scores[&Player::Black] <= 0 {
+        if self.scores[Player::Black.idx()] <= 0 {
             return (true, false, Some(Player::Red.val()));
         }
 
         // 2. 全灭判定
-        if self.dead_pieces[&Player::Red].len() == TOTAL_PIECES_PER_PLAYER {
+        if self.dead_pieces[Player::Red.idx()].len() == TOTAL_PIECES_PER_PLAYER {
             return (true, false, Some(Player::Black.val()));
         }
-        if self.dead_pieces[&Player::Black].len() == TOTAL_PIECES_PER_PLAYER {
+        if self.dead_pieces[Player::Black.idx()].len() == TOTAL_PIECES_PER_PLAYER {
             return (true, false, Some(Player::Red.val()));
         }
 
@@ -997,9 +957,9 @@ impl DarkChessEnv {
         let my = player;
         let opp = player.opposite();
 
-        let my_revealed_bb = *self.revealed_bitboards.get(&my).unwrap();
-        let my_piece_bb = *self.piece_bitboards.get(&my).unwrap();
-        let opp_piece_bb = *self.piece_bitboards.get(&opp).unwrap();
+        let my_revealed_bb = self.revealed_bitboards[my.idx()];
+        let my_piece_bb = self.piece_bitboards[my.idx()];
+        let opp_piece_bb = self.piece_bitboards[opp.idx()];
 
         // --------------------------------------------------------
         // 3. 常规移动 (Regular Moves)
@@ -1187,14 +1147,14 @@ impl DarkChessEnv {
             "Total Steps: {}, Move Counter: {}",
             self.total_step_counter, self.move_counter
         );
-        println!("Dead (Red): {:?}", self.dead_pieces[&Player::Red]);
-        println!("Dead (Black): {:?}", self.dead_pieces[&Player::Black]);
+        println!("Dead (Red): {:?}", self.dead_pieces[Player::Red.idx()]);
+        println!("Dead (Black): {:?}", self.dead_pieces[Player::Black.idx()]);
         println!("---------------------------------------------");
     }
 
     // === 公共访问器方法 (用于 GUI / API) ===
 
-    pub fn get_board_slots(&self) -> &Vec<Slot> {
+    pub fn get_board_slots(&self) -> &[Slot] {
         &self.board
     }
 
@@ -1211,7 +1171,7 @@ impl DarkChessEnv {
     }
 
     pub fn get_score(&self, player: Player) -> i32 {
-        *self.scores.get(&player).unwrap_or(&0)
+        self.scores[player.idx()]
     }
 
     pub fn get_scores(&self) -> (i32, i32) {
@@ -1223,7 +1183,7 @@ impl DarkChessEnv {
     }
 
     pub fn get_dead_pieces(&self, player: Player) -> &Vec<PieceType> {
-        &self.dead_pieces[&player]
+        &self.dead_pieces[player.idx()]
     }
 
     pub fn get_hidden_pieces(&self, player: Player) -> Vec<PieceType> {
@@ -1262,13 +1222,13 @@ impl DarkChessEnv {
 
             bitboards.insert(
                 format!("{}_revealed", prefix),
-                bb_to_vec(self.revealed_bitboards[&player]),
+                bb_to_vec(self.revealed_bitboards[player.idx()]),
             );
 
             for (pt, &name) in PIECE_NAMES.iter().enumerate() {
                 bitboards.insert(
                     format!("{}_{}", prefix, name),
-                    bb_to_vec(self.piece_bitboards[&player][pt]),
+                    bb_to_vec(self.piece_bitboards[player.idx()][pt]),
                 );
             }
         }

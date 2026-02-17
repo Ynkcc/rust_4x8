@@ -1,7 +1,6 @@
 import time
 import subprocess
 import os
-import grpc
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -9,7 +8,7 @@ import numpy as np
 from pymongo import MongoClient
 import random
 
-import banqi_pb2 ,banqi_pb2_grpc
+
 
 
 from nn_model import BanqiNet
@@ -25,31 +24,47 @@ from constant import (
 MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 DB_NAME = "banqi_training"
 COLLECTION_NAME = "games"
-MODEL_PATH = "banqi_model_15.ot"
+MODEL_PATH = "banqi_model_latest.pt"  # Only one model file
 BATCH_SIZE = 256
 LEARNING_RATE = 1e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-INFERENCE_SERVER_CMD = ["python", "inference_service.py"]
 
-def start_inference_service():
-    """Starts the inference service as a subprocess."""
-    print("[Training] Starting Inference Service...")
-    # Using Popen to run it in background
-    process = subprocess.Popen(INFERENCE_SERVER_CMD)
-    time.sleep(3) # Wait for startup
-    return process
 
-def connect_inference_stub():
-    channel = grpc.insecure_channel('localhost:50051')
-    return banqi_pb2_grpc.InferenceServiceStub(channel)
+# Buffer 配置
+MAX_SAMPLE_BUFFER_SIZE = 50000  # 最大样本缓冲区大小,防止内存无限增长
+
+
+# MongoDB 客户端单例
+_mongo_client = None
 
 def get_mongo_collection():
-    client = MongoClient(MONGO_URI)
-    return client[DB_NAME][COLLECTION_NAME]
+    """获取 MongoDB 集合,复用客户端连接"""
+    global _mongo_client
+    if _mongo_client is None:
+        _mongo_client = MongoClient(MONGO_URI)
+    return _mongo_client[DB_NAME][COLLECTION_NAME]
 
 def save_model(model):
-    torch.save(model.state_dict(), MODEL_PATH)
-    print(f"[Training] Model saved to {MODEL_PATH}")
+    temp_path = MODEL_PATH + ".tmp"
+    
+    if isinstance(model, torch.jit.ScriptModule):
+        model.save(temp_path)
+    else:
+        # 导出 TorchScript (供 Rust tch-rs 加载推理)
+        model.eval()
+        with torch.no_grad():
+            # 创建示例输入
+            example_board = torch.randn(1, TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS, device=DEVICE)
+            example_scalars = torch.randn(1, SCALAR_FEATURE_COUNT, device=DEVICE)
+            
+            # Trace 模型
+            traced_model = torch.jit.trace(model, (example_board, example_scalars))
+            traced_model.save(temp_path)
+    
+    # Atomic rename
+    os.replace(temp_path, MODEL_PATH)
+    
+    print(f"[Training] Model saved: {MODEL_PATH}")
 
 def train_step(model, optimizer, batch_samples):
     model.train()
@@ -94,28 +109,32 @@ def train_step(model, optimizer, batch_samples):
 
     total_loss = policy_loss + value_loss
 
-    # 4. Backward
+    # 4. Backward with Gradient Clipping
     total_loss.backward()
+    
+    # 梯度裁剪: 防止梯度爆炸,提高训练稳定性
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    
     optimizer.step()
 
     return total_loss.item(), policy_loss.item(), value_loss.item()
 
 def main():
     # 1. Setup Model
-    model = BanqiNet().to(DEVICE)
     if os.path.exists(MODEL_PATH):
         try:
-            model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-            print("[Training] Loaded existing model weights.")
-        except:
-            print("[Training] Model corrupted, starting fresh.")
-            pass
+            # Try loading as TorchScript (JIT) model first
+            model = torch.jit.load(MODEL_PATH, map_location=DEVICE)
+            print("[Training] Loaded existing TorchScript model.")
+        except Exception as e:
+            print(f"[Training] Model corrupted or incompatible: {e}")
+            print("[Training] Starting with fresh model.")
+            model = BanqiNet().to(DEVICE)
+    else:
+        model = BanqiNet().to(DEVICE)
     
     save_model(model) # Ensure file exists for inference service
 
-    # 2. Start Inference Service
-    inf_process = start_inference_service()
-    inf_stub = connect_inference_stub()
 
     # 3. Training Loop Setup
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -162,6 +181,12 @@ def main():
                 # Save remainder for next time
                 sample_buffer = sample_buffer[num_samples_to_use:]
                 
+                # 限制 buffer 大小,防止内存无限增长
+                if len(sample_buffer) > MAX_SAMPLE_BUFFER_SIZE:
+                    excess = len(sample_buffer) - MAX_SAMPLE_BUFFER_SIZE
+                    sample_buffer = sample_buffer[excess:]
+                    print(f"[Training] Buffer size limited: removed {excess} oldest samples")
+                
                 # --- Train ---
                 total_l, pol_l, val_l = 0, 0, 0
                 for i in range(0, num_samples_to_use, BATCH_SIZE):
@@ -174,13 +199,7 @@ def main():
                 # Log averages
                 print(f"[Training] Finished. Avg Loss: {total_l/num_batches:.4f} (P: {pol_l/num_batches:.4f}, V: {val_l/num_batches:.4f})")
 
-                # --- Update Model & Inference Service ---
-                save_model(model)
-                try:
-                    inf_stub.ReloadModel(banqi_pb2.Empty())
-                    print("[Training] Inference service updated.")
-                except grpc.RpcError as e:
-                    print(f"[Training] Failed to update inference service: {e}")
+
 
             else:
                 # Wait for more data
@@ -188,8 +207,7 @@ def main():
 
     except KeyboardInterrupt:
         print("[Training] Stopping...")
-    finally:
-        inf_process.terminate()
+
 
 if __name__ == "__main__":
     main()

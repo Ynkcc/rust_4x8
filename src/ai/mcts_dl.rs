@@ -1,7 +1,8 @@
-//! MCTS + 深度学习策略（支持搜索树复用）
+// src/ai/mcts_dl.rs
+//! MCTS + 深度学习策略（支持搜索树复用）- 同步版本
 //!
 //! 提供 `MctsDlPolicy`：
-//! - 维持一个持久的 `MCTS` 实例
+//! - 维持一个持久的 `GumbelMCTS` 实例
 //! - 可动态调整模拟次数
 //! - 基于已加载的 `BanqiNet` 模型做策略+价值评估
 //! - 在每个外部动作后调用 `advance(action, env)` 来复用搜索树
@@ -12,17 +13,15 @@
 //! 3. 每当玩家或 AI 执行动作后调用 `advance`
 //! 4. 需要选择动作时调用 `choose_action(&env)`
 
-use crate::mcts::{Evaluator, MCTSConfig, MCTS};
-use crate::nn_model::BanqiNet;
-use crate::{DarkChessEnv, ACTION_SPACE_SIZE};
+use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use crate::game_env::{DarkChessEnv, ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, SCALAR_FEATURE_COUNT};
 use std::sync::{Arc, Mutex};
-use tch::{nn, Device, Kind, Tensor};
+use tch::{CModule, Device, Tensor};
 
 // ---------------- Model 封装 ----------------
 
 pub struct ModelWrapper {
-    _vs: nn::VarStore, // 加下划线避免未使用警告，但需要持有以保持模型权重在内存中
-    net: BanqiNet,
+    model: CModule,
     device: Device,
     gate: Mutex<()>, // 串行化前向以保线程安全
 }
@@ -30,15 +29,17 @@ pub struct ModelWrapper {
 impl ModelWrapper {
     pub fn load_from_file(path: &str) -> Result<Self, String> {
         let device = Device::Cpu;
-        let mut vs = nn::VarStore::new(device);
-        let net = BanqiNet::new(&vs.root());
-        vs.load(path).map_err(|e| format!("模型加载失败: {}", e))?;
+        let model = CModule::load(path)
+            .map_err(|e| format!("模型加载失败: {}", e))?;
         Ok(Self {
-            _vs: vs,
-            net,
+            model,
             device,
             gate: Mutex::new(()),
         })
+    }
+    
+    pub fn get_device(&self) -> Device {
+        self.device
     }
 }
 
@@ -46,138 +47,151 @@ impl ModelWrapper {
 unsafe impl Send for ModelWrapper {}
 unsafe impl Sync for ModelWrapper {}
 
-// ---------------- Evaluator ----------------
+// ---------------- Evaluator (同步版本) ----------------
 
 pub struct TchEvaluator {
     pub model: Arc<ModelWrapper>,
 }
 
-#[async_trait::async_trait]
-impl Evaluator for TchEvaluator {
-    async fn evaluate(&self, env: &DarkChessEnv) -> (Vec<f32>, f32) {
-        let _guard = self.model.gate.lock().unwrap();
-        let obs = env.get_state();
-
-        // board: [STATE_STACK, 8, 3, 4] -> 展开为 [1, (STATE_STACK*8), 3, 4]
-        let board_flat: Vec<f32> = obs.board.iter().cloned().collect();
-        let board_t = Tensor::from_slice(&board_flat)
-            .to_device(self.model.device)
-            .view([1, (crate::STATE_STACK_SIZE * 8) as i64, 3, 4]);
-
-        // scalars: [STATE_STACK * 56] -> [1, STATE_STACK*56]
-        let scalars_flat: Vec<f32> = obs.scalars.iter().cloned().collect();
-        let scalars_t = Tensor::from_slice(&scalars_flat)
-            .to_device(self.model.device)
-            .view([1, (56 * crate::STATE_STACK_SIZE) as i64]);
-
-        let (policy_logits, value_t) = self.model.net.forward_inference(&board_t, &scalars_t);
-
-        // 掩码
-        let mut masks = vec![0; ACTION_SPACE_SIZE];
-        env.action_masks_into(&mut masks);
-        let mask_t = Tensor::from_slice(&masks)
-            .to_device(self.model.device)
-            .to_kind(Kind::Bool)
-            .view([1, ACTION_SPACE_SIZE as i64]);
-        let invalid = mask_t.logical_not().to_kind(Kind::Float);
-        let masked_logits = &policy_logits + &invalid * -1e9;
-
-        let probs_t = masked_logits.softmax(-1, Kind::Float);
-        let probs_1d = probs_t.squeeze();
-        let mut probs: Vec<f32> = vec![0.0; ACTION_SPACE_SIZE];
-        probs_1d
-            .to_device(Device::Cpu)
-            .copy_data(&mut probs, ACTION_SPACE_SIZE);
-
-        let value = value_t.squeeze().to_device(Device::Cpu).double_value(&[]) as f32;
-        (probs, value)
+impl TchEvaluator {
+    pub fn new(model: Arc<ModelWrapper>) -> Self {
+        Self { model }
     }
 }
 
-// ---------------- 策略对象（持久化 MCTS） ----------------
+impl Evaluator for TchEvaluator {
+    fn evaluate(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+        if envs.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
 
-pub struct MctsDlPolicy {
-    evaluator: Arc<TchEvaluator>,
-    mcts: MCTS<TchEvaluator>,
-    num_simulations: usize,
-    cpuct: f32,
+        let _guard = self.model.gate.lock().unwrap();
+        tch::no_grad(|| {
+            let batch_size = envs.len();
+            let mut board_flat: Vec<f32> = Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
+            let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * SCALAR_FEATURE_COUNT);
+
+            for env in envs {
+                let obs = env.get_state();
+                board_flat.extend(obs.board.iter().cloned());
+                scalars_flat.extend(obs.scalars.iter().cloned());
+            }
+
+            let board_t = Tensor::from_slice(&board_flat)
+                .to_device(self.model.device)
+                .view([
+                    batch_size as i64,
+                    BOARD_CHANNELS as i64,
+                    BOARD_ROWS as i64,
+                    BOARD_COLS as i64,
+                ]);
+
+            let scalars_t = Tensor::from_slice(&scalars_flat)
+                .to_device(self.model.device)
+                .view([batch_size as i64, SCALAR_FEATURE_COUNT as i64]);
+
+            let board_ivalue = tch::IValue::Tensor(board_t);
+            let scalars_ivalue = tch::IValue::Tensor(scalars_t);
+            let outputs = self.model.model.forward_is(&[board_ivalue, scalars_ivalue])
+                .expect("TorchScript forward failed");
+
+            let (policy_logits, value_t) = match outputs {
+                tch::IValue::Tuple(mut tensors) if tensors.len() == 2 => {
+                    let value_t = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for value"),
+                    };
+                    let policy_logits = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for policy"),
+                    };
+                    (policy_logits, value_t)
+                }
+                _ => panic!("Expected tuple of 2 tensors from model"),
+            };
+
+            let mut logits_flat = vec![0.0f32; batch_size * ACTION_SPACE_SIZE];
+            let logits_len = logits_flat.len();
+            policy_logits
+                .to_device(Device::Cpu)
+                .copy_data(&mut logits_flat, logits_len);
+            let logits_vec: Vec<Vec<f32>> = logits_flat
+                .chunks(ACTION_SPACE_SIZE)
+                .map(|chunk| chunk.to_vec())
+                .collect();
+
+            let mut values = vec![0.0f32; batch_size];
+            let values_len = values.len();
+            value_t
+                .to_device(Device::Cpu)
+                .view([batch_size as i64])
+                .copy_data(&mut values, values_len);
+
+            (logits_vec, values)
+        })
+    }
+
+    fn evaluate_logits(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+        self.evaluate(envs)
+    }
 }
 
-impl MctsDlPolicy {
+// ---------------- 策略对象（持久化 MCTS）----------------
+
+pub struct MctsDlPolicy<'a> {
+    evaluator: TchEvaluator,
+    mcts: GumbelMCTS<'a, TchEvaluator>,
+    num_simulations: usize,
+}
+
+impl<'a> MctsDlPolicy<'a> {
     pub fn new(model: Arc<ModelWrapper>, env: &DarkChessEnv, num_simulations: usize) -> Self {
-        let evaluator = Arc::new(TchEvaluator { model });
-        let config = MCTSConfig {
-            cpuct: 1.0,
+        let evaluator = TchEvaluator::new(model);
+        let config = GumbelConfig {
             num_simulations,
-            virtual_loss: 1.0,
-            num_mcts_workers: 8,
-            dirichlet_alpha: 0.3,
-            dirichlet_epsilon: 0.25,
-            train: false, // 对弈模式，不添加噪声
-            max_pending_inference: 32,
+            max_considered_actions: 16,
+            c_visit: 50.0,
+            c_scale: 1.0,
+            train: false,
         };
-        let mcts = MCTS::new(env, evaluator.clone(), config);
-        Self {
-            evaluator,
-            mcts,
-            num_simulations,
-            cpuct: 1.0,
-        }
+        
+        // 注意: 这里有生命周期问题，需要重新设计
+        // 暂时使用 unsafe 或者改为每次 choose_action 创建新 MCTS
+        todo!("需要重新设计生命周期管理")
     }
 
     pub fn set_iterations(&mut self, sims: usize) {
         self.num_simulations = sims.max(1);
-        // 配置字段是私有的，所以只更新本地字段即可
-        // 下次 choose_action 时会使用新的配置
     }
 
     /// 在外部环境执行 action 后调用，用于推进/复用搜索树
-    pub async fn advance(&mut self, env: &DarkChessEnv, action: usize) {
-        self.mcts.step_next(env, action).await;
+    pub fn advance(&mut self, env: &DarkChessEnv, action: usize) {
+        self.mcts.step_next(env, action);
     }
 
-    /// 选择动作：如发现根环境与传入 env 不一致（步数不匹配），重置搜索树
-    pub async fn choose_action(&mut self, env: &DarkChessEnv) -> Option<usize> {
-        // 简单一致性判断：总步数不同 -> 重置
-        let root_steps = {
-            let root_guard = self.mcts.root.read().await;
-            root_guard.env.as_ref().map(|e| e.get_total_steps())
-        };
-        
-        if root_steps != Some(env.get_total_steps()) {
-            self.mcts = MCTS::new(
-                env,
-                self.evaluator.clone(),
-                MCTSConfig {
-                    cpuct: self.cpuct,
-                    num_simulations: self.num_simulations,
-                    virtual_loss: 1.0,
-                    num_mcts_workers: 8,
-                    dirichlet_alpha: 0.3,
-                    dirichlet_epsilon: 0.25,
-                    train: false,
-                    max_pending_inference: 32,
-                },
-            );
-        }
-        self.mcts.run().await;
-        let probs = self.mcts.get_root_probabilities().await;
-        
-        // 选择概率最大的合法动作
-        let masks = env.action_masks();
-        let mut best_action = 0;
-        let mut best_prob = -1.0;
-        for (action, &prob) in probs.iter().enumerate() {
-            if masks[action] == 1 && prob > best_prob {
-                best_prob = prob;
-                best_action = action;
-            }
-        }
-        
-        if best_prob > 0.0 {
-            Some(best_action)
-        } else {
-            None
-        }
+    /// 选择动作
+    pub fn choose_action(&mut self, _env: &DarkChessEnv) -> Option<usize> {
+        self.mcts.run()
     }
+}
+
+// ---------------- 简化的一次性策略 ----------------
+
+/// 为给定环境选择最佳动作（每次创建新 MCTS）
+pub fn choose_action_once(
+    model: &Arc<ModelWrapper>,
+    env: &DarkChessEnv,
+    num_simulations: usize,
+) -> Option<usize> {
+    let evaluator = TchEvaluator::new(model.clone());
+    let config = GumbelConfig {
+        num_simulations,
+        max_considered_actions: 16,
+        c_visit: 50.0,
+        c_scale: 1.0,
+        train: false,
+    };
+    
+    let mut mcts = GumbelMCTS::new(env, &evaluator, config);
+    mcts.run()
 }

@@ -1,7 +1,7 @@
 [package]
 name = "banqi_4x8"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Your Name <your.email@example.com>"]
 description = "4x8 Dark Chess game environment for reinforcement learning"
 license = "MIT"
@@ -12,7 +12,7 @@ name = "banqi_4x8"
 path = "src/lib.rs"
 
 [[bin]]
-name = "banqi_4x8"
+name = "banqi"
 path = "src/main.rs"
 
 [[bin]]
@@ -20,73 +20,29 @@ name = "banqi-tauri"
 path = "src/tauri_main.rs"
 
 [[bin]]
-name = "banqi-train"
-path = "src/train.rs"
-required-features = ["torch"]
-
-[[bin]]
-name = "banqi-verify"
-path = "src/verify.rs"
-required-features = ["torch"]
-
-[[bin]]
-name = "banqi-verify2"
-path="src/verify_2.rs"
-required-features = ["torch"]
-
-[[bin]]
-name = "banqi-verify-trained"
-path = "src/verify_trained.rs"
-required-features = ["torch"]
-
-[[bin]]
-name = "banqi-parallel-train"
-path = "src/parallel_train.rs"
-required-features = ["torch"]
-
-[[bin]]
-name = "banqi-verify-samples"
-path = "src/verify_samples.rs"
-required-features = ["torch"]
-
-[[bin]]
-name = "test-observation"
-path = "src/test_observation.rs"
-
-[[bin]]
-name = "banqi-lr-finder"
-path = "src/run_lr_finder.rs"
-required-features = ["torch"]
-
-[[bin]]
-name = "banqi-train-from-db"
-path = "src/train_from_db.rs"
-required-features = ["torch"]
-
-[[bin]]
 name = "banqi-data-collector"
 path = "src/data_collector.rs"
-
+required-features = ["torch"]
 
 [dependencies]
 rand = "0.8"
 rand_distr = "0.4"
 fixedbitset = "0.5"
 ndarray = "0.15"
-tauri = { version = "2.9", features = [] }
+tauri = { version = "2.10.2", features = [] }
 tauri-plugin-shell = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 num_cpus = "1.17"
-mongodb = { version = "3.4" }
+mongodb = { version = "3.5" }
 bson = "2.15"
 
-# gRPC 依赖 - 用于与 Python 服务通信
+# gRPC 依赖 - 保留用于可能的 Python 服务通信
 tonic = "0.12"
 prost = "0.13"
-tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.49", features = ["macros", "rt-multi-thread"] }
 futures = "0.3.31"
 async-trait ="0.1.89"
 
@@ -94,13 +50,13 @@ async-trait ="0.1.89"
 tch = { version = "0.22", optional = true }
 
 [features]
-# 默认不启用 torch 特性（用于 data-collector）
+# 默认不启用 torch 特性
 default = []
 # torch 特性：启用本地神经网络训练和推理
 torch = ["tch"]
 
 [build-dependencies]
-tauri-build = { version = "2.5", features = [] }
+tauri-build = { version = "2.5.5", features = [] }
 tonic-build = "0.12"
 
 [dev-dependencies]

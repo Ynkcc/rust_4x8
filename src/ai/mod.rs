@@ -6,10 +6,12 @@
 
 use crate::DarkChessEnv;
 
+#[cfg(feature = "torch")]
 mod mcts_dl;
 mod random;
 mod reveal_first;
 
+#[cfg(feature = "torch")]
 pub use mcts_dl::{MctsDlPolicy, ModelWrapper};
 pub use random::RandomPolicy;
 pub use reveal_first::RevealFirstPolicy;

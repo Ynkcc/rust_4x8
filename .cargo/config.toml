@@ -1,2 +1,2 @@
 [env]
-LIBTORCH="/home/ynk/miniconda3/lib/python3.13/site-packages/torch"
+LIBTORCH = { value = ".venv/lib/python3.14/site-packages/torch", relative = true }

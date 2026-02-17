@@ -19,18 +19,12 @@ pub mod mcts;
 pub mod mongodb_storage;
 pub mod self_play;
 
-// gRPC 模块
-pub mod rpc;
+// gRPC 模块 (已禁用 - 现在使用本地模型推理)
+// pub mod rpc;
 
-// tch 相关模块 - 仅在启用 torch 特性时编译
-#[cfg(feature = "torch")]
+// AI 策略模块（基础策略不依赖 torch）
 pub mod ai;
-#[cfg(feature = "torch")]
-pub mod nn_model;
-#[cfg(feature = "torch")]
-pub mod inference;
-#[cfg(feature = "torch")]
-pub mod training;
+// 注意: nn_model 已移至 Python 侧，Rust 通过 TorchScript 加载模型
 
 // 重新导出核心类型，方便外部使用
 pub use game_env::{DarkChessEnv, Observation, Piece, PieceType, Player, Slot};
@@ -38,5 +32,5 @@ pub use game_env::{DarkChessEnv, Observation, Piece, PieceType, Player, Slot};
 // 导出常量
 pub use game_env::{
     ACTION_SPACE_SIZE, BOARD_COLS, BOARD_ROWS, NUM_PIECE_TYPES, REGULAR_MOVE_ACTIONS_COUNT,
-    REVEAL_ACTIONS_COUNT, STATE_STACK_SIZE, TOTAL_POSITIONS,
+    REVEAL_ACTIONS_COUNT, TOTAL_POSITIONS,
 };
