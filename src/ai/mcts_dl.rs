@@ -136,42 +136,32 @@ impl Evaluator for TchEvaluator {
     }
 }
 
-// ---------------- 策略对象（持久化 MCTS）----------------
+// ---------------- 策略对象（简化版：每次创建新 MCTS）----------------
 
-pub struct MctsDlPolicy<'a> {
-    evaluator: TchEvaluator,
-    mcts: GumbelMCTS<'a, TchEvaluator>,
+/// MCTS + 深度学习策略
+/// 
+/// 为了避免生命周期问题，每次调用 choose_action 时创建新的 MCTS 实例
+/// 虽然失去了搜索树复用的优势，但实现更简单可靠
+pub struct MctsDlPolicy {
+    model: Arc<ModelWrapper>,
     num_simulations: usize,
 }
 
-impl<'a> MctsDlPolicy<'a> {
-    pub fn new(model: Arc<ModelWrapper>, env: &DarkChessEnv, num_simulations: usize) -> Self {
-        let evaluator = TchEvaluator::new(model);
-        let config = GumbelConfig {
+impl MctsDlPolicy {
+    pub fn new(model: Arc<ModelWrapper>, _env: &DarkChessEnv, num_simulations: usize) -> Self {
+        Self {
+            model,
             num_simulations,
-            max_considered_actions: 16,
-            c_visit: 50.0,
-            c_scale: 1.0,
-            train: false,
-        };
-        
-        // 注意: 这里有生命周期问题，需要重新设计
-        // 暂时使用 unsafe 或者改为每次 choose_action 创建新 MCTS
-        todo!("需要重新设计生命周期管理")
+        }
     }
 
     pub fn set_iterations(&mut self, sims: usize) {
         self.num_simulations = sims.max(1);
     }
 
-    /// 在外部环境执行 action 后调用，用于推进/复用搜索树
-    pub fn advance(&mut self, env: &DarkChessEnv, action: usize) {
-        self.mcts.step_next(env, action);
-    }
-
-    /// 选择动作
-    pub fn choose_action(&mut self, _env: &DarkChessEnv) -> Option<usize> {
-        self.mcts.run()
+    /// 选择动作（每次创建新 MCTS）
+    pub fn choose_action(&self, env: &DarkChessEnv) -> Option<usize> {
+        choose_action_once(&self.model, env, self.num_simulations)
     }
 }
 

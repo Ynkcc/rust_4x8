@@ -160,29 +160,36 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
         let mut episode_data = Vec::new();
         let mut step = 0;
 
-        // 预分配掩码缓冲区
-        let mut masks = vec![0; crate::game_env::ACTION_SPACE_SIZE];
-
         // 3. 游戏主循环
         loop {
             // --- MCTS 搜索 (同步) ---
-            mcts.run();
+            let search_result = match mcts.run() {
+                Some(result) => result,
+                None => {
+                    // 无有效动作，游戏结束
+                    let mut samples = Vec::new();
+                    for (obs, p, mcts_val, completed_q, _, mask) in episode_data {
+                        samples.push((obs, p, mcts_val, completed_q, 0.0, mask));
+                    }
+                    return GameEpisode {
+                        samples,
+                        game_length: step,
+                        winner: None,
+                    };
+                }
+            };
             
-            let probs = mcts.get_improved_policy();
-            env.action_masks_into(&mut masks);
-            let mcts_value = mcts.root.q_value();
-
-            // --- 动作选择 (确定性, 使用 completed_Q 最大值) ---
-            let (action, completed_q) = select_completed_q_action(&mcts, &masks);
+            let action = search_result.action;
+            let completed_q = search_result.completed_q;
 
             // --- 收集样本数据 ---
             episode_data.push((
-                env.get_state(),
-                probs.clone(),
-                mcts_value,
+                search_result.state,
+                search_result.improved_policy,
+                search_result.mcts_value,
                 completed_q,
-                env.get_current_player(),
-                masks.clone(),
+                search_result.player,
+                search_result.action_mask,
             ));
 
             // --- 执行动作 ---
@@ -193,7 +200,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 
                     if terminated || truncated {
                         // --- 游戏结束处理 ---
-                        let reward_red = match winner {
+                        let reward_red: f32 = match winner {
                             Some(1) => 1.0,
                             Some(-1) => -1.0,
                             _ => 0.0,
@@ -202,7 +209,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                         // --- 回填价值 ---
                         let mut samples = Vec::new();
                         for (obs, p, mcts_val, completed_q, player, mask) in episode_data {
-                            let game_result_val = if player.val() == 1 {
+                            let game_result_val: f32 = if player.val() == 1 {
                                 reward_red
                             } else {
                                 -reward_red
