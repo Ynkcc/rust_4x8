@@ -25,6 +25,7 @@ pub struct SampleDocument {
     pub policy_probs: Vec<f32>,
     pub mcts_value: f32,
     pub completed_q: f32,
+    pub root_visit_count: u32,
     pub game_result_value: f32,
     pub action_mask: Vec<i32>,
     pub step_in_game: usize,
@@ -132,7 +133,7 @@ impl MongoStorage {
             
             let mut sample_docs = Vec::new();
 
-            for (step_idx, (obs, probs, mcts_val, completed_q, game_result_val, mask)) in episode.samples.iter().enumerate() {
+            for (step_idx, (obs, probs, mcts_val, completed_q, root_visit_count, game_result_val, mask)) in episode.samples.iter().enumerate() {
                 let board_state: Vec<f32> = obs.board.as_slice().unwrap().to_vec();
                 let scalar_state: Vec<f32> = obs.scalars.as_slice().unwrap().to_vec();
 
@@ -142,6 +143,7 @@ impl MongoStorage {
                     policy_probs: probs.clone(),
                     mcts_value: *mcts_val,
                     completed_q: *completed_q,
+                    root_visit_count: *root_visit_count,
                     game_result_value: *game_result_val,
                     action_mask: mask.clone(),
                     step_in_game: step_idx,

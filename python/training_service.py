@@ -59,6 +59,7 @@ class DataBuffer:
         self.probs = []
         self.values = []
         self.masks = []
+        self.root_visits = []
 
     def add_samples(self, samples):
         """批量添加样本到缓冲区"""
@@ -74,6 +75,7 @@ class DataBuffer:
             val = s.get('game_result_value', s.get('mcts_value', 0.0))
             self.values.append(val)
             self.masks.append(np.array(s['action_mask'], dtype=np.float32))
+            self.root_visits.append(int(s.get('root_visit_count', 0)))
         
         # FIFO 淘汰旧数据
         if len(self.boards) > self.capacity:
@@ -83,6 +85,7 @@ class DataBuffer:
             self.probs = self.probs[excess:]
             self.values = self.values[excess:]
             self.masks = self.masks[excess:]
+            self.root_visits = self.root_visits[excess:]
 
     def __len__(self):
         return len(self.boards)
@@ -264,6 +267,7 @@ def main():
             buffer.probs.clear()
             buffer.values.clear()
             buffer.masks.clear()
+            buffer.root_visits.clear()
             
             # 从数据库加载一批游戏
             query = {"_id": {"$gt": last_id}} if last_id else {}

@@ -183,5 +183,6 @@ pub fn choose_action_once(
     };
     
     let mut mcts = GumbelMCTS::new(env, &evaluator, config);
-    mcts.run()
+    // 只返回动作索引，忽略完整搜索结果
+    mcts.run().map(|result| result.action)
 }

@@ -27,8 +27,8 @@ pub struct GameStats {
 /// MCTS 估算的根节点价值以及最终的游戏结果。
 #[derive(Debug, Clone)]
 pub struct GameEpisode {
-    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 最终回报, 动作掩码)
-    pub samples: Vec<(Observation, Vec<f32>, f32, f32, f32, Vec<i32>)>,
+    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码)
+    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>)>,
     /// 游戏总步数
     pub game_length: usize,
     /// 获胜方
@@ -168,8 +168,8 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                 None => {
                     // 无有效动作，游戏结束
                     let mut samples = Vec::new();
-                    for (obs, p, mcts_val, completed_q, _, mask) in episode_data {
-                        samples.push((obs, p, mcts_val, completed_q, 0.0, mask));
+                    for (obs, p, mcts_val, completed_q, root_visit_count, _, mask) in episode_data {
+                        samples.push((obs, p, mcts_val, completed_q, root_visit_count, 0.0, mask));
                     }
                     return GameEpisode {
                         samples,
@@ -188,6 +188,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                 search_result.improved_policy,
                 search_result.mcts_value,
                 completed_q,
+                search_result.root_visit_count,
                 search_result.player,
                 search_result.action_mask,
             ));
@@ -208,13 +209,13 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 
                         // --- 回填价值 ---
                         let mut samples = Vec::new();
-                        for (obs, p, mcts_val, completed_q, player, mask) in episode_data {
+                        for (obs, p, mcts_val, completed_q, root_visit_count, player, mask) in episode_data {
                             let game_result_val: f32 = if player.val() == 1 {
                                 reward_red
                             } else {
                                 -reward_red
                             };
-                            samples.push((obs, p, mcts_val, completed_q, game_result_val, mask));
+                            samples.push((obs, p, mcts_val, completed_q, root_visit_count, game_result_val, mask));
                         }
 
                         return GameEpisode {
@@ -238,8 +239,8 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
             step += 1;
             if step > 200 {
                 let mut samples = Vec::new();
-                for (obs, p, mcts_val, completed_q, _, mask) in episode_data {
-                    samples.push((obs, p, mcts_val, completed_q, 0.0, mask));
+                for (obs, p, mcts_val, completed_q, root_visit_count, _, mask) in episode_data {
+                    samples.push((obs, p, mcts_val, completed_q, root_visit_count, 0.0, mask));
                 }
                 return GameEpisode {
                     samples,
