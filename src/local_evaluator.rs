@@ -3,7 +3,9 @@
 // 本地模型评估器 - 独立模块
 
 use anyhow::Result;
-use banqi_4x8::game_env::{DarkChessEnv, ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, SCALAR_FEATURE_COUNT};
+use banqi_4x8::game_env::{
+    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
+};
 use banqi_4x8::mcts::Evaluator;
 use tch::{CModule, Device, Kind, Tensor};
 
@@ -32,7 +34,8 @@ impl Evaluator for LocalEvaluator {
 
         tch::no_grad(|| {
             let batch_size = envs.len();
-            let mut board_data: Vec<f32> = Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
+            let mut board_data: Vec<f32> =
+                Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
             let mut scalar_data: Vec<f32> = Vec::with_capacity(batch_size * SCALAR_FEATURE_COUNT);
 
             for env in envs {
@@ -58,7 +61,9 @@ impl Evaluator for LocalEvaluator {
 
             let board_ivalue = tch::IValue::Tensor(board_tensor);
             let scalar_ivalue = tch::IValue::Tensor(scalar_tensor);
-            let outputs = self.model.forward_is(&[board_ivalue, scalar_ivalue])
+            let outputs = self
+                .model
+                .forward_is(&[board_ivalue, scalar_ivalue])
                 .expect("TorchScript forward failed");
 
             let (policy_logits, value) = match outputs {

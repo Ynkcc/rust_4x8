@@ -1,5 +1,5 @@
-use std::sync::OnceLock;
 use super::constants::*;
+use std::sync::OnceLock;
 
 // ==============================================================================
 // --- Bitboard 辅助函数 ---
@@ -44,7 +44,7 @@ pub const fn file_mask(file_col: usize) -> u64 {
     m
 }
 
-pub const NOT_FILE_A: u64 = BOARD_MASK & !(file_mask(0)); 
+pub const NOT_FILE_A: u64 = BOARD_MASK & !(file_mask(0));
 pub const NOT_FILE_H: u64 = BOARD_MASK & !(file_mask(BOARD_COLS - 1));
 
 // ==============================================================================

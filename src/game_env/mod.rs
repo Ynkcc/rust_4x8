@@ -2,13 +2,13 @@
 // --- 模块声明 ---
 // ==============================================================================
 
-pub mod constants;
-pub mod types;
-pub mod bitboard;
 pub mod actions;
+pub mod bitboard;
 pub mod board;
-pub mod rules;
+pub mod constants;
 pub mod features;
+pub mod rules;
+pub mod types;
 
 // ==============================================================================
 // --- 公共 API 重导出 ---
@@ -24,7 +24,7 @@ pub use types::{Observation, Piece, PieceType, Player, Slot};
 pub use board::DarkChessEnv;
 
 // 从 bitboard.rs 导出部分工具函数 (如果外部需要)
-pub use bitboard::{ull, BOARD_MASK};
+pub use bitboard::{BOARD_MASK, ull};
 
 // 从 actions.rs 导出动作查找表访问器
 pub use actions::action_lookup_tables;

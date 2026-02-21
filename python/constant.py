@@ -11,7 +11,6 @@ TOTAL_POSITIONS = BOARD_ROWS * BOARD_COLS
 # --- Game Constants ---
 # ==============================================================================
 NUM_PIECE_TYPES = 7
-STATE_STACK_SIZE = 1  # From game_env.rs
 
 # Piece Counts (Per Player)
 SOLDIERS_COUNT = 5
@@ -47,8 +46,8 @@ ACTION_SPACE_SIZE = (
 # Own(7 types) + Enemy(7 types) + Hidden(1) + Empty(1) = 16
 BOARD_CHANNELS = 2 * NUM_PIECE_TYPES + 2
 
-# Input Channels for the Conv Layer (taking stack size into account)
-TOTAL_INPUT_CHANNELS = BOARD_CHANNELS * STATE_STACK_SIZE
+# Input Channels for the Conv Layer
+TOTAL_INPUT_CHANNELS = BOARD_CHANNELS
 
 # Scalar Feature Count calculation:
 # 3 Global (MoveCount, RedHP, BlackHP) + 

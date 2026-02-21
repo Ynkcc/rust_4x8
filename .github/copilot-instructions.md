@@ -53,7 +53,7 @@ This project uses a hybrid architecture for AlphaZero training:
 
 *   **Board**: 4 rows × 8 cols × 32 pieces.
 *   **Input Tensor**: `[Batch, 16, 4, 8]` (16 channels: Self/Opp/Hidden/Empty).
-*   **Scalar Features**: `242` floats.
+*   **Scalar Features**: `387` floats.
 *   **Action Space**: `352` (Reveal=32, Move=104, Capture=216).
 *   **Masks**: `[Batch, 352]` (1=Valid, 0=Invalid).
 

@@ -9,7 +9,7 @@ use slab::Slab;
 // ============================================================================
 
 /// MCTS 树节点的内存池
-/// 
+///
 /// 使用 Slab<MctsNode> 存储所有节点，通过 usize 索引引用。
 /// Slab 提供了高效的内存池管理，大幅减少堆碎片化和改善缓存局部性。
 pub struct MctsArena {
@@ -20,7 +20,9 @@ pub struct MctsArena {
 impl MctsArena {
     /// 创建一个新的内存池
     pub fn new() -> Self {
-        Self { nodes: Slab::with_capacity(10000) }
+        Self {
+            nodes: Slab::with_capacity(10000),
+        }
     }
 
     /// 为节点分配内存并返回索引
@@ -112,7 +114,14 @@ impl MctsNode {
     /// * `env` - 游戏环境状态 (Optional)
     /// * `state` - 观测状态 (Optional)
     /// * `is_root_node` - 是否为根节点
-    pub fn new(prior: f32, logit: f32, is_chance_node: bool, env: Option<DarkChessEnv>, state: Option<Observation>, is_root_node: bool) -> Self {
+    pub fn new(
+        prior: f32,
+        logit: f32,
+        is_chance_node: bool,
+        env: Option<DarkChessEnv>,
+        state: Option<Observation>,
+        is_root_node: bool,
+    ) -> Self {
         let (player, is_terminal) = if let Some(ref e) = env {
             let (terminated, truncated, _) = e.check_game_over_conditions();
             (e.get_current_player(), terminated || truncated)
@@ -148,7 +157,11 @@ impl MctsNode {
     /// 公式: Q = W / N
     /// 如果访问次数为 0，则返回 0.0。
     pub fn q_value(&self) -> f32 {
-        if self.visit_count == 0 { 0.0 } else { self.value_sum / self.visit_count as f32 }
+        if self.visit_count == 0 {
+            0.0
+        } else {
+            self.value_sum / self.visit_count as f32
+        }
     }
 }
 
@@ -163,10 +176,18 @@ impl MctsNode {
 /// 范围: 0-13 (7种棋子 * 2个玩家)
 pub fn get_outcome_id(piece: &Piece) -> usize {
     let type_idx = match piece.piece_type {
-        PieceType::Soldier => 0, PieceType::Cannon => 1, PieceType::Horse => 2,
-        PieceType::Chariot => 3, PieceType::Elephant => 4, PieceType::Advisor => 5, PieceType::General => 6,
+        PieceType::Soldier => 0,
+        PieceType::Cannon => 1,
+        PieceType::Horse => 2,
+        PieceType::Chariot => 3,
+        PieceType::Elephant => 4,
+        PieceType::Advisor => 5,
+        PieceType::General => 6,
     };
-    let player_offset = match piece.player { Player::Red => 0, Player::Black => 7 };
+    let player_offset = match piece.player {
+        Player::Red => 0,
+        Player::Black => 7,
+    };
     type_idx + player_offset
 }
 
@@ -174,6 +195,14 @@ pub fn get_outcome_id(piece: &Piece) -> usize {
 ///
 /// 由于 AlphaZero 通常使用双人零和博弈假设（或交替行动），
 /// 如果父节点和子节点的玩家不同，价值通常需要取反。
-pub fn value_from_perspective(parent_player: Player, child_player: Player, child_value: f32) -> f32 {
-    if parent_player == child_player { child_value } else { -child_value }
+pub fn value_from_perspective(
+    parent_player: Player,
+    child_player: Player,
+    child_value: f32,
+) -> f32 {
+    if parent_player == child_player {
+        child_value
+    } else {
+        -child_value
+    }
 }

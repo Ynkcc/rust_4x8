@@ -4,7 +4,7 @@
 
 use crate::self_play::GameEpisode;
 use anyhow::Result;
-use bson::{doc, Document};
+use bson::{Document, doc};
 use mongodb::{Client, Collection};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
@@ -55,10 +55,8 @@ impl MongoStorage {
     /// 创建新的MongoDB存储客户端（同步版本）
     pub fn new(uri: &str, db_name: &str, collection_name: &str) -> Result<Self> {
         let runtime = Runtime::new()?;
-        
-        let client = runtime.block_on(async {
-            Client::with_uri_str(uri).await
-        })?;
+
+        let client = runtime.block_on(async { Client::with_uri_str(uri).await })?;
 
         // 测试连接
         runtime.block_on(async {
@@ -130,10 +128,14 @@ impl MongoStorage {
                 // 仅在调试极其详细时打印，避免刷屏
                 continue;
             }
-            
+
             let mut sample_docs = Vec::new();
 
-            for (step_idx, (obs, probs, mcts_val, completed_q, root_visit_count, game_result_val, mask)) in episode.samples.iter().enumerate() {
+            for (
+                step_idx,
+                (obs, probs, mcts_val, completed_q, root_visit_count, game_result_val, mask),
+            ) in episode.samples.iter().enumerate()
+            {
                 let board_state: Vec<f32> = obs.board.as_slice().unwrap().to_vec();
                 let scalar_state: Vec<f32> = obs.scalars.as_slice().unwrap().to_vec();
 
@@ -167,8 +169,7 @@ impl MongoStorage {
             collection.insert_many(documents).await?;
             println!(
                 "  [MongoDB Background] 已保存 {} 局游戏 (iteration={})",
-                count,
-                job.iteration
+                count, job.iteration
             );
         }
 
@@ -178,9 +179,9 @@ impl MongoStorage {
     /// 获取数据库中的总游戏数
     pub fn count_games(&self) -> Result<u64> {
         let collection = self.get_collection();
-        let count = self.runtime.block_on(async {
-            collection.count_documents(doc! {}).await
-        })?;
+        let count = self
+            .runtime
+            .block_on(async { collection.count_documents(doc! {}).await })?;
         Ok(count)
     }
 
@@ -189,10 +190,10 @@ impl MongoStorage {
         let collection = self.get_collection();
 
         let filter = doc! { "iteration": iteration as i64 };
-        
-        let total_games = self.runtime.block_on(async {
-            collection.count_documents(filter.clone()).await
-        })?;
+
+        let total_games = self
+            .runtime
+            .block_on(async { collection.count_documents(filter.clone()).await })?;
 
         let (red_wins, black_wins, draws, total_samples) = self.runtime.block_on(async {
             let mut cursor = collection.find(filter).await?;
@@ -265,10 +266,7 @@ impl MongoStorage {
                     Ok::<_, mongodb::error::Error>(result.deleted_count)
                 })?;
 
-                println!(
-                    "  [MongoDB] 清理旧数据: 删除了 {} 局游戏",
-                    deleted_count
-                );
+                println!("  [MongoDB] 清理旧数据: 删除了 {} 局游戏", deleted_count);
             }
         }
 
@@ -296,9 +294,21 @@ impl IterationStats {
         }
         println!("  [MongoDB] Iteration {} 统计:", self.iteration);
         println!("    总游戏数: {}", self.total_games);
-        println!("    红方胜: {} ({:.1}%)", self.red_wins, self.red_wins as f32 / self.total_games as f32 * 100.0);
-        println!("    黑方胜: {} ({:.1}%)", self.black_wins, self.black_wins as f32 / self.total_games as f32 * 100.0);
-        println!("    平局: {} ({:.1}%)", self.draws, self.draws as f32 / self.total_games as f32 * 100.0);
+        println!(
+            "    红方胜: {} ({:.1}%)",
+            self.red_wins,
+            self.red_wins as f32 / self.total_games as f32 * 100.0
+        );
+        println!(
+            "    黑方胜: {} ({:.1}%)",
+            self.black_wins,
+            self.black_wins as f32 / self.total_games as f32 * 100.0
+        );
+        println!(
+            "    平局: {} ({:.1}%)",
+            self.draws,
+            self.draws as f32 / self.total_games as f32 * 100.0
+        );
         println!("    总样本数: {}", self.total_samples);
     }
 }

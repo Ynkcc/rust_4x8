@@ -10,7 +10,7 @@ mod local_evaluator;
 
 use anyhow::Result;
 use banqi_4x8::mongodb_storage::MongoStorage;
-use banqi_4x8::self_play::{run_self_play, SelfPlayConfig, ScenarioType};
+use banqi_4x8::self_play::{ScenarioType, SelfPlayConfig, run_self_play};
 use local_evaluator::LocalEvaluator;
 
 use std::env;
@@ -23,9 +23,10 @@ use tch::Device;
 
 fn main() -> Result<()> {
     // 1. 配置
-    let mongo_uri = env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
+    let mongo_uri =
+        env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".to_string());
     let model_path = env::var("MODEL_PATH").unwrap_or_else(|_| "banqi_model_latest.pt".to_string());
-    
+
     // 获取 Worker ID
     let args: Vec<String> = env::args().collect();
     let worker_id = if args.len() > 1 {
@@ -109,10 +110,10 @@ fn main() -> Result<()> {
         }
 
         let start_time = Instant::now();
-        
+
         // 执行一局游戏
         let episode = run_self_play(&evaluator, &config);
-        
+
         let duration = start_time.elapsed();
 
         if episode.samples.is_empty() {

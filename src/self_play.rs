@@ -130,7 +130,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
     pub fn new(evaluator: &'a E, config: SelfPlayConfig) -> Self {
         Self { evaluator, config }
     }
-    
+
     /// 使用默认配置创建
     pub fn with_defaults(evaluator: &'a E, mcts_sims: usize) -> Self {
         let config = SelfPlayConfig {
@@ -178,7 +178,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                     };
                 }
             };
-            
+
             let action = search_result.action;
             let completed_q = search_result.completed_q;
 
@@ -209,13 +209,23 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 
                         // --- 回填价值 ---
                         let mut samples = Vec::new();
-                        for (obs, p, mcts_val, completed_q, root_visit_count, player, mask) in episode_data {
+                        for (obs, p, mcts_val, completed_q, root_visit_count, player, mask) in
+                            episode_data
+                        {
                             let game_result_val: f32 = if player.val() == 1 {
                                 reward_red
                             } else {
                                 -reward_red
                             };
-                            samples.push((obs, p, mcts_val, completed_q, root_visit_count, game_result_val, mask));
+                            samples.push((
+                                obs,
+                                p,
+                                mcts_val,
+                                completed_q,
+                                root_visit_count,
+                                game_result_val,
+                                mask,
+                            ));
                         }
 
                         return GameEpisode {
@@ -255,10 +265,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 // ================ 高级 API ================
 
 /// 运行单局自对弈
-pub fn run_self_play<E: Evaluator>(
-    evaluator: &E,
-    config: &SelfPlayConfig,
-) -> GameEpisode {
+pub fn run_self_play<E: Evaluator>(evaluator: &E, config: &SelfPlayConfig) -> GameEpisode {
     let runner = SelfPlayRunner::new(evaluator, config.clone());
     runner.play_episode(0)
 }

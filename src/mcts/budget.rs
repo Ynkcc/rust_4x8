@@ -66,7 +66,7 @@ impl SequentialHalvingBudget {
         let num_phases = Self::compute_num_phases(num_candidates, eta);
 
         // 计算每个阶段的动作数和访问预算
-        let (actions_per_phase, visits_per_action_per_phase) = 
+        let (actions_per_phase, visits_per_action_per_phase) =
             Self::compute_budget_schedule(num_candidates, total_budget, eta, num_phases);
 
         Self {
@@ -123,7 +123,8 @@ impl SequentialHalvingBudget {
         let n1 = n1.max(1); // 至少 1 次访问
 
         for phase_idx in 0..num_phases {
-            let num_actions = (num_candidates as f32 / (eta.pow(phase_idx as u32) as f32)).ceil() as usize;
+            let num_actions =
+                (num_candidates as f32 / (eta.pow(phase_idx as u32) as f32)).ceil() as usize;
             let num_actions = num_actions.max(1);
             let visits = (n1 as f32 / (eta.pow(phase_idx as u32) as f32)).ceil() as usize;
             let visits = visits.max(1);
@@ -157,7 +158,10 @@ impl SequentialHalvingBudget {
 
     /// 获取指定阶段每个动作分配的访问次数
     pub fn visits_per_action_in_phase(&self, phase: usize) -> usize {
-        self.visits_per_action_per_phase.get(phase).copied().unwrap_or(0)
+        self.visits_per_action_per_phase
+            .get(phase)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// 获取当前阶段的动作数
@@ -229,7 +233,11 @@ impl SequentialHalvingBudget {
 
         s.push_str("预算日程表:\n");
         for (phase, &actions) in self.actions_per_phase.iter().enumerate() {
-            let visits = self.visits_per_action_per_phase.get(phase).copied().unwrap_or(0);
+            let visits = self
+                .visits_per_action_per_phase
+                .get(phase)
+                .copied()
+                .unwrap_or(0);
             let total = actions * visits;
             s.push_str(&format!(
                 "  阶段{}: {} 个动作 × {} 访问/动作 = {} 总访问\n",

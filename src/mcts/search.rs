@@ -1,7 +1,7 @@
 // src/mcts/search.rs
 // Gumbel AlphaZero MCTS 核心搜索与采样算法
 
-use crate::{DarkChessEnv, Slot, Player, ACTION_SPACE_SIZE};
+use crate::{ACTION_SPACE_SIZE, DarkChessEnv, Player, Slot};
 use rand::prelude::*;
 use rand_distr::Gumbel;
 
@@ -33,34 +33,6 @@ pub struct PendingEval {
     pub leaf_player: Player,
 }
 
-/// 全树 Min/Max 统计
-///
-/// 用于归一化 Q 值，提升搜索过程的数值稳定性。
-#[derive(Clone, Debug)]
-pub struct MinMaxStats {
-    min: f32,
-    max: f32,
-}
-
-impl MinMaxStats {
-    /// 创建新的 MinMaxStats
-    pub fn new() -> Self {
-        Self { min: f32::INFINITY, max: f32::NEG_INFINITY }
-    }
-
-    /// 更新最值统计
-    pub fn update(&mut self, value: f32) {
-        if value < self.min { self.min = value; }
-        if value > self.max { self.max = value; }
-    }
-
-    /// 归一化到 [0, 1]，若范围无效则返回原值
-    pub fn normalize(&self, value: f32) -> f32 {
-        if self.max <= self.min { return value; }
-        (value - self.min) / (self.max - self.min)
-    }
-}
-
 /// Gumbel MCTS 搜索器
 ///
 /// 管理 MCTS 树的构建、搜索和动作选择过程。
@@ -79,8 +51,6 @@ pub struct GumbelMCTS<'a, E: Evaluator> {
     scratch_gumbel: Vec<(usize, f32)>,
     /// 缓存的 action mask，避免重复计算
     cached_action_mask: Vec<i32>,
-    /// 全树 Min/Max 统计
-    min_max_stats: MinMaxStats,
 }
 
 impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
@@ -98,7 +68,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let state = env.get_state();
         let root_node = MctsNode::new(1.0, 0.0, false, Some(env.clone()), Some(state), true);
         let root_idx = arena.allocate(root_node);
-        
+
         Self {
             arena,
             root_idx,
@@ -106,7 +76,6 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             config,
             scratch_gumbel: Vec::with_capacity(32),
             cached_action_mask: vec![0; ACTION_SPACE_SIZE],
-            min_max_stats: MinMaxStats::new(),
         }
     }
 
@@ -121,12 +90,14 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// * `action` - 刚刚执行的动作
     pub fn step_next(&mut self, env: &DarkChessEnv, action: usize) {
         let root_node = self.arena.get(self.root_idx);
-        
+
         // 查找子节点
-        let child_idx = root_node.children.iter()
+        let child_idx = root_node
+            .children
+            .iter()
             .find(|(act, _)| *act == action)
             .map(|(_, idx)| *idx);
-        
+
         if let Some(idx) = child_idx {
             let child = self.arena.get(idx);
             if child.is_chance_node {
@@ -134,7 +105,9 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 let slot = env.get_target_slot(action);
                 if let Slot::Revealed(piece) = slot {
                     let outcome_id = get_outcome_id(&piece);
-                    if let Some((_, _, next_idx)) = child.possible_states.iter()
+                    if let Some((_, _, next_idx)) = child
+                        .possible_states
+                        .iter()
                         .find(|(id, _, _)| *id == outcome_id)
                         .map(|x| *x)
                     {
@@ -152,13 +125,12 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 return;
             }
         }
-        
+
         // 如果无法重用子树，则重置根节点
         let state = env.get_state();
         let mut new_root = MctsNode::new(1.0, 0.0, false, Some(env.clone()), Some(state), true);
         new_root.is_root_node = true;
         self.root_idx = self.arena.allocate(new_root);
-        self.min_max_stats = MinMaxStats::new();
     }
 
     /// 执行 Gumbel-Top-K 采样
@@ -169,7 +141,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     fn sample_gumbel_top_k(&mut self, logits: &[f32], masks: &[i32], k: usize) -> Vec<usize> {
         let mut rng = thread_rng();
         let gumbel_dist = Gumbel::new(0.0, 1.0).unwrap();
-        
+
         // 清空并复用 scratch_gumbel
         self.scratch_gumbel.clear();
         for (i, &logit) in logits.iter().enumerate() {
@@ -178,12 +150,17 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 self.scratch_gumbel.push((i, logit + noise as f32));
             }
         }
-        
+
         // 按加噪后的 Logits 降序排序
-        self.scratch_gumbel.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        
+        self.scratch_gumbel
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
         let actual_k = k.min(self.scratch_gumbel.len());
-        self.scratch_gumbel.iter().take(actual_k).map(|(i, _)| *i).collect()
+        self.scratch_gumbel
+            .iter()
+            .take(actual_k)
+            .map(|(i, _)| *i)
+            .collect()
     }
 
     /// 计算补全后的 Q 值 (Completed Q-value)
@@ -195,12 +172,16 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// - N = 0 时：使用网络预测的 V 或已访问子节点的平均值
     fn completed_q(&self, action: usize) -> f32 {
         let root = self.arena.get(self.root_idx);
-        if let Some((_, _, child_idx)) = root.children.iter()
+        if let Some((_, _, child_idx)) = root
+            .children
+            .iter()
             .find(|(act, _)| *act == action)
             .map(|(_, idx)| (0, 0, idx))
         {
             self.node_q_value(*child_idx)
-        } else { 0.0 }
+        } else {
+            0.0
+        }
     }
 
     /// 获取根节点指定动作的 completed_Q
@@ -257,14 +238,18 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             let current = arena.get(current_idx);
             match *step {
                 PathStep::Action(action) => {
-                    let next_idx = current.children.iter()
+                    let next_idx = current
+                        .children
+                        .iter()
                         .find(|(act, _)| *act == action)
                         .map(|(_, idx)| *idx)
                         .expect("Path action not found");
                     current_idx = next_idx;
                 }
                 PathStep::ChanceOutcome(outcome_id) => {
-                    let next_idx = current.possible_states.iter()
+                    let next_idx = current
+                        .possible_states
+                        .iter()
                         .find(|(id, _, _)| *id == outcome_id)
                         .map(|(_, _, idx)| *idx)
                         .expect("Path outcome not found");
@@ -296,7 +281,6 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         path: &[PathStep],
         leaf_player: Player,
         leaf_value: f32,
-        min_max_stats: &mut MinMaxStats,
     ) -> f32 {
         if path.is_empty() {
             // 到达目标节点（叶子节点）
@@ -304,8 +288,6 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             let value = value_from_perspective(node.player(), leaf_player, leaf_value);
             node.visit_count += 1;
             node.value_sum += value;
-            let q = node.value_sum / node.visit_count as f32;
-            min_max_stats.update(q);
             return value;
         }
 
@@ -315,30 +297,35 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let child_value = match first_step {
             PathStep::Action(action) => {
                 let current = arena.get(node_idx);
-                let child_idx = current.children.iter()
+                let child_idx = current
+                    .children
+                    .iter()
                     .find(|(act, _)| *act == action)
                     .map(|(_, idx)| *idx)
                     .expect("Backprop child not found");
-                Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value, min_max_stats)
+                Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value)
             }
             PathStep::ChanceOutcome(outcome_id) => {
                 let current = arena.get(node_idx);
-                let child_idx = current.possible_states.iter()
+                let child_idx = current
+                    .possible_states
+                    .iter()
                     .find(|(id, _, _)| *id == outcome_id)
                     .map(|(_, _, idx)| *idx)
                     .expect("Backprop outcome not found");
-                Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value, min_max_stats)
+                Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value)
             }
         };
 
         // 更新当前节点
-        let child_player = arena.get(Self::get_node_idx_by_path(arena, node_idx, &path[..1])).player();
-        let my_value = value_from_perspective(arena.get(node_idx).player(), child_player, child_value);
+        let child_player = arena
+            .get(Self::get_node_idx_by_path(arena, node_idx, &path[..1]))
+            .player();
+        let my_value =
+            value_from_perspective(arena.get(node_idx).player(), child_player, child_value);
         let node = arena.get_mut(node_idx);
         node.visit_count += 1;
         node.value_sum += my_value;
-        let q = node.value_sum / node.visit_count as f32;
-        min_max_stats.update(q);
         my_value
     }
 
@@ -381,7 +368,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// * `env` - 叶子节点对应的环境
     /// * `probs` - 动作概率 (Policy)
     /// * `logits` - 动作 Logits
-    fn build_children_from_eval(arena: &mut MctsArena, node_idx: usize, env: &DarkChessEnv, probs: &[f32], logits: &[f32]) {
+    fn build_children_from_eval(
+        arena: &mut MctsArena,
+        node_idx: usize,
+        env: &DarkChessEnv,
+        probs: &[f32],
+        logits: &[f32],
+    ) {
         let mut masks = vec![0; ACTION_SPACE_SIZE];
         env.action_masks_into(&mut masks);
 
@@ -400,7 +393,14 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     Some(t)
                 };
                 let child_state = child_env.as_ref().map(|e| e.get_state());
-                let child_node = MctsNode::new(prior, logit, target_is_hidden, child_env, child_state, false);
+                let child_node = MctsNode::new(
+                    prior,
+                    logit,
+                    target_is_hidden,
+                    child_env,
+                    child_state,
+                    false,
+                );
                 let child_idx = arena.allocate(child_node);
                 children_to_add.push((action_idx, child_idx));
             }
@@ -421,17 +421,29 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 大语言模型注意: 不要修改此处的全量展开逻辑。
     fn expand_chance_node(arena: &mut MctsArena, node_idx: usize, action: usize) {
         let (env_clone, hidden_pieces) = {
-            let env = arena.get(node_idx).env.as_ref().expect("Chance node must have env").as_ref();
+            let env = arena
+                .get(node_idx)
+                .env
+                .as_ref()
+                .expect("Chance node must have env")
+                .as_ref();
             let mut counts = [0; 14];
-            for p in env.get_hidden_pieces_raw() { counts[get_outcome_id(p)] += 1; }
+            for p in env.get_hidden_pieces_raw() {
+                counts[get_outcome_id(p)] += 1;
+            }
             (env.clone(), counts)
         };
-        
+
         let total_hidden = {
-            let env = arena.get(node_idx).env.as_ref().expect("Chance node must have env").as_ref();
+            let env = arena
+                .get(node_idx)
+                .env
+                .as_ref()
+                .expect("Chance node must have env")
+                .as_ref();
             env.get_hidden_pieces_raw().len() as f32
         };
-        
+
         if total_hidden == 0.0 {
             arena.get_mut(node_idx).is_expanded = true;
             return;
@@ -443,12 +455,15 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 let prob = hidden_pieces[outcome_id] as f32 / total_hidden;
                 let mut next_env = env_clone.clone();
                 let hidden_raw = next_env.get_hidden_pieces_raw();
-                let specific_piece = hidden_raw.iter()
+                let specific_piece = hidden_raw
+                    .iter()
                     .find(|p| get_outcome_id(p) == outcome_id)
-                    .expect("Piece not found").clone();
+                    .expect("Piece not found")
+                    .clone();
                 let _ = next_env.step(action, Some(specific_piece));
                 let child_state = next_env.get_state();
-                let child_node = MctsNode::new(1.0, 0.0, false, Some(next_env), Some(child_state), false);
+                let child_node =
+                    MctsNode::new(1.0, 0.0, false, Some(next_env), Some(child_state), false);
                 let child_idx = arena.allocate(child_node);
                 outcomes_to_add.push((outcome_id, prob, child_idx));
             }
@@ -466,9 +481,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 根据各种结果的概率分布，随机采样一个结果 ID。
     /// 主要用于模拟阶段，决定在机会节点走向哪个分支。
     fn sample_outcome_id(outcomes: &[(usize, f32, usize)], rng: &mut impl Rng) -> Option<usize> {
-        if outcomes.is_empty() { return None; }
+        if outcomes.is_empty() {
+            return None;
+        }
         let total: f32 = outcomes.iter().map(|(_, p, _)| p).sum();
-        if total <= 0.0 { return outcomes.first().map(|(id, _, _)| *id); }
+        if total <= 0.0 {
+            return outcomes.first().map(|(id, _, _)| *id);
+        }
         let mut pick = rng.gen_range(0.0..1.0) * total;
         for (outcome_id, prob, _) in outcomes {
             pick -= *prob;
@@ -496,34 +515,48 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let mut path = vec![PathStep::Action(action)];
         let current_idx = {
             let root = self.arena.get(self.root_idx);
-            root.children.iter()
+            root.children
+                .iter()
                 .find(|(act, _)| *act == action)
                 .map(|(_, idx)| *idx)
         };
-        
-        if current_idx.is_none() { return; }
+
+        if current_idx.is_none() {
+            return;
+        }
         let mut current_idx = current_idx.unwrap();
         let mut current_action = action;
 
         loop {
             let is_chance = self.arena.get(current_idx).is_chance_node;
-            
+
             if is_chance {
                 if !self.arena.get(current_idx).is_expanded {
                     Self::expand_chance_node(&mut self.arena, current_idx, current_action);
                     let possible_states = self.arena.get(current_idx).possible_states.clone();
-                    
+
                     if possible_states.is_empty() {
                         return;
                     }
 
                     let base_path = path.clone();
                     for (outcome_id, _, child_idx) in possible_states.iter() {
-                        let child_env = self.arena.get(*child_idx).env.as_ref().expect("Chance outcome must have env").as_ref().clone();
+                        let child_env = self
+                            .arena
+                            .get(*child_idx)
+                            .env
+                            .as_ref()
+                            .expect("Chance outcome must have env")
+                            .as_ref()
+                            .clone();
                         let mut outcome_path = base_path.clone();
                         outcome_path.push(PathStep::ChanceOutcome(*outcome_id));
                         let leaf_player = self.arena.get(*child_idx).player();
-                        batch.push(PendingEval { path: outcome_path, env: child_env, leaf_player });
+                        batch.push(PendingEval {
+                            path: outcome_path,
+                            env: child_env,
+                            leaf_player,
+                        });
                     }
                     return;
                 }
@@ -534,7 +567,8 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     None => return,
                 };
                 path.push(PathStep::ChanceOutcome(outcome_id));
-                let next_idx = possible_states.iter()
+                let next_idx = possible_states
+                    .iter()
                     .find(|(id, _, _)| *id == outcome_id)
                     .map(|(_, _, idx)| *idx)
                     .expect("Outcome not found");
@@ -542,22 +576,38 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 continue;
             }
 
-            let env = self.arena.get(current_idx).env.as_ref().expect("Node must have env").as_ref();
-            
+            let env = self
+                .arena
+                .get(current_idx)
+                .env
+                .as_ref()
+                .expect("Node must have env")
+                .as_ref();
+
             // 使用缓存的 action_mask
             self.cached_action_mask.iter_mut().for_each(|m| *m = 0);
             env.action_masks_into(&mut self.cached_action_mask);
-            
+
             if self.cached_action_mask.iter().all(|&x| x == 0) {
                 let leaf_player = self.arena.get(current_idx).player();
                 let path_clone = path.clone();
-                Self::backprop_from_path(&mut self.arena, self.root_idx, &path_clone, leaf_player, -1.0, &mut self.min_max_stats);
+                Self::backprop_from_path(
+                    &mut self.arena,
+                    self.root_idx,
+                    &path_clone,
+                    leaf_player,
+                    -1.0,
+                );
                 return;
             }
 
             if !self.arena.get(current_idx).is_expanded {
                 let leaf_player = self.arena.get(current_idx).player();
-                batch.push(PendingEval { path, env: env.clone(), leaf_player });
+                batch.push(PendingEval {
+                    path,
+                    env: env.clone(),
+                    leaf_player,
+                });
                 return;
             }
 
@@ -574,9 +624,8 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 let child_q = self.node_q_value(*child_idx);
                 let child_player = child.player();
                 let adjusted_q = value_from_perspective(parent_player, child_player, child_q);
-                let normalized_q = self.min_max_stats.normalize(adjusted_q);
                 let u_score = 1.0 * child.prior * sqrt_total / (1.0 + child.visit_count as f32);
-                let score = normalized_q + u_score;
+                let score = adjusted_q + u_score;
                 if score > best_score {
                     best_score = score;
                     best_action = Some(*act);
@@ -589,7 +638,8 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             };
             path.push(PathStep::Action(act));
             current_action = act;
-            let next_idx = children_clone.iter()
+            let next_idx = children_clone
+                .iter()
                 .find(|(a, _)| *a == act)
                 .map(|(_, idx)| *idx)
                 .expect("Selected child missing");
@@ -602,13 +652,22 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 在搜索开始前，确保根节点已经被评估和扩展。
     fn expand_root(&mut self) {
         let is_expanded = self.arena.get(self.root_idx).is_expanded;
-        if is_expanded { return; }
-        
-        let env = self.arena.get(self.root_idx).env.as_ref().expect("Root must have env").as_ref().clone();
+        if is_expanded {
+            return;
+        }
+
+        let env = self
+            .arena
+            .get(self.root_idx)
+            .env
+            .as_ref()
+            .expect("Root must have env")
+            .as_ref()
+            .clone();
         let (logits_batch, values) = self.evaluator.evaluate(std::slice::from_ref(&env));
         let logits = &logits_batch[0];
         let value = values[0];
-        
+
         let mut masks = vec![0; ACTION_SPACE_SIZE];
         env.action_masks_into(&mut masks);
         let probs = self.compute_probs_from_logits(logits, &masks);
@@ -619,8 +678,6 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         root.initial_value = value;
         root.visit_count += 1;
         root.value_sum += value;
-        let q = root.value_sum / root.visit_count as f32;
-        self.min_max_stats.update(q);
     }
 
     /// 执行 Gumbel MCTS 搜索主循环
@@ -637,17 +694,26 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         // 1. 扩展根节点
         self.expand_root();
 
-        let env = self.arena.get(self.root_idx).env.as_ref().expect("Root must have env").as_ref();
+        let env = self
+            .arena
+            .get(self.root_idx)
+            .env
+            .as_ref()
+            .expect("Root must have env")
+            .as_ref();
         self.cached_action_mask.iter_mut().for_each(|m| *m = 0);
         env.action_masks_into(&mut self.cached_action_mask);
-        
-        if self.cached_action_mask.iter().all(|&x| x == 0) { return None; }
+
+        if self.cached_action_mask.iter().all(|&x| x == 0) {
+            return None;
+        }
 
         // 2. 收集 logits
         let logits: Vec<f32> = (0..ACTION_SPACE_SIZE)
             .map(|i| {
                 let root = self.arena.get(self.root_idx);
-                root.children.iter()
+                root.children
+                    .iter()
                     .find(|(act, _)| *act == i)
                     .map(|(_, idx)| self.arena.get(*idx).logit)
                     .unwrap_or(-1e6)
@@ -656,8 +722,11 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
         // 3. Gumbel-Top-K 采样 (克隆 mask 以避免借用冲突)
         let masks_cloned = self.cached_action_mask.clone();
-        let candidates = self.sample_gumbel_top_k(&logits, &masks_cloned, self.config.max_considered_actions);
-        if candidates.is_empty() { return None; }
+        let candidates =
+            self.sample_gumbel_top_k(&logits, &masks_cloned, self.config.max_considered_actions);
+        if candidates.is_empty() {
+            return None;
+        }
         if candidates.len() == 1 {
             // 只有一个候选动作，直接返回
             let action = candidates[0];
@@ -669,7 +738,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             let completed_q = self.completed_q(action);
             let root_visit_count = root.visit_count;
             let action_mask = self.cached_action_mask.clone();
-            
+
             return Some(MctsSearchResult {
                 action,
                 state,
@@ -693,8 +762,10 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let mut rng = thread_rng();
 
         for phase in 0..budget.num_phases() {
-            if remaining.len() <= 1 { break; }
-            
+            if remaining.len() <= 1 {
+                break;
+            }
+
             let visits_per_action = budget.visits_per_action_in_phase(phase);
 
             // 执行本阶段的搜索
@@ -707,36 +778,56 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
                 if !batch.is_empty() {
                     total_phase_usage += batch.len();
-                    let envs: Vec<DarkChessEnv> = batch.iter().map(|pending| pending.env.clone()).collect();
+                    let envs: Vec<DarkChessEnv> =
+                        batch.iter().map(|pending| pending.env.clone()).collect();
                     let (logits_batch, values) = self.evaluator.evaluate(&envs);
-                    
+
                     for (idx, pending) in batch.into_iter().enumerate() {
                         let logits = &logits_batch[idx];
                         let value = values[idx];
                         let mut masks = vec![0; ACTION_SPACE_SIZE];
                         pending.env.action_masks_into(&mut masks);
                         let probs = self.compute_probs_from_logits(logits, &masks);
-                        let leaf_idx = Self::get_node_idx_by_path(&self.arena, self.root_idx, &pending.path);
+                        let leaf_idx =
+                            Self::get_node_idx_by_path(&self.arena, self.root_idx, &pending.path);
                         {
                             let leaf = self.arena.get_mut(leaf_idx);
                             leaf.initial_value = value;
                         }
-                        Self::build_children_from_eval(&mut self.arena, leaf_idx, &pending.env, &probs, logits);
-                        Self::backprop_from_path(&mut self.arena, self.root_idx, &pending.path, pending.leaf_player, value, &mut self.min_max_stats);
+                        Self::build_children_from_eval(
+                            &mut self.arena,
+                            leaf_idx,
+                            &pending.env,
+                            &probs,
+                            logits,
+                        );
+                        Self::backprop_from_path(
+                            &mut self.arena,
+                            self.root_idx,
+                            &pending.path,
+                            pending.leaf_player,
+                            value,
+                        );
                     }
                 }
             }
 
             budget.record_phase_usage(total_phase_usage);
-            
+
             // 根据 completed_Q 排序并淘汰
             if remaining.len() > 1 {
-                let mut scored: Vec<(usize, f32)> = remaining.iter()
-                    .map(|&a| (a, self.completed_q(a))).collect();
+                let mut scored: Vec<(usize, f32)> = remaining
+                    .iter()
+                    .map(|&a| (a, self.completed_q(a)))
+                    .collect();
                 scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                
+
                 let keep_count = budget.keep_count_after_phase();
-                remaining = scored.into_iter().take(keep_count).map(|(a, _)| a).collect();
+                remaining = scored
+                    .into_iter()
+                    .take(keep_count)
+                    .map(|(a, _)| a)
+                    .collect();
             }
 
             budget.advance_phase();
@@ -745,7 +836,8 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         // 5. 返回结果
         let action = if remaining.is_empty() {
             let root = self.arena.get(self.root_idx);
-            root.children.iter()
+            root.children
+                .iter()
                 .max_by_key(|(_, child_idx)| self.arena.get(*child_idx).visit_count)
                 .map(|(action, _)| *action)?
         } else {
@@ -781,10 +873,14 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let mut probs = vec![0.0; ACTION_SPACE_SIZE];
         let root = self.arena.get(self.root_idx);
         let total = root.visit_count as f32;
-        if total == 0.0 { return probs; }
+        if total == 0.0 {
+            return probs;
+        }
         for (action, child_idx) in &root.children {
             let child = self.arena.get(*child_idx);
-            if *action < probs.len() { probs[*action] = child.visit_count as f32 / total; }
+            if *action < probs.len() {
+                probs[*action] = child.visit_count as f32 / total;
+            }
         }
         probs
     }
@@ -814,7 +910,9 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             if masks[action] != 1 {
                 continue;
             }
-            let child_idx = match root.children.iter()
+            let child_idx = match root
+                .children
+                .iter()
                 .find(|(act, _)| *act == action)
                 .map(|(_, idx)| *idx)
             {
@@ -825,11 +923,15 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             let q = self.completed_q(action);
             let score = child.logit + sigma_scale * q;
             scores[action] = score;
-            if score > max_score { max_score = score; }
+            if score > max_score {
+                max_score = score;
+            }
         }
 
         // 3. 计算 Softmax（带数值稳定性）
-        if !max_score.is_finite() { return policy; }
+        if !max_score.is_finite() {
+            return policy;
+        }
 
         let mut sum = 0.0;
         for action in 0..ACTION_SPACE_SIZE {
@@ -843,7 +945,9 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
         // 4. 归一化概率，异常时回退到均匀分布
         if sum > 0.0 {
-            for p in policy.iter_mut() { *p /= sum; }
+            for p in policy.iter_mut() {
+                *p /= sum;
+            }
         } else {
             let count = masks.iter().sum::<i32>() as f32;
             if count > 0.0 {

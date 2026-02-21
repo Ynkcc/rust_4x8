@@ -1,9 +1,9 @@
+use rand::Rng;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use rand::Rng;
 
 use super::actions::action_lookup_tables;
-use super::bitboard::{ray_attacks, ull, BOARD_MASK};
+use super::bitboard::{BOARD_MASK, ray_attacks, ull};
 use super::constants::*;
 use super::types::*;
 
@@ -36,7 +36,7 @@ pub struct DarkChessEnv {
     dead_pieces_pool: [[PieceType; TOTAL_PIECES_PER_PLAYER]; 2],
     /// 阵亡棋子计数 [PlayerIdx]
     dead_pieces_count: [usize; 2],
-    
+
     /// 玩家分数/血量
     scores: [i32; 2],
     /// 上一步动作
@@ -47,7 +47,7 @@ pub struct DarkChessEnv {
     hidden_pieces_pool: [Piece; TOTAL_POSITIONS],
     /// 当前隐藏棋子数量
     hidden_pieces_count: usize,
-    
+
     /// 翻棋概率表
     reveal_probabilities: [f32; REVEAL_PROBABILITY_SIZE],
 }
@@ -68,20 +68,20 @@ impl DarkChessEnv {
             // 初始化阵亡列表
             dead_pieces_pool: [[PieceType::default(); TOTAL_PIECES_PER_PLAYER]; 2],
             dead_pieces_count: [0; 2],
-            
+
             scores: [0; 2],
             last_action: -1,
 
             // 初始化隐藏池
             hidden_pieces_pool: [Piece::default(); TOTAL_POSITIONS],
             hidden_pieces_count: 0,
-            
+
             reveal_probabilities: [0.0; REVEAL_PROBABILITY_SIZE],
         };
 
         action_lookup_tables();
         ray_attacks();
-        
+
         env.reset();
         env
     }
@@ -120,13 +120,34 @@ impl DarkChessEnv {
         // 1. 生成实际棋子池 (写入 Buffer)
         let mut idx = 0;
         for &player in &[Player::Red, Player::Black] {
-            for _ in 0..GENERALS_COUNT { self.hidden_pieces_pool[idx] = Piece::new(PieceType::General, player); idx += 1; }
-            for _ in 0..ADVISORS_COUNT { self.hidden_pieces_pool[idx] = Piece::new(PieceType::Advisor, player); idx += 1; }
-            for _ in 0..ELEPHANTS_COUNT { self.hidden_pieces_pool[idx] = Piece::new(PieceType::Elephant, player); idx += 1; }
-            for _ in 0..CHARIOTS_COUNT { self.hidden_pieces_pool[idx] = Piece::new(PieceType::Chariot, player); idx += 1; }
-            for _ in 0..HORSES_COUNT { self.hidden_pieces_pool[idx] = Piece::new(PieceType::Horse, player); idx += 1; }
-            for _ in 0..CANNONS_COUNT { self.hidden_pieces_pool[idx] = Piece::new(PieceType::Cannon, player); idx += 1; }
-            for _ in 0..SOLDIERS_COUNT { self.hidden_pieces_pool[idx] = Piece::new(PieceType::Soldier, player); idx += 1; }
+            for _ in 0..GENERALS_COUNT {
+                self.hidden_pieces_pool[idx] = Piece::new(PieceType::General, player);
+                idx += 1;
+            }
+            for _ in 0..ADVISORS_COUNT {
+                self.hidden_pieces_pool[idx] = Piece::new(PieceType::Advisor, player);
+                idx += 1;
+            }
+            for _ in 0..ELEPHANTS_COUNT {
+                self.hidden_pieces_pool[idx] = Piece::new(PieceType::Elephant, player);
+                idx += 1;
+            }
+            for _ in 0..CHARIOTS_COUNT {
+                self.hidden_pieces_pool[idx] = Piece::new(PieceType::Chariot, player);
+                idx += 1;
+            }
+            for _ in 0..HORSES_COUNT {
+                self.hidden_pieces_pool[idx] = Piece::new(PieceType::Horse, player);
+                idx += 1;
+            }
+            for _ in 0..CANNONS_COUNT {
+                self.hidden_pieces_pool[idx] = Piece::new(PieceType::Cannon, player);
+                idx += 1;
+            }
+            for _ in 0..SOLDIERS_COUNT {
+                self.hidden_pieces_pool[idx] = Piece::new(PieceType::Soldier, player);
+                idx += 1;
+            }
         }
         self.hidden_pieces_count = idx;
 
@@ -134,8 +155,8 @@ impl DarkChessEnv {
         self.hidden_pieces_pool[0..self.hidden_pieces_count].shuffle(&mut rng);
 
         // 2. 填充棋盘
-        self.empty_bitboard = 0; 
-        self.hidden_bitboard = BOARD_MASK; 
+        self.empty_bitboard = 0;
+        self.hidden_bitboard = BOARD_MASK;
 
         for sq in 0..TOTAL_POSITIONS {
             self.board[sq] = Slot::Hidden;
@@ -199,8 +220,7 @@ impl DarkChessEnv {
         let p_bb = &mut self.revealed_bitboards[piece.player.idx()];
         *p_bb |= mask;
 
-        let pt_bb =
-            &mut self.piece_bitboards[piece.player.idx()][piece.piece_type as usize];
+        let pt_bb = &mut self.piece_bitboards[piece.player.idx()][piece.piece_type as usize];
         *pt_bb |= mask;
 
         self.board[sq] = Slot::Revealed(piece);
@@ -347,7 +367,7 @@ impl DarkChessEnv {
 
     pub fn get_target_slot(&self, action: usize) -> Slot {
         let coords = &action_lookup_tables().action_to_coords[action];
-        
+
         if action < REVEAL_ACTIONS_COUNT {
             let sq = coords[0];
             self.board[sq].clone()

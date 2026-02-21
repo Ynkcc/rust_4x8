@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array4};
+use ndarray::{Array1, Array3};
 
 use super::bitboard::ull;
 use super::board::DarkChessEnv;
@@ -67,11 +67,8 @@ impl DarkChessEnv {
 
     pub fn get_state(&self) -> Observation {
         let board_data = self.get_board_state_tensor();
-        let board = Array4::from_shape_vec(
-            (1, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
-            board_data,
-        )
-        .expect("Failed to reshape board array");
+        let board = Array3::from_shape_vec((BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS), board_data)
+            .expect("Failed to reshape board array");
 
         let scalars_data = self.get_scalar_state_vector();
         let scalars = Array1::from_vec(scalars_data);
@@ -79,16 +76,18 @@ impl DarkChessEnv {
         Observation { board, scalars }
     }
 
-    pub fn get_state_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) -> Observation {
+    pub fn get_state_into(
+        &self,
+        board_data: &mut Vec<f32>,
+        scalars_data: &mut Vec<f32>,
+    ) -> Observation {
         board_data.clear();
         board_data.reserve(BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
         board_data.extend_from_slice(&self.get_board_state_tensor());
-        
-        let board = Array4::from_shape_vec(
-            (1, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
-            board_data.clone(),
-        )
-        .expect("Failed to reshape board array");
+
+        let board =
+            Array3::from_shape_vec((BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS), board_data.clone())
+                .expect("Failed to reshape board array");
 
         scalars_data.clear();
         scalars_data.reserve(SCALAR_FEATURE_COUNT);

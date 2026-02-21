@@ -51,7 +51,7 @@ pub const PIECE_MAX_COUNTS: [usize; NUM_PIECE_TYPES] = [
 /// 存活向量大小: 包含双方所有可能的棋子
 pub const SURVIVAL_VECTOR_SIZE: usize = TOTAL_PIECES_PER_PLAYER;
 
-/// Scalar 特征数量: 
+/// Scalar 特征数量:
 /// 3个全局标量 (MoveCount, RedHP, BlackHP) + 2个存活向量(各16) + 动作掩码长度
 pub const SCALAR_FEATURE_COUNT: usize = 3 + 2 * SURVIVAL_VECTOR_SIZE + ACTION_SPACE_SIZE;
 
@@ -68,9 +68,9 @@ pub const NUM_DIRECTIONS: usize = 4;
 /// MSB (Most Significant Bit) 位数 (64位整数的最高位索引基数)
 pub const U64_BITS: usize = 64;
 
-/// 棋盘状态张量的通道数: 
+/// 棋盘状态张量的通道数:
 /// 己方7种 + 敌方7种 + 暗子1种 + 空位1种 = 16
-pub const BOARD_CHANNELS: usize = 2 * NUM_PIECE_TYPES + 2; 
+pub const BOARD_CHANNELS: usize = 2 * NUM_PIECE_TYPES + 2;
 
 // --- 动作空间定义 ---
 pub const REVEAL_ACTIONS_COUNT: usize = 32;

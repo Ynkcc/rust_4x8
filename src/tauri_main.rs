@@ -1,13 +1,13 @@
 // code_files/src/tauri_main.rs
-use banqi_4x8::ai::{Policy, RandomPolicy, RevealFirstPolicy};
 #[cfg(feature = "torch")]
 use banqi_4x8::ai::{MctsDlPolicy, ModelWrapper};
+use banqi_4x8::ai::{Policy, RandomPolicy, RevealFirstPolicy};
 use banqi_4x8::*;
 use serde::{Deserialize, Serialize}; // Added Deserialize
 use std::collections::HashMap;
-use std::sync::Mutex;
 #[cfg(feature = "torch")]
 use std::sync::Arc;
+use std::sync::Mutex;
 use tauri::{Manager, State};
 
 // 游戏状态的可序列化版本
@@ -94,7 +94,7 @@ fn reset_game(opponent: Option<String>, state: State<AppState>) -> GameState {
             *policy_lock = None;
         }
     }
-    
+
     extract_game_state(&*game)
 }
 
@@ -150,10 +150,10 @@ fn bot_move(state: State<AppState>) -> Result<StepResult, String> {
             }
             let policy = policy_lock.as_ref().unwrap();
             policy.choose_action(&*game)
-        },
+        }
         #[cfg(not(feature = "torch"))]
         OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
-        OpponentType::PvP => None,    // 已在上面返回 Err，这里兜底
+        OpponentType::PvP => None, // 已在上面返回 Err，这里兜底
     }
     .ok_or_else(|| "AI 无棋可走".to_string())?;
 
@@ -282,9 +282,9 @@ fn project_reveal_probabilities(raw: &[f32]) -> Vec<f32> {
 // ===================== 额外命令：模型与参数 =====================
 
 #[derive(Debug, Clone, Serialize)]
-struct ModelEntry { 
-    name: String, 
-    path: String 
+struct ModelEntry {
+    name: String,
+    path: String,
 }
 
 /// 列出当前目录下的 .pt 模型
@@ -298,10 +298,14 @@ fn list_models() -> Vec<ModelEntry> {
                     if let Some(ext) = e.path().extension() {
                         if ext == "pt" {
                             let path = e.path();
-                            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                            out.push(ModelEntry { 
-                                name, 
-                                path: path.to_string_lossy().to_string() 
+                            let name = path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            out.push(ModelEntry {
+                                name,
+                                path: path.to_string_lossy().to_string(),
                             });
                         }
                     }
@@ -343,17 +347,17 @@ fn load_model(_path: String, _state: State<AppState>) -> Result<String, String> 
 /// 设置 MCTS 每步搜索次数
 #[tauri::command]
 fn set_mcts_iterations(iters: usize, state: State<AppState>) -> Result<usize, String> {
-    if iters == 0 { 
-        return Err("搜索次数必须大于 0".into()); 
+    if iters == 0 {
+        return Err("搜索次数必须大于 0".into());
     }
     let mut sims = state.mcts_num_simulations.lock().unwrap();
     *sims = iters;
-    
+
     #[cfg(feature = "torch")]
     if let Some(policy) = state.mcts_policy.lock().unwrap().as_mut() {
         policy.set_iterations(iters);
     }
-    
+
     Ok(*sims)
 }
 

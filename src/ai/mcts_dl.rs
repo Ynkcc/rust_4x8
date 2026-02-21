@@ -13,8 +13,10 @@
 //! 3. 每当玩家或 AI 执行动作后调用 `advance`
 //! 4. 需要选择动作时调用 `choose_action(&env)`
 
+use crate::game_env::{
+    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
+};
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
-use crate::game_env::{DarkChessEnv, ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, SCALAR_FEATURE_COUNT};
 use std::sync::{Arc, Mutex};
 use tch::{CModule, Device, Tensor};
 
@@ -29,15 +31,14 @@ pub struct ModelWrapper {
 impl ModelWrapper {
     pub fn load_from_file(path: &str) -> Result<Self, String> {
         let device = Device::Cpu;
-        let model = CModule::load(path)
-            .map_err(|e| format!("模型加载失败: {}", e))?;
+        let model = CModule::load(path).map_err(|e| format!("模型加载失败: {}", e))?;
         Ok(Self {
             model,
             device,
             gate: Mutex::new(()),
         })
     }
-    
+
     pub fn get_device(&self) -> Device {
         self.device
     }
@@ -68,7 +69,8 @@ impl Evaluator for TchEvaluator {
         let _guard = self.model.gate.lock().unwrap();
         tch::no_grad(|| {
             let batch_size = envs.len();
-            let mut board_flat: Vec<f32> = Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
+            let mut board_flat: Vec<f32> =
+                Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
             let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * SCALAR_FEATURE_COUNT);
 
             for env in envs {
@@ -92,7 +94,10 @@ impl Evaluator for TchEvaluator {
 
             let board_ivalue = tch::IValue::Tensor(board_t);
             let scalars_ivalue = tch::IValue::Tensor(scalars_t);
-            let outputs = self.model.model.forward_is(&[board_ivalue, scalars_ivalue])
+            let outputs = self
+                .model
+                .model
+                .forward_is(&[board_ivalue, scalars_ivalue])
                 .expect("TorchScript forward failed");
 
             let (policy_logits, value_t) = match outputs {
@@ -139,7 +144,7 @@ impl Evaluator for TchEvaluator {
 // ---------------- 策略对象（简化版：每次创建新 MCTS）----------------
 
 /// MCTS + 深度学习策略
-/// 
+///
 /// 为了避免生命周期问题，每次调用 choose_action 时创建新的 MCTS 实例
 /// 虽然失去了搜索树复用的优势，但实现更简单可靠
 pub struct MctsDlPolicy {
@@ -181,7 +186,7 @@ pub fn choose_action_once(
         c_scale: 1.0,
         train: false,
     };
-    
+
     let mut mcts = GumbelMCTS::new(env, &evaluator, config);
     // 只返回动作索引，忽略完整搜索结果
     mcts.run().map(|result| result.action)

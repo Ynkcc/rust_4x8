@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array4};
+use ndarray::{Array1, Array3};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -8,13 +8,13 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PieceType {
-    Soldier = 0,  
-    Cannon = 1,   
-    Horse = 2,    
-    Chariot = 3,  
-    Elephant = 4, 
-    Advisor = 5,  
-    General = 6,  
+    Soldier = 0,
+    Cannon = 1,
+    Horse = 2,
+    Chariot = 3,
+    Elephant = 4,
+    Advisor = 5,
+    General = 6,
 }
 
 impl Default for PieceType {
@@ -82,7 +82,10 @@ pub struct Piece {
 impl Default for Piece {
     fn default() -> Self {
         // 用于初始化数组的默认值
-        Self { piece_type: PieceType::Soldier, player: Player::Red }
+        Self {
+            piece_type: PieceType::Soldier,
+            player: Player::Red,
+        }
     }
 }
 
@@ -121,7 +124,7 @@ pub enum Slot {
 #[derive(Debug, Clone)]
 pub struct Observation {
     /// 棋盘特征张量: (Channels, H, W)
-    pub board: Array4<f32>,
+    pub board: Array3<f32>,
     /// 全局标量特征: (Features,)
     pub scalars: Array1<f32>,
 }
