@@ -310,7 +310,7 @@ impl DarkChessEnv {
         }
 
         let target_slot =
-            std::mem::replace(&mut self.board[to_sq], Slot::Revealed(attacker.clone()));
+            std::mem::replace(&mut self.board[to_sq], Slot::Revealed(attacker));
 
         let attacker_mask = ull(from_sq);
         let defender_mask = ull(to_sq);
@@ -370,10 +370,10 @@ impl DarkChessEnv {
 
         if action < REVEAL_ACTIONS_COUNT {
             let sq = coords[0];
-            self.board[sq].clone()
+            self.board[sq]
         } else {
             let to_sq = coords[1];
-            self.board[to_sq].clone()
+            self.board[to_sq]
         }
     }
 

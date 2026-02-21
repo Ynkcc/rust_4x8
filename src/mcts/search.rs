@@ -13,7 +13,7 @@ use super::node::{MctsArena, MctsNode, get_outcome_id, value_from_perspective};
 /// 路径步骤
 ///
 /// 在 MCTS 路径遍历中，表示每一步是选择了一个动作还是发生是一个随机机会结果。
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum PathStep {
     /// 选择动作 (Action Index)
     Action(usize),
@@ -66,7 +66,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     pub fn new(env: &DarkChessEnv, evaluator: &'a E, config: GumbelConfig) -> Self {
         let mut arena = MctsArena::new();
         let state = env.get_state();
-        let root_node = MctsNode::new(1.0, 0.0, false, Some(env.clone()), Some(state), true);
+        let root_node = MctsNode::new(1.0, 0.0, false, Some(*env), Some(state), true);
         let root_idx = arena.allocate(root_node);
 
         Self {
@@ -128,7 +128,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
         // 如果无法重用子树，则重置根节点
         let state = env.get_state();
-        let mut new_root = MctsNode::new(1.0, 0.0, false, Some(env.clone()), Some(state), true);
+        let mut new_root = MctsNode::new(1.0, 0.0, false, Some(*env), Some(state), true);
         new_root.is_root_node = true;
         self.root_idx = self.arena.allocate(new_root);
     }
@@ -291,7 +291,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             return value;
         }
 
-        let first_step = path[0].clone();
+        let first_step = path[0];
         let rest_path = &path[1..];
 
         let child_value = match first_step {
@@ -386,9 +386,9 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 let logit = logits[action_idx];
                 let target_is_hidden = matches!(env.get_target_slot(action_idx), Slot::Hidden);
                 let child_env = if target_is_hidden {
-                    Some(env.clone())
+                    Some(*env)
                 } else {
-                    let mut t = env.clone();
+                    let mut t = *env;
                     let _ = t.step(action_idx, None);
                     Some(t)
                 };
@@ -431,7 +431,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             for p in env.get_hidden_pieces_raw() {
                 counts[get_outcome_id(p)] += 1;
             }
-            (env.clone(), counts)
+            (*env, counts)
         };
 
         let total_hidden = {
@@ -453,13 +453,12 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         for outcome_id in 0..14 {
             if hidden_pieces[outcome_id] > 0 {
                 let prob = hidden_pieces[outcome_id] as f32 / total_hidden;
-                let mut next_env = env_clone.clone();
+                let mut next_env = env_clone;
                 let hidden_raw = next_env.get_hidden_pieces_raw();
-                let specific_piece = hidden_raw
+                let specific_piece = *hidden_raw
                     .iter()
                     .find(|p| get_outcome_id(p) == outcome_id)
-                    .expect("Piece not found")
-                    .clone();
+                    .expect("Piece not found");
                 let _ = next_env.step(action, Some(specific_piece));
                 let child_state = next_env.get_state();
                 let child_node =
@@ -541,14 +540,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
                     let base_path = path.clone();
                     for (outcome_id, _, child_idx) in possible_states.iter() {
-                        let child_env = self
+                        let child_env = *self
                             .arena
                             .get(*child_idx)
                             .env
                             .as_ref()
                             .expect("Chance outcome must have env")
-                            .as_ref()
-                            .clone();
+                            .as_ref();
                         let mut outcome_path = base_path.clone();
                         outcome_path.push(PathStep::ChanceOutcome(*outcome_id));
                         let leaf_player = self.arena.get(*child_idx).player();
@@ -605,7 +603,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 let leaf_player = self.arena.get(current_idx).player();
                 batch.push(PendingEval {
                     path,
-                    env: env.clone(),
+                    env: *env,
                     leaf_player,
                 });
                 return;
@@ -656,14 +654,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             return;
         }
 
-        let env = self
+        let env = *self
             .arena
             .get(self.root_idx)
             .env
             .as_ref()
             .expect("Root must have env")
-            .as_ref()
-            .clone();
+            .as_ref();
         let (logits_batch, values) = self.evaluator.evaluate(std::slice::from_ref(&env));
         let logits = &logits_batch[0];
         let value = values[0];
@@ -779,7 +776,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 if !batch.is_empty() {
                     total_phase_usage += batch.len();
                     let envs: Vec<DarkChessEnv> =
-                        batch.iter().map(|pending| pending.env.clone()).collect();
+                        batch.iter().map(|pending| pending.env).collect();
                     let (logits_batch, values) = self.evaluator.evaluate(&envs);
 
                     for (idx, pending) in batch.into_iter().enumerate() {
