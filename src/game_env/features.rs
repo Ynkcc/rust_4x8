@@ -10,8 +10,10 @@ use super::types::*;
 // ==============================================================================
 
 impl DarkChessEnv {
-    fn get_board_state_tensor(&self) -> Vec<f32> {
-        let mut tensor = Vec::with_capacity(BOARD_CHANNELS * TOTAL_POSITIONS);
+    /// 把棋盘特征张量直接写入传入的缓冲区，避免在调用链上重复分配 Vec。
+    fn get_board_state_tensor_into(&self, tensor: &mut Vec<f32>) {
+        tensor.clear();
+        tensor.reserve(BOARD_CHANNELS * TOTAL_POSITIONS);
         let my = self.get_current_player();
         let opp = my.opposite();
 
@@ -30,7 +32,11 @@ impl DarkChessEnv {
         }
         push_bitboard(self.get_hidden_bitboard());
         push_bitboard(self.get_empty_bitboard());
+    }
 
+    fn get_board_state_tensor(&self) -> Vec<f32> {
+        let mut tensor = Vec::with_capacity(BOARD_CHANNELS * TOTAL_POSITIONS);
+        self.get_board_state_tensor_into(&mut tensor);
         tensor
     }
 
@@ -60,7 +66,6 @@ impl DarkChessEnv {
                 vec.extend(std::iter::repeat(0.0).take(max_count - count));
             }
         }
-        // 注意: action_mask 不再拼入 scalar，改在 MCTS/训练 loss 中单独处理
     }
 
     pub fn get_state(&self) -> Observation {
@@ -74,22 +79,23 @@ impl DarkChessEnv {
         Observation { board, scalars }
     }
 
+    /// 把特征写入外部缓冲区（避免每次分配临时 Vec）。
+    ///
+    /// 注意：`Array3`/`Array1` 需要持有自己的底层 Vec，因此这里仍需 clone 一次数据；
+    /// 但缓冲区复用后可以避免在内部再分配临时 Vec，减少总分配次数。
     pub fn get_state_into(
         &self,
         board_data: &mut Vec<f32>,
         scalars_data: &mut Vec<f32>,
     ) -> Observation {
-        board_data.clear();
-        board_data.reserve(BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
-        board_data.extend_from_slice(&self.get_board_state_tensor());
+        self.get_board_state_tensor_into(board_data);
+        let board = Array3::from_shape_vec(
+            (BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
+            board_data.clone(),
+        )
+        .expect("Failed to reshape board array");
 
-        let board =
-            Array3::from_shape_vec((BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS), board_data.clone())
-                .expect("Failed to reshape board array");
-
-        scalars_data.clear();
-        scalars_data.reserve(SCALAR_FEATURE_COUNT);
-        scalars_data.extend_from_slice(&self.get_scalar_state_vector());
+        self.get_scalar_state_vector_into(scalars_data);
         let scalars = Array1::from_vec(scalars_data.clone());
 
         Observation { board, scalars }

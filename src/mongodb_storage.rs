@@ -7,6 +7,8 @@ use anyhow::Result;
 use bson::{Document, doc};
 use mongodb::{Client, Collection};
 use serde::{Deserialize, Serialize};
+use std::mem::ManuallyDrop;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
@@ -47,8 +49,9 @@ pub struct MongoStorage {
     client: Client,
     db_name: String,
     collection_name: String,
-    runtime: Runtime,
-    sender: mpsc::UnboundedSender<SaveJob>,
+    // 用 ManuallyDrop 手动控制 drop 顺序：先 drop sender（让 worker 能读到 None 退出），再 shutdown runtime
+    runtime: ManuallyDrop<Runtime>,
+    sender: ManuallyDrop<mpsc::UnboundedSender<SaveJob>>,
 }
 
 impl MongoStorage {
@@ -93,8 +96,8 @@ impl MongoStorage {
             client,
             db_name: db_name.to_string(),
             collection_name: collection_name.to_string(),
-            runtime,
-            sender: tx,
+            runtime: ManuallyDrop::new(runtime),
+            sender: ManuallyDrop::new(tx),
         })
     }
 
@@ -271,6 +274,26 @@ impl MongoStorage {
         }
 
         Ok(())
+    }
+}
+
+// ================ Drop: 优雅刷新未写入的队列 ================
+
+impl Drop for MongoStorage {
+    fn drop(&mut self) {
+        // 1. 先 take + drop sender，让后台 worker 的 rx.recv() 能够返回 None，
+        //    从而 worker 处理完当前队列后自然退出。
+        let sender: mpsc::UnboundedSender<SaveJob> = unsafe { ManuallyDrop::take(&mut self.sender) };
+        drop(sender);
+
+        // 2. take runtime，然后用 shutdown_timeout 最多等待 10s 让 worker 把剩下的
+        //    SaveJob 都执行完（worker 自己会在 rx 读到 None 后退出 spawn 的 task）。
+        let runtime: Runtime = unsafe { ManuallyDrop::take(&mut self.runtime) };
+        println!(
+            "[MongoStorage Drop] 正在等待后台写入队列完成 (最多 10s)..."
+        );
+        runtime.shutdown_timeout(Duration::from_secs(10));
+        println!("[MongoStorage Drop] 已关闭");
     }
 }
 
