@@ -179,9 +179,23 @@ impl SequentialHalvingBudget {
         self.current_actions() * self.current_visits_per_action()
     }
 
-    /// 计算该阶段后应该保留的动作数（淘汰未来的）
+    /// 计算该阶段后应该保留的动作数
+    ///
+    /// 语义: 当前阶段执行完成后，应返回下一阶段的候选动作数。
+    /// - 若当前已经是末阶段（或已经只剩 1 个动作），保留全部当前候选数（不再淘汰）。
+    /// - 否则按 eta 比例缩减，与 actions_in_phase(current_phase+1) 一致。
     pub fn keep_count_after_phase(&self) -> usize {
-        self.actions_in_phase(self.current_phase + 1)
+        let actions_now = self.current_actions();
+        if actions_now <= 1 {
+            return actions_now;
+        }
+        if self.current_phase + 1 >= self.num_phases {
+            // 已经在末阶段或超出：不再淘汰，保留当前动作数
+            return actions_now;
+        }
+        let next_phase_count = self.actions_in_phase(self.current_phase + 1);
+        // 保证至少保留 1 个，且不超过当前动作数
+        next_phase_count.min(actions_now).max(1)
     }
 
     /// 提前进入下一阶段
