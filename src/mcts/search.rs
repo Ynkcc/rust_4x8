@@ -188,7 +188,12 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             .find(|(act, _)| *act == action)
             .map(|(act, idx)| (*act, *idx))
         {
-            self.node_q_value(child_idx)
+            let child_player = self.arena.get(child_idx).player();
+            let q = self.node_q_value(child_idx);
+            // 统一到根玩家视角：翻子动作的 child 为机会节点（未执行 step，
+            // player == root.player），视角天然一致；移动/炮击动作的 child
+            // 已执行 step（player 为对手），Q 符号需取反。
+            value_from_perspective(root.player, child_player, q)
         } else {
             0.0
         }
@@ -626,15 +631,26 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             self.cached_action_mask.iter_mut().for_each(|m| *m = 0);
             env.action_masks_into(&mut self.cached_action_mask);
 
-            if self.cached_action_mask.iter().all(|&x| x == 0) {
+            // 终局检测：优先使用节点缓存的 is_terminal（覆盖分数归零/全灭/
+            // 无合法动作/连续无吃子判和/步数截断），按真实胜负回传；
+            // action_mask 全 0 作为兜底（理论上已包含在 is_terminal 中）。
+            if self.arena.get(current_idx).is_terminal
+                || self.cached_action_mask.iter().all(|&x| x == 0)
+            {
                 let leaf_player = self.arena.get(current_idx).player();
+                let (_, _, winner) = env.check_game_over_conditions();
+                let leaf_value = match winner {
+                    Some(w) if w == leaf_player.val() => 1.0,
+                    Some(w) if w == leaf_player.opposite().val() => -1.0,
+                    _ => 0.0, // 平局 (Some(0)) 或 winner=None
+                };
                 let path_clone = path.clone();
                 Self::backprop_from_path(
                     &mut self.arena,
                     self.root_idx,
                     &path_clone,
                     leaf_player,
-                    -1.0,
+                    leaf_value,
                 );
                 return;
             }

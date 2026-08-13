@@ -107,30 +107,43 @@ impl SequentialHalvingBudget {
         let mut actions_per_phase = Vec::with_capacity(num_phases);
         let mut visits_per_action_per_phase = Vec::with_capacity(num_phases);
 
-        // 计算初始参数
-        // n_1 = ceil(N / K / log_eta(K))
-        if num_phases == 0 || num_candidates == 0 {
+        if num_phases == 0 || num_candidates == 0 || total_budget == 0 {
             return (actions_per_phase, visits_per_action_per_phase);
         }
 
-        let log_eta_k = if eta <= 1 {
-            1.0
-        } else {
-            (num_candidates as f32).log(eta as f32).max(1.0)
-        };
-
-        let n1 = ((total_budget as f32) / (num_candidates as f32) / log_eta_k).ceil() as usize;
-        let n1 = n1.max(1); // 至少 1 次访问
+        let eta = eta.max(2);
+        // 标准 Sequential Halving 预算分配：
+        // 每阶段把「剩余预算按剩余阶段数均分」，每动作分配
+        // ceil(remaining_budget / (phases_left × num_actions))，再 cap 到
+        // remaining_budget / num_actions 保证不超支。
+        // 相比旧的 n1 = ceil(N/K/log_eta(K)) 逐阶段递减公式，
+        // 此方式避免小 K 时超支（如 K=2 时旧公式用到 80 > N=64）、
+        // 也避免大 K 时预算浪费（如 K=16、N=64 时旧公式仅用 31）。
+        // 若剩余预算不足以给本阶段每个动作至少 1 次模拟，则停止排程
+        // （后续阶段访问数为 0，搜索侧的空转防护会提前终止）。
+        let mut remaining_budget = total_budget;
+        let mut phases_left = num_phases;
 
         for phase_idx in 0..num_phases {
             let num_actions =
                 (num_candidates as f32 / (eta.pow(phase_idx as u32) as f32)).ceil() as usize;
             let num_actions = num_actions.max(1);
-            let visits = (n1 as f32 / (eta.pow(phase_idx as u32) as f32)).ceil() as usize;
-            let visits = visits.max(1);
+
+            if remaining_budget < num_actions {
+                break;
+            }
+
+            let per_action = ((remaining_budget as f32)
+                / (phases_left as f32 * num_actions as f32))
+                .ceil() as usize;
+            // cap 到不超支：per_action × num_actions <= remaining_budget
+            let per_action = per_action.min(remaining_budget / num_actions).max(1);
+
+            remaining_budget -= num_actions * per_action;
+            phases_left -= 1;
 
             actions_per_phase.push(num_actions);
-            visits_per_action_per_phase.push(visits);
+            visits_per_action_per_phase.push(per_action);
 
             // 如果只剩 1 个动作，后续阶段不需要继续
             if num_actions <= 1 {
@@ -299,5 +312,42 @@ mod tests {
 
         let budget = SequentialHalvingBudget::new(0, 100, 2);
         assert_eq!(budget.num_phases(), 0);
+    }
+
+    #[test]
+    fn test_budget_not_exceeded_or_wasted() {
+        for k in [1usize, 2, 3, 4, 6, 8, 12, 16] {
+            for n in [8usize, 16, 64, 256, 1024] {
+                // Sequential Halving 要求预算 >= 候选数（否则每个候选
+                // 连 1 次模拟都分不到，属于配置失效区间，跳过）。
+                if n < k {
+                    continue;
+                }
+                let budget = SequentialHalvingBudget::new(k, n, 2);
+                let mut total = 0usize;
+                for phase in 0..budget.num_phases() {
+                    total +=
+                        budget.actions_in_phase(phase) * budget.visits_per_action_in_phase(phase);
+                }
+                // 不超支
+                assert!(
+                    total <= n,
+                    "K={}, N={}: 总模拟 {} > 预算 {}",
+                    k,
+                    n,
+                    total,
+                    n
+                );
+                // 至少使用 70% 预算（合理取整下不应大量浪费）
+                assert!(
+                    total as f32 >= n as f32 * 0.7,
+                    "K={}, N={}: 总模拟 {} 远低于预算 {}",
+                    k,
+                    n,
+                    total,
+                    n
+                );
+            }
+        }
     }
 }
