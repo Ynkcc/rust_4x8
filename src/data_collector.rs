@@ -79,8 +79,6 @@ fn main() -> Result<()> {
     let config = SelfPlayConfig {
         mcts_sims,
         max_considered_actions: 16,
-        dirichlet_alpha: 0.3,
-        dirichlet_epsilon: 0.25,
         temperature_steps: 12,
         scenario: ScenarioType::Standard,
     };

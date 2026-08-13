@@ -3,7 +3,7 @@
 
 use crate::{ACTION_SPACE_SIZE, DarkChessEnv, Player, Slot};
 use rand::prelude::*;
-use rand_distr::{Dirichlet, Gumbel};
+use rand_distr::Gumbel;
 
 use super::budget::SequentialHalvingBudget;
 use super::config::{GumbelConfig, MctsSearchResult};
@@ -942,80 +942,35 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         probs
     }
 
-    /// 在根节点的子节点先验上注入 Dirichlet 噪声（AlphaZero 探索机制）
+    // ========================================================================
+    // 注意：根节点 Dirichlet 噪声注入已被移除，请勿重新添加！
+    //
+    // 原因：本项目使用 Gumbel AlphaZero（Gumbel 论文探索方案），探索由以下
+    // 机制提供，根节点先验 prior 不参与任何搜索决策：
+    //   1. Gumbel Top-K 采样（sample_gumbel_top_k）使用子节点的 logit；
+    //   2. Sequential Halving 淘汰基于 completed_q（Q 值）；
+    //   3. 根节点第一跳由候选动作直接指定，不经过根节点 PUCT；
+    //   4. 训练目标 get_improved_policy 使用 logit + σ·Q。
+    // 因此修改根节点子节点的 prior（Dirichlet 注入）在搜索中是无效的空转，
+    // 既不能提供探索，也不影响训练目标。
+    // ========================================================================
+
+    /// 基于根节点 completed Q 的温度策略（Gumbel AlphaZero 论文标准动作选择）
     ///
-    /// P_new = (1 - ε) * P_prior + ε * Dir(α)
-    /// 仅对合法动作注入，非法动作保持 0。
-    /// 如果根节点尚未扩展，会先调用 expand_root。
-    pub fn inject_root_dirichlet_noise(&mut self, alpha: f32, epsilon: f32) {
-        self.expand_root();
+    /// π(a) ∝ exp(Q_comp(a) / τ)
+    /// - τ = 1: 对 completed Q 做 softmax，鼓励探索
+    /// - τ → 0: 趋向 argmax，确定性选择
+    /// 仅对合法动作计算，非法动作保持 0。
+    ///
+    /// 注意：此处刻意使用 completed Q 而非访问计数 N^(1/τ)（经典 AlphaZero 做法）。
+    /// Sequential Halving 结束后 surviving 候选的访问次数基本均分，基于 N 的策略
+    /// 会退化为近似均匀采样、丢失动作质量信息；而 completed Q 保留了质量排序，
+    /// 符合 Gumbel AlphaZero 论文（Policy improvement by planning with Gumbel）
+    /// 的动作选择方式。请勿替换回基于 visit_count 的实现。
+    pub fn get_root_completed_q_policy(&self, temperature: f32) -> Vec<f32> {
+        let mut policy = vec![0.0; ACTION_SPACE_SIZE];
 
         let env = match self.arena.get(self.root_idx).env.as_ref() {
-            Some(env) => env.as_ref(),
-            None => return,
-        };
-        let mut masks = vec![0; ACTION_SPACE_SIZE];
-        env.action_masks_into(&mut masks);
-
-        let root_idx = self.root_idx;
-        let (legals, indices): (Vec<f32>, Vec<usize>) = {
-            let root = self.arena.get(root_idx);
-            let mut legals = Vec::new();
-            let mut indices = Vec::new();
-            for (act, child_idx) in root.children.iter() {
-                if masks[*act] == 1 {
-                    let child = self.arena.get(*child_idx);
-                    legals.push(child.prior.max(1e-8));
-                    indices.push(*act);
-                }
-            }
-            (legals, indices)
-        };
-
-        if legals.len() < 2 {
-            return;
-        }
-
-        let alpha_vec = vec![alpha; legals.len()];
-        let mut rng = thread_rng();
-        let noise = match Dirichlet::new(&alpha_vec) {
-            Ok(d) => d.sample(&mut rng),
-            Err(_) => return,
-        };
-
-        // 2. 收集要修改的 (child_idx, new_prior) 对，避免同时持有 root 和 child 的可变借用
-        let root_children: Vec<(usize, usize)> = {
-            let root = self.arena.get(root_idx);
-            let mut pairs = Vec::with_capacity(indices.len());
-            for &act in &indices {
-                if let Some((_, child_idx)) = root.children.iter().find(|(a, _)| *a == act) {
-                    pairs.push((act, *child_idx));
-                }
-            }
-            pairs
-        };
-
-        for (i, (act, child_idx)) in root_children.iter().enumerate() {
-            let p = (1.0 - epsilon) * legals[i] + epsilon * noise[i];
-            let _ = act;
-            let child = self.arena.get_mut(*child_idx);
-            child.prior = p;
-        }
-    }
-
-    /// 基于根节点访问计数的温度策略：π(a) ∝ N(a)^(1/τ)
-    ///
-    /// - τ = 1: 与访问比例一致，鼓励探索
-    /// - τ → 0: 趋向 argmax，确定性选择
-    /// - τ = INF: 均匀合法动作
-    pub fn get_root_visit_policy(&self, temperature: f32) -> Vec<f32> {
-        let mut policy = vec![0.0; ACTION_SPACE_SIZE];
-        let root = self.arena.get(self.root_idx);
-        if root.visit_count == 0 {
-            return policy;
-        }
-
-        let env = match root.env.as_ref() {
             Some(env) => env.as_ref(),
             None => return policy,
         };
@@ -1024,21 +979,25 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
         let tau = temperature.max(1e-4);
         let inv_tau = 1.0 / tau;
-        let mut sum = 0.0;
 
-        for (act, child_idx) in root.children.iter() {
-            if masks[*act] != 1 {
-                continue;
+        // 数值稳定性：先减去最大 completed Q 再做 exp，避免溢出
+        let mut max_q = f32::NEG_INFINITY;
+        for action in 0..ACTION_SPACE_SIZE {
+            if masks[action] == 1 {
+                max_q = max_q.max(self.completed_q(action));
             }
-            let child = self.arena.get(*child_idx);
-            let n = child.visit_count as f32;
-            let score = if tau > 100.0 {
-                1.0
-            } else {
-                n.powf(inv_tau)
-            };
-            policy[*act] = score;
-            sum += score;
+        }
+        if !max_q.is_finite() {
+            return policy;
+        }
+
+        let mut sum = 0.0;
+        for action in 0..ACTION_SPACE_SIZE {
+            if masks[action] == 1 {
+                let value = ((self.completed_q(action) - max_q) * inv_tau).exp();
+                policy[action] = value;
+                sum += value;
+            }
         }
 
         if sum > 0.0 {

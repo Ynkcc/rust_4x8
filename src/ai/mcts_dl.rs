@@ -184,7 +184,6 @@ pub fn choose_action_once(
         max_considered_actions: 16,
         c_visit: 50.0,
         c_scale: 1.0,
-        train: false,
     };
 
     let mut mcts = GumbelMCTS::new(env, &evaluator, config);

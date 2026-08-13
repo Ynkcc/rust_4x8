@@ -84,10 +84,10 @@ pub struct SelfPlayConfig {
     pub mcts_sims: usize,
     /// Gumbel Top-K 候选动作数
     pub max_considered_actions: usize,
-    /// MCTS 根节点 Dirichlet 噪声的 Alpha 参数
-    pub dirichlet_alpha: f32,
-    /// MCTS 根节点 Dirichlet 噪声的权重 (Epsilon)
-    pub dirichlet_epsilon: f32,
+    // 注意：根节点 Dirichlet 噪声注入已移除。Gumbel AlphaZero 的探索由
+    // Gumbel 噪声（Top-K 采样）与 Sequential Halving 提供，根节点子节点
+    // prior 不参与任何搜索决策（Top-K 用 logit、根选择不经 PUCT），
+    // 注入 Dirichlet 无效，请勿重新添加 dirichlet_alpha / dirichlet_epsilon 字段。
     /// 温度采样的步数阈值
     pub temperature_steps: usize,
     /// 训练场景
@@ -99,8 +99,6 @@ impl Default for SelfPlayConfig {
         Self {
             mcts_sims: 64,
             max_considered_actions: 16,
-            dirichlet_alpha: 0.3,
-            dirichlet_epsilon: 0.25,
             temperature_steps: 10,
             scenario: ScenarioType::Standard,
         }
@@ -145,7 +143,6 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
             max_considered_actions: self.config.max_considered_actions,
             c_visit: 50.0,
             c_scale: 1.0,
-            train: true,
         };
         let mut mcts = GumbelMCTS::new(&env, self.evaluator, mcts_config.clone());
 
@@ -154,13 +151,9 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 
         // 3. 游戏主循环
         loop {
-            // --- 训练模式：在 MCTS 根节点注入 Dirichlet 噪声（仅对合法动作）---
-            if mcts_config.train {
-                mcts.inject_root_dirichlet_noise(
-                    self.config.dirichlet_alpha,
-                    self.config.dirichlet_epsilon,
-                );
-            }
+            // 注意：这里不再注入根节点 Dirichlet 噪声 —— Gumbel AlphaZero 的
+            // 探索由 Gumbel 噪声 + Sequential Halving 提供，根节点 prior 不参与
+            // 搜索决策，注入无效（详见 src/mcts/search.rs 中的说明）。请勿加回。
 
             // --- MCTS 搜索 (同步) ---
             let search_result = match mcts.run() {
@@ -176,8 +169,9 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
             // --- 温度采样：前 temperature_steps 用 τ=1（探索），之后用 argmax（利用）---
             let temperature: f32 = if step < self.config.temperature_steps { 1.0 } else { 1e-3 };
             let sampled_action = {
-                let visit_policy = mcts.get_root_visit_policy(temperature);
-                GumbelMCTS::<E>::sample_action_from_policy(&visit_policy, &search_result.action_mask)
+                // Gumbel AlphaZero 标准动作选择：基于 completed Q 的温度 softmax（π ∝ exp(Q/τ)）
+                let q_policy = mcts.get_root_completed_q_policy(temperature);
+                GumbelMCTS::<E>::sample_action_from_policy(&q_policy, &search_result.action_mask)
             };
             let action = sampled_action;
             let completed_q = mcts.get_root_completed_q(action);

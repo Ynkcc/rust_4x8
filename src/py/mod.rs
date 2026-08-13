@@ -116,23 +116,19 @@ impl PySelfPlayConfig {
     #[pyo3(signature = (
         mcts_sims = 64,
         max_considered_actions = 16,
-        dirichlet_alpha = 0.3,
-        dirichlet_epsilon = 0.25,
         temperature_steps = 12,
     ))]
     fn new(
         mcts_sims: usize,
         max_considered_actions: usize,
-        dirichlet_alpha: f32,
-        dirichlet_epsilon: f32,
         temperature_steps: usize,
     ) -> Self {
         Self {
             inner: SelfPlayConfig {
                 mcts_sims,
                 max_considered_actions,
-                dirichlet_alpha,
-                dirichlet_epsilon,
+                // 注意：Dirichlet 噪声注入已移除（Gumbel AlphaZero 探索由
+                // Gumbel 噪声 + Sequential Halving 提供），不再暴露对应参数。
                 temperature_steps,
                 scenario: ScenarioType::Standard,
             },

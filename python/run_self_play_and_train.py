@@ -334,11 +334,11 @@ def main() -> None:
     buffer.load(replay_path)
 
     # --- 准备 SelfPlayConfig (也可以直接用默认 None) ---
+    # 注意：根节点 Dirichlet 噪声注入已移除（Gumbel AlphaZero 探索由
+    # Gumbel 噪声 + Sequential Halving 提供），不再传 dirichlet_* 参数。
     sp_cfg = banqi_4x8.SelfPlayConfig(
         mcts_sims=args.mcts_sims,
         max_considered_actions=16,
-        dirichlet_alpha=0.3,
-        dirichlet_epsilon=0.25,
         temperature_steps=12,
     )
     print(
