@@ -6,12 +6,10 @@
 // 2. 运行 Gumbel MCTS 自对弈生成游戏数据
 // 3. 将数据保存到 MongoDB
 
-mod local_evaluator;
-
 use anyhow::Result;
+use banqi_4x8::local_evaluator::LocalEvaluator;
 use banqi_4x8::mongodb_storage::MongoStorage;
 use banqi_4x8::self_play::{ScenarioType, SelfPlayConfig, run_self_play};
-use local_evaluator::LocalEvaluator;
 
 use std::env;
 use std::time::Instant;
@@ -89,6 +87,9 @@ fn main() -> Result<()> {
 
     // 6. 循环收集
     let mut game_count = 0;
+    let mut iteration: usize = 0;
+    // 每 GAMES_PER_ITERATION 局游戏迭代号 +1，便于按迭代清理/统计
+    const GAMES_PER_ITERATION: usize = 100;
     loop {
         // 检查模型更新
         if let Ok(metadata) = std::fs::metadata(&model_path) {
@@ -128,17 +129,18 @@ fn main() -> Result<()> {
             _ => "平局",
         };
         println!(
-            "[Worker-{}] Game #{}: 步数={}, 结果={}, 耗时={:.1}s ({:.1} steps/s)",
+            "[Worker-{}] Game #{} (iter={}): 步数={}, 结果={}, 耗时={:.1}s ({:.1} steps/s)",
             worker_id,
             game_count + 1,
+            iteration,
             episode.game_length,
             winner_str,
             duration.as_secs_f64(),
             episode.game_length as f64 / duration.as_secs_f64()
         );
 
-        // 上传到 MongoDB
-        match mongo_storage.save_games(0, vec![episode]) {
+        // 上传到 MongoDB（迭代号递增）
+        match mongo_storage.save_games(iteration, vec![episode]) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("❌ MongoDB 上传失败: {}", e);
@@ -147,5 +149,12 @@ fn main() -> Result<()> {
         }
 
         game_count += 1;
+        if game_count % GAMES_PER_ITERATION == 0 {
+            iteration += 1;
+            println!(
+                "[Worker-{}] 📍 完成 {} 局 → 进入迭代 {}",
+                worker_id, game_count, iteration
+            );
+        }
     }
 }

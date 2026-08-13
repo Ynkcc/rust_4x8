@@ -26,6 +26,10 @@ pub mod self_play;
 pub mod ai;
 // 注意: nn_model 已移至 Python 侧，Rust 通过 TorchScript 加载模型
 
+// 本地 TorchScript 评估器（仅在 torch feature 启用时编译）
+#[cfg(feature = "torch")]
+pub mod local_evaluator;
+
 // 重新导出核心类型，方便外部使用
 pub use game_env::{DarkChessEnv, Observation, Piece, PieceType, Player, Slot};
 
