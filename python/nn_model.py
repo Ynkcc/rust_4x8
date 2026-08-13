@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from constant import (
     TOTAL_INPUT_CHANNELS,
     HIDDEN_CHANNELS,
+    NUM_RES_BLOCKS,
     BOARD_ROWS,
     BOARD_COLS,
     SCALAR_FEATURE_COUNT,
@@ -42,32 +43,42 @@ class BasicBlock(nn.Module):
 
 class BanqiNet(nn.Module):
     """
-    改进版 Banqi 策略-价值网络（接近 AlphaZero 标准架构）
-    1. 动态深度残差塔（默认 8 层）
-    2. 双头 1x1 卷积降维，显著减少全连接参数量
+    AlphaZero-style policy-value network for 4x8 Dark Chess.
+
+    Input:
+      board   - (N, 16, 4, 8) float32
+      scalars - (N, 35) float32 (no action_mask — masks handled at loss level)
+
+    Architecture:
+      Input conv(16→64, 3×3)
+      6 × ResidualBlock (64 ch)
+      Policy head: 1×1 conv(64→4) → flatten(128) → +scalars(35) → FC1(163→512) → FC2(512→352)
+      Value head:  1×1 conv(64→4) → flatten(128) → +scalars(35) → FC1(163→256) → FC2(256→1) → tanh
+
+    Total params ~1.03M (down from ~2.94M).
     """
-    def __init__(self, num_res_blocks=8):
+    def __init__(self, num_res_blocks=NUM_RES_BLOCKS, hidden_channels=HIDDEN_CHANNELS,
+                 policy_channels=4, value_channels=4):
         super(BanqiNet, self).__init__()
         
         # 1. 输入卷积
-        # Rust: nn::conv2d(..., TOTAL_CHANNELS, HIDDEN_CHANNELS, 3, conv_cfg)
         self.conv_input = nn.Conv2d(
-            TOTAL_INPUT_CHANNELS, 
-            HIDDEN_CHANNELS, 
-            kernel_size=3, 
+            TOTAL_INPUT_CHANNELS,
+            hidden_channels,
+            kernel_size=3,
             padding=1,
             bias=False
         )
-        self.bn_input = nn.BatchNorm2d(HIDDEN_CHANNELS)
+        self.bn_input = nn.BatchNorm2d(hidden_channels)
         
-        # 2. 残差塔（加深网络）
+        # 2. 残差塔
         self.res_tower = nn.ModuleList(
-            [BasicBlock(HIDDEN_CHANNELS) for _ in range(num_res_blocks)]
+            [BasicBlock(hidden_channels) for _ in range(num_res_blocks)]
         )
 
         # 3. 策略头
-        policy_channels = 4
-        self.policy_conv = nn.Conv2d(HIDDEN_CHANNELS, policy_channels, kernel_size=1, bias=False)
+        self.policy_channels = policy_channels
+        self.policy_conv = nn.Conv2d(hidden_channels, policy_channels, kernel_size=1, bias=False)
         self.policy_bn = nn.BatchNorm2d(policy_channels)
         self.policy_flat_size = policy_channels * BOARD_ROWS * BOARD_COLS
         self.policy_fc_input = self.policy_flat_size + SCALAR_FEATURE_COUNT
@@ -75,8 +86,8 @@ class BanqiNet(nn.Module):
         self.policy_fc2 = nn.Linear(512, ACTION_SPACE_SIZE)
 
         # 4. 价值头
-        value_channels = 2
-        self.value_conv = nn.Conv2d(HIDDEN_CHANNELS, value_channels, kernel_size=1, bias=False)
+        self.value_channels = value_channels
+        self.value_conv = nn.Conv2d(hidden_channels, value_channels, kernel_size=1, bias=False)
         self.value_bn = nn.BatchNorm2d(value_channels)
         self.value_flat_size = value_channels * BOARD_ROWS * BOARD_COLS
         self.value_fc_input = self.value_flat_size + SCALAR_FEATURE_COUNT

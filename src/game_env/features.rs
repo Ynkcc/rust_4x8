@@ -60,9 +60,7 @@ impl DarkChessEnv {
                 vec.extend(std::iter::repeat(0.0).take(max_count - count));
             }
         }
-
-        let action_masks = self.action_masks();
-        vec.extend(action_masks.iter().map(|&x| x as f32));
+        // 注意: action_mask 不再拼入 scalar，改在 MCTS/训练 loss 中单独处理
     }
 
     pub fn get_state(&self) -> Observation {
