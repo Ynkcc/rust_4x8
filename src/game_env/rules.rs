@@ -1,4 +1,4 @@
-use super::actions::action_lookup_tables;
+use super::actions::{action_lookup_tables, pack_coords};
 use super::bitboard::{
     BOARD_MASK, NOT_FILE_A, NOT_FILE_H, msb_index, pop_lsb, ray_attacks, trailing_zeros, ull,
 };
@@ -28,7 +28,9 @@ impl DarkChessEnv {
             return (true, false, Some(Player::Red.val()));
         }
 
-        let masks = self.get_action_masks_for_player(self.get_current_player());
+        // 栈数组避免堆分配（step 每次都会调用本函数）
+        let mut masks = [0i32; ACTION_SPACE_SIZE];
+        self.get_action_masks_for_player_into(self.get_current_player(), &mut masks);
         if masks.iter().all(|&x| x == 0) {
             return (
                 true,
@@ -60,12 +62,6 @@ impl DarkChessEnv {
         self.get_action_masks_for_player_into(self.get_current_player(), mask);
     }
 
-    pub(super) fn get_action_masks_for_player(&self, player: Player) -> Vec<i32> {
-        let mut mask = vec![0; ACTION_SPACE_SIZE];
-        self.get_action_masks_for_player_into(player, &mut mask);
-        mask
-    }
-
     pub(super) fn get_action_masks_for_player_into(&self, player: Player, mask: &mut [i32]) {
         for m in mask.iter_mut() {
             *m = 0;
@@ -76,7 +72,7 @@ impl DarkChessEnv {
         let mut temp_hidden = self.get_hidden_bitboard();
         while temp_hidden != 0 {
             let sq = pop_lsb(&mut temp_hidden);
-            if let Some(&idx) = lookup.coords_to_action.get(&vec![sq]) {
+            if let Some(&idx) = lookup.coords_to_action.get(&pack_coords(&[sq])) {
                 mask[idx] = 1;
             }
         }
@@ -139,7 +135,9 @@ impl DarkChessEnv {
                         (to_sq as isize + ((-shift) as isize)) as usize
                     };
 
-                    if let Some(&idx) = lookup.coords_to_action.get(&vec![from_sq, to_sq]) {
+                    if let Some(&idx) =
+                        lookup.coords_to_action.get(&pack_coords(&[from_sq, to_sq]))
+                    {
                         mask[idx] = 1;
                     }
                 }
@@ -194,7 +192,9 @@ impl DarkChessEnv {
                     let target_sq = target_sq.unwrap();
 
                     if ((ull(target_sq)) & valid_cannon_targets) != 0 {
-                        if let Some(&idx) = lookup.coords_to_action.get(&vec![from_sq, target_sq]) {
+                        if let Some(&idx) =
+                            lookup.coords_to_action.get(&pack_coords(&[from_sq, target_sq]))
+                        {
                             mask[idx] = 1;
                         }
                     }

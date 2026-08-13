@@ -58,6 +58,8 @@ pub struct GumbelMCTS<'a, E: Evaluator> {
     scratch_gumbel: Vec<(usize, f32)>,
     /// 缓存的 action mask，避免重复计算
     cached_action_mask: Vec<i32>,
+    /// 复用的随机数生成器，避免每次搜索/采样重建 thread_rng
+    rng: StdRng,
 }
 
 impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
@@ -83,6 +85,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             config,
             scratch_gumbel: Vec::with_capacity(32),
             cached_action_mask: vec![0; ACTION_SPACE_SIZE],
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -146,14 +149,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 这是 Gumbel AlphaZero 的核心机制，用于在不进行完全树搜索的情况下选择候选动作。
     /// 使用内部 scratch_gumbel 缓存以避免重复堆分配。
     fn sample_gumbel_top_k(&mut self, logits: &[f32], masks: &[i32], k: usize) -> Vec<usize> {
-        let mut rng = thread_rng();
         let gumbel_dist = Gumbel::new(0.0, 1.0).unwrap();
 
         // 清空并复用 scratch_gumbel
         self.scratch_gumbel.clear();
         for (i, &logit) in logits.iter().enumerate() {
             if masks[i] == 1 {
-                let noise: f64 = gumbel_dist.sample(&mut rng);
+                let noise: f64 = gumbel_dist.sample(&mut self.rng);
                 self.scratch_gumbel.push((i, logit + noise as f32));
             }
         }
@@ -302,7 +304,9 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let first_step = path[0];
         let rest_path = &path[1..];
 
-        let child_value = match first_step {
+        // 在分支内一次性取得子节点索引与子玩家，避免事后用
+        // get_node_idx_by_path 再次沿路径查找同一子节点。
+        let (child_value, child_player) = match first_step {
             PathStep::Action(action) => {
                 let current = arena.get(node_idx);
                 let child_idx = current
@@ -311,7 +315,9 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     .find(|(act, _)| *act == action)
                     .map(|(_, idx)| *idx)
                     .expect("Backprop child not found");
-                Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value)
+                let child_player = arena.get(child_idx).player();
+                let v = Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value);
+                (v, child_player)
             }
             PathStep::ChanceOutcome(outcome_id) => {
                 let current = arena.get(node_idx);
@@ -321,14 +327,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     .find(|(id, _, _)| *id == outcome_id)
                     .map(|(_, _, idx)| *idx)
                     .expect("Backprop outcome not found");
-                Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value)
+                let child_player = arena.get(child_idx).player();
+                let v = Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value);
+                (v, child_player)
             }
         };
 
         // 更新当前节点
-        let child_player = arena
-            .get(Self::get_node_idx_by_path(arena, node_idx, &path[..1]))
-            .player();
         let my_value =
             value_from_perspective(arena.get(node_idx).player(), child_player, child_value);
         let node = arena.get_mut(node_idx);
@@ -513,12 +518,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 模拟过程中使用 PUCT 公式 (Predictor + Upper Confidence Bound applied to Trees) 选择动作：
     /// Score = Q(s, a) + U(s, a)
     /// U(s, a) = c_puct * P(s, a) * sqrt(N(parent)) / (1 + N(child))
-    fn select_path_collect(
-        &mut self,
-        action: usize,
-        batch: &mut Vec<PendingEval>,
-        rng: &mut impl Rng,
-    ) {
+    fn select_path_collect(&mut self, action: usize, batch: &mut Vec<PendingEval>) {
         let mut path = vec![PathStep::Action(action)];
         let current_idx = {
             let root = self.arena.get(self.root_idx);
@@ -594,7 +594,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 }
 
                 let possible_states = self.arena.get(current_idx).possible_states.clone();
-                let outcome_id = match Self::sample_outcome_id(&possible_states, rng) {
+                let outcome_id = match Self::sample_outcome_id(&possible_states, &mut self.rng) {
                     Some(id) => id,
                     None => {
                         eprintln!(
@@ -803,7 +803,6 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         );
 
         let mut remaining = candidates;
-        let mut rng = thread_rng();
 
         for phase in 0..budget.num_phases() {
             if remaining.len() <= 1 {
@@ -817,7 +816,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             for _ in 0..visits_per_action {
                 let mut batch: Vec<PendingEval> = Vec::new();
                 for &action in &remaining {
-                    self.select_path_collect(action, &mut batch, &mut rng);
+                    self.select_path_collect(action, &mut batch);
                 }
 
                 if !batch.is_empty() {

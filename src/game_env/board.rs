@@ -3,7 +3,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand::SeedableRng;
 
-use super::actions::action_lookup_tables;
+use super::actions::{action_lookup_tables, pack_coords};
 use super::bitboard::{BOARD_MASK, ray_attacks, ull};
 use super::constants::*;
 use super::types::*;
@@ -302,7 +302,9 @@ impl DarkChessEnv {
         action: usize,
         reveal_piece: Option<Piece>,
     ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
-        let masks = self.action_masks();
+        // 使用栈数组避免每次 step 堆分配掩码（热路径）
+        let mut masks = [0i32; ACTION_SPACE_SIZE];
+        self.action_masks_into(&mut masks);
         if masks[action] == 0 {
             return Err(format!("无效动作: {}", action));
         }
@@ -482,7 +484,10 @@ impl DarkChessEnv {
     }
 
     pub fn get_action_for_coords(&self, coords: &[usize]) -> Option<usize> {
-        action_lookup_tables().coords_to_action.get(coords).copied()
+        action_lookup_tables()
+            .coords_to_action
+            .get(&pack_coords(coords))
+            .copied()
     }
 
     pub fn get_bitboards(&self) -> std::collections::HashMap<String, Vec<bool>> {
