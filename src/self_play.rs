@@ -8,6 +8,7 @@
 
 use crate::game_env::{DarkChessEnv, Observation};
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use crate::game_env::constants::MAX_STEPS_PER_EPISODE;
 use std::time::Instant;
 
 // ================ 数据结构定义 ================
@@ -38,47 +39,38 @@ pub struct GameEpisode {
 // ================ 场景定义 ================
 
 /// 训练场景类型枚举
+///
+/// 预留扩展点：未来可实现特定残局/开局场景 (如 TwoAdvisors, HiddenThreats)。
+/// 目前所有场景均退化为标准开局。
 #[derive(Debug, Clone, Copy)]
 pub enum ScenarioType {
-    /// 场景1: 双士残局 (R_A vs B_A)
+    /// 场景1: 双士残局 (R_A vs B_A) — 未实现，回退为 Standard
     TwoAdvisors,
-    /// 场景2: 隐藏威胁 (Hidden Threat)
+    /// 场景2: 隐藏威胁 (Hidden Threat) — 未实现，回退为 Standard
     HiddenThreats,
     /// 标准开局 - 正常的完整游戏
     Standard,
 }
 
 impl ScenarioType {
-    /// 根据枚举值创建对应的游戏环境
+    /// 根据枚举值创建对应的游戏环境（当前所有场景均创建标准环境）
     pub fn create_env(&self) -> DarkChessEnv {
-        let env = DarkChessEnv::new();
-        match self {
-            ScenarioType::TwoAdvisors => {
-                // env.setup_two_advisors(Player::Black); // Removed in refactor
-            }
-            ScenarioType::HiddenThreats => {
-                // env.setup_hidden_threats(); // Removed in refactor
-            }
-            ScenarioType::Standard => {}
-        }
-        env
+        DarkChessEnv::new()
     }
 
     /// 获取场景的描述名称
     pub fn name(&self) -> &'static str {
         match self {
-            ScenarioType::TwoAdvisors => "TwoAdvisors (R_A vs B_A)",
-            ScenarioType::HiddenThreats => "HiddenThreats",
+            ScenarioType::TwoAdvisors => "TwoAdvisors (R_A vs B_A) [unimplemented=Standard]",
+            ScenarioType::HiddenThreats => "HiddenThreats [unimplemented=Standard]",
             ScenarioType::Standard => "Standard",
         }
     }
 
-    /// 获取该场景下的期望最优动作索引 (用于验证/调试)
+    /// 获取该场景下的期望最优动作索引 (预留验证接口，未实现场景默认返回 0)
     pub fn expected_action(&self) -> usize {
         match self {
-            ScenarioType::TwoAdvisors => 38,
-            ScenarioType::HiddenThreats => 3,
-            ScenarioType::Standard => 0,
+            ScenarioType::TwoAdvisors | ScenarioType::HiddenThreats | ScenarioType::Standard => 0,
         }
     }
 }
@@ -162,11 +154,18 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 
         // 3. 游戏主循环
         loop {
+            // --- 训练模式：在 MCTS 根节点注入 Dirichlet 噪声（仅对合法动作）---
+            if mcts_config.train {
+                mcts.inject_root_dirichlet_noise(
+                    self.config.dirichlet_alpha,
+                    self.config.dirichlet_epsilon,
+                );
+            }
+
             // --- MCTS 搜索 (同步) ---
             let search_result = match mcts.run() {
                 Some(result) => result,
                 None => {
-                    // 无有效动作，游戏结束
                     let mut samples = Vec::new();
                     for (obs, p, mcts_val, completed_q, root_visit_count, _, mask) in episode_data {
                         samples.push((obs, p, mcts_val, completed_q, root_visit_count, 0.0, mask));
@@ -179,10 +178,17 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                 }
             };
 
-            let action = search_result.action;
-            let completed_q = search_result.completed_q;
+            // --- 温度采样：前 temperature_steps 用 τ=1（探索），之后用 argmax（利用）---
+            let temperature: f32 = if step < self.config.temperature_steps { 1.0 } else { 1e-3 };
+            let sampled_action = {
+                let visit_policy = mcts.get_root_visit_policy(temperature);
+                GumbelMCTS::<E>::sample_action_from_policy(&visit_policy, &search_result.action_mask)
+            };
+            let action = sampled_action;
+            let completed_q = mcts.get_root_completed_q(action);
 
             // --- 收集样本数据 ---
+            // 注意: improved_policy 仍使用 Gumbel AlphaZero 的 σ(Q) + logit 公式作为训练目标
             episode_data.push((
                 search_result.state,
                 search_result.improved_policy,
@@ -245,9 +251,9 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                 }
             }
 
-            // --- 步数限制检查 ---
+            // --- 步数限制检查：使用统一常量 MAX_STEPS_PER_EPISODE ---
             step += 1;
-            if step > 200 {
+            if step >= MAX_STEPS_PER_EPISODE {
                 let mut samples = Vec::new();
                 for (obs, p, mcts_val, completed_q, root_visit_count, _, mask) in episode_data {
                     samples.push((obs, p, mcts_val, completed_q, root_visit_count, 0.0, mask));

@@ -3,7 +3,7 @@
 
 use crate::{ACTION_SPACE_SIZE, DarkChessEnv, Player, Slot};
 use rand::prelude::*;
-use rand_distr::Gumbel;
+use rand_distr::{Dirichlet, Gumbel};
 
 use super::budget::SequentialHalvingBudget;
 use super::config::{GumbelConfig, MctsSearchResult};
@@ -169,16 +169,17 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     ///
     /// 规则:
     /// - N > 0 时：使用 W / N
-    /// - N = 0 时：使用网络预测的 V 或已访问子节点的平均值
+    /// - N = 0 时：使用网络预测的 initial_value，或已访问兄弟子节点的平均 Q
+    /// - 根节点不存在该子动作时：返回 0.0（中性）
     fn completed_q(&self, action: usize) -> f32 {
         let root = self.arena.get(self.root_idx);
-        if let Some((_, _, child_idx)) = root
+        if let Some((_, child_idx)) = root
             .children
             .iter()
             .find(|(act, _)| *act == action)
-            .map(|(_, idx)| (0, 0, idx))
+            .map(|(act, idx)| (*act, *idx))
         {
-            self.node_q_value(*child_idx)
+            self.node_q_value(child_idx)
         } else {
             0.0
         }
@@ -617,12 +618,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             let mut best_action = None;
             let mut best_score = f32::NEG_INFINITY;
 
+            let puct_coeff = self.config.c_scale.max(0.1);
             for (act, child_idx) in children_clone.iter() {
                 let child = self.arena.get(*child_idx);
                 let child_q = self.node_q_value(*child_idx);
                 let child_player = child.player();
                 let adjusted_q = value_from_perspective(parent_player, child_player, child_q);
-                let u_score = 1.0 * child.prior * sqrt_total / (1.0 + child.visit_count as f32);
+                let u_score = puct_coeff * child.prior * sqrt_total / (1.0 + child.visit_count as f32);
                 let score = adjusted_q + u_score;
                 if score > best_score {
                     best_score = score;
@@ -882,6 +884,147 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         probs
     }
 
+    /// 在根节点的子节点先验上注入 Dirichlet 噪声（AlphaZero 探索机制）
+    ///
+    /// P_new = (1 - ε) * P_prior + ε * Dir(α)
+    /// 仅对合法动作注入，非法动作保持 0。
+    /// 如果根节点尚未扩展，会先调用 expand_root。
+    pub fn inject_root_dirichlet_noise(&mut self, alpha: f32, epsilon: f32) {
+        self.expand_root();
+
+        let env = match self.arena.get(self.root_idx).env.as_ref() {
+            Some(env) => env.as_ref(),
+            None => return,
+        };
+        let mut masks = vec![0; ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
+
+        let root_idx = self.root_idx;
+        let (legals, indices): (Vec<f32>, Vec<usize>) = {
+            let root = self.arena.get(root_idx);
+            let mut legals = Vec::new();
+            let mut indices = Vec::new();
+            for (act, child_idx) in root.children.iter() {
+                if masks[*act] == 1 {
+                    let child = self.arena.get(*child_idx);
+                    legals.push(child.prior.max(1e-8));
+                    indices.push(*act);
+                }
+            }
+            (legals, indices)
+        };
+
+        if legals.len() < 2 {
+            return;
+        }
+
+        let alpha_vec = vec![alpha; legals.len()];
+        let mut rng = thread_rng();
+        let noise = match Dirichlet::new(&alpha_vec) {
+            Ok(d) => d.sample(&mut rng),
+            Err(_) => return,
+        };
+
+        // 2. 收集要修改的 (child_idx, new_prior) 对，避免同时持有 root 和 child 的可变借用
+        let root_children: Vec<(usize, usize)> = {
+            let root = self.arena.get(root_idx);
+            let mut pairs = Vec::with_capacity(indices.len());
+            for &act in &indices {
+                if let Some((_, child_idx)) = root.children.iter().find(|(a, _)| *a == act) {
+                    pairs.push((act, *child_idx));
+                }
+            }
+            pairs
+        };
+
+        for (i, (act, child_idx)) in root_children.iter().enumerate() {
+            let p = (1.0 - epsilon) * legals[i] + epsilon * noise[i];
+            let _ = act;
+            let child = self.arena.get_mut(*child_idx);
+            child.prior = p;
+        }
+    }
+
+    /// 基于根节点访问计数的温度策略：π(a) ∝ N(a)^(1/τ)
+    ///
+    /// - τ = 1: 与访问比例一致，鼓励探索
+    /// - τ → 0: 趋向 argmax，确定性选择
+    /// - τ = INF: 均匀合法动作
+    pub fn get_root_visit_policy(&self, temperature: f32) -> Vec<f32> {
+        let mut policy = vec![0.0; ACTION_SPACE_SIZE];
+        let root = self.arena.get(self.root_idx);
+        if root.visit_count == 0 {
+            return policy;
+        }
+
+        let env = match root.env.as_ref() {
+            Some(env) => env.as_ref(),
+            None => return policy,
+        };
+        let mut masks = vec![0; ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut masks);
+
+        let tau = temperature.max(1e-4);
+        let inv_tau = 1.0 / tau;
+        let mut sum = 0.0;
+
+        for (act, child_idx) in root.children.iter() {
+            if masks[*act] != 1 {
+                continue;
+            }
+            let child = self.arena.get(*child_idx);
+            let n = child.visit_count as f32;
+            let score = if tau > 100.0 {
+                1.0
+            } else {
+                n.powf(inv_tau)
+            };
+            policy[*act] = score;
+            sum += score;
+        }
+
+        if sum > 0.0 {
+            for p in policy.iter_mut() {
+                *p /= sum;
+            }
+        }
+        policy
+    }
+
+    /// 从离散概率分布中采样一个动作（仅合法动作）
+    pub fn sample_action_from_policy(probs: &[f32], masks: &[i32]) -> usize {
+        let mut rng = thread_rng();
+        let mut sum = 0.0;
+        for i in 0..probs.len() {
+            if masks[i] == 1 {
+                sum += probs[i];
+            }
+        }
+        if sum <= 0.0 {
+            for i in 0..masks.len() {
+                if masks[i] == 1 {
+                    return i;
+                }
+            }
+            return 0;
+        }
+        let mut r: f32 = rng.gen_range(0.0..sum);
+        for i in 0..probs.len() {
+            if masks[i] == 1 {
+                r -= probs[i];
+                if r <= 0.0 {
+                    return i;
+                }
+            }
+        }
+        for i in (0..probs.len()).rev() {
+            if masks[i] == 1 {
+                return i;
+            }
+        }
+        0
+    }
+
     /// 获取 Gumbel AlphaZero 的改进策略 (pi_target)
     ///
     /// 使用 root 的先验 logit 与 completed_Q 直接组合，计算 softmax 概率。
@@ -896,9 +1039,10 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         env.action_masks_into(&mut masks);
 
         // 1. 计算打分: logit + sigma * completed_q
+        // sigma = c_scale * ln(1 + N_root)  —— 按 Gumbel AlphaZero 论文
         let root = self.arena.get(self.root_idx);
         let root_visit_count = root.visit_count as f32;
-        let sigma_scale = (1.0 + root_visit_count).ln();
+        let sigma_scale = self.config.c_scale * (1.0 + root_visit_count).ln();
 
         let mut scores = vec![f32::NEG_INFINITY; ACTION_SPACE_SIZE];
         let mut max_score = f32::NEG_INFINITY;
