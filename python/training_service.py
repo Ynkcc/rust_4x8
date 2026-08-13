@@ -1,7 +1,9 @@
 import time
 import os
+import math
 import torch
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
 import torch.nn.functional as F
 import numpy as np
 from pymongo import MongoClient
@@ -25,7 +27,9 @@ META_COLLECTION = "training_meta"              # 用于持久化训练进度
 MODEL_PATH = "banqi_model_latest.pt"           # TorchScript 模型，供 Rust 加载
 STATE_DICT_PATH = "banqi_model_latest.pth"     # State Dict，供 Python 训练
 BATCH_SIZE = 512            # 适当增大 Batch Size 以稳定梯度
-LEARNING_RATE = 2e-4        # 略微调整学习率
+LEARNING_RATE = 2e-4        # 初始学习率
+MIN_LR = 1e-6               # Cosine 退火下限
+LR_DECAY_STEPS = 5000       # Cosine 退火总步数（步数，不是 epoch）
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Buffer 配置
@@ -242,8 +246,15 @@ def main():
     # 立即保存一次，确保 Rust 端有模型可用
     save_model(model)
 
-    # 2. 优化器
+    # 2. 优化器 + 学习率调度器
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=LR_DECAY_STEPS,
+        eta_min=MIN_LR,
+    )
+    print(f"[Training] CosineAnnealingLR: lr_init={LEARNING_RATE:.2e}, "
+          f"lr_min={MIN_LR:.2e}, T_max={LR_DECAY_STEPS} steps")
     
     # 3. 数据库连接和缓冲区
     db = get_mongo_db()
@@ -304,6 +315,7 @@ def main():
                 batch_data = buffer.get_batch(batch_indices)
                 
                 tl, pl, vl = train_step(model, optimizer, batch_data, DEVICE)
+                scheduler.step()
                 
                 batch_total_l += tl
                 batch_pol_l += pl
@@ -320,7 +332,10 @@ def main():
                 avg_l = batch_total_l / num_batches
                 avg_p = batch_pol_l / num_batches
                 avg_v = batch_val_l / num_batches
-                print(f"[Training] 训练 {num_batches} 批次 - Loss: {avg_l:.4f} (Pol: {avg_p:.4f}, Val: {avg_v:.4f})")
+                cur_lr = optimizer.param_groups[0]['lr']
+                print(f"[Training] 训练 {num_batches} 批次 - "
+                      f"Loss: {avg_l:.4f} (Pol: {avg_p:.4f}, Val: {avg_v:.4f}) "
+                      f"| lr={cur_lr:.2e}")
         
         # 输出总体训练统计
         if total_batches_trained > 0:
