@@ -69,7 +69,12 @@ class DataBuffer:
                 TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS
             )
             self.boards.append(board)
-            self.scalars.append(np.array(s['scalar_state'], dtype=np.float32))
+            scalar_arr = np.array(s['scalar_state'], dtype=np.float32)
+            # 向后兼容: 旧数据库里 scalar 末尾拼了 352 维 action_mask，
+            # 现在 SCALAR_FEATURE_COUNT 已经不包含 mask 了，截断即可。
+            if scalar_arr.shape[0] > SCALAR_FEATURE_COUNT:
+                scalar_arr = scalar_arr[:SCALAR_FEATURE_COUNT]
+            self.scalars.append(scalar_arr)
             self.probs.append(np.array(s['policy_probs'], dtype=np.float32))
             # 优先使用真实游戏结果
             val = s.get('game_result_value', s.get('mcts_value', 0.0))

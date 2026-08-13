@@ -50,13 +50,15 @@ BOARD_CHANNELS = 2 * NUM_PIECE_TYPES + 2
 TOTAL_INPUT_CHANNELS = BOARD_CHANNELS
 
 # Scalar Feature Count calculation:
-# 3 Global (MoveCount, RedHP, BlackHP) + 
-# 2 Survival Vectors (16 each) + 
-# Action Mask (ACTION_SPACE_SIZE)
+# 3 Global (MoveCount, MyHP, OppHP) + 
+# 2 Survival Vectors (16 each) = 35
+# 注意: Action Mask 不再作为 scalar 的一部分喂入网络，它在训练时通过
+# logits + (mask-1)*1e9 屏蔽；在 MCTS 里用于动作选择
 SURVIVAL_VECTOR_SIZE = TOTAL_PIECES_PER_PLAYER
-SCALAR_FEATURE_COUNT = 3 + (2 * SURVIVAL_VECTOR_SIZE) + ACTION_SPACE_SIZE
+SCALAR_FEATURE_COUNT = 3 + (2 * SURVIVAL_VECTOR_SIZE)  # 35
 
 # ==============================================================================
 # --- Model Hyperparameters ---
 # ==============================================================================
-HIDDEN_CHANNELS = 128
+HIDDEN_CHANNELS = 64
+NUM_RES_BLOCKS = 6
