@@ -1,4 +1,4 @@
-# Python 依赖包列表 - 用于推理和训练服务
+# Python 依赖包列表 - 用于推理、训练服务和 PyO3 集成
 
 # 深度学习框架
 torch>=2.0.0
@@ -8,7 +8,7 @@ torchvision>=0.15.0
 numpy>=1.24.0
 pandas>=2.0.0
 
-# 数据库
+# 数据库（可选：使用 banqi-data-collector 保存到 mongo 时才需要）
 pymongo>=4.6.0
 
 # 日志和监控
@@ -18,3 +18,8 @@ wandb>=0.16.0  # 可选，用于实验跟踪
 # 工具
 tqdm>=4.66.0
 pyyaml>=6.0
+
+# --- PyO3 + maturin 集成所需 ---
+# maturin 用于编译 Rust PyO3 扩展 (不需要放到运行时 venv，但这里一起列出方便新手)
+maturin==1.14.1
+# setuptools-rust / wheel / typing 等通常 pip 自带，无需额外声明

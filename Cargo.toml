@@ -10,6 +10,7 @@ default-run = "banqi-tauri"
 [lib]
 name = "banqi_4x8"
 path = "src/lib.rs"
+crate-type = ["lib", "cdylib", "rlib"]
 
 [[bin]]
 name = "banqi"
@@ -24,40 +25,51 @@ name = "banqi-data-collector"
 path = "src/data_collector.rs"
 required-features = ["torch"]
 
+[[bin]]
+name = "banqi-py-collector"
+path = "src/py_data_collector.rs"
+required-features = ["pyo3"]
+
 [dependencies]
 rand = "0.8"
 rand_distr = "0.4"
 fixedbitset = "0.5"
 ndarray = "0.15"
 slab = "0.4"
-tauri = { version = "2.10.2", features = [] }
+rayon = "1.12"
+tauri = { version = "2.11.5", features = [] }
 tauri-plugin-shell = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 num_cpus = "1.17"
-mongodb = { version = "3.5" }
+mongodb = { version = "3.8" }
 bson = "2.15"
 
 # gRPC 依赖 - 保留用于可能的 Python 服务通信
 tonic = "0.12"
 prost = "0.13"
-tokio = { version = "1.49", features = ["macros", "rt-multi-thread"] }
-futures = "0.3.32"
-async-trait ="0.1.89"
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
+futures = "0.3.34"
+async-trait ="0.1.92"
 
 # PyTorch 依赖 - 可选，用于本地训练和推理
 tch = { version = "0.22", optional = true }
+
+# PyO3 依赖 - 可选，用于 Python 集成
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 
 [features]
 # 默认不启用 torch 特性
 default = []
 # torch 特性：启用本地神经网络训练和推理
 torch = ["tch"]
+# pyo3 特性：启用 Python 集成
+pyo3 = ["dep:pyo3"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.5", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 tonic-build = "0.12"
 
 [dev-dependencies]

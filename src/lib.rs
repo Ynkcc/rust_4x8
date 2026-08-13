@@ -19,6 +19,8 @@ pub mod mcts;
 pub mod mongodb_storage;
 pub mod self_play;
 
+pub mod py;
+
 // gRPC 模块 (已禁用 - 现在使用本地模型推理)
 // pub mod rpc;
 
@@ -38,3 +40,78 @@ pub use game_env::{
     ACTION_SPACE_SIZE, BOARD_COLS, BOARD_ROWS, NUM_PIECE_TYPES, REGULAR_MOVE_ACTIONS_COUNT,
     REVEAL_ACTIONS_COUNT, TOTAL_POSITIONS,
 };
+
+// ============================================================================
+// PyO3 模块导出（仅在 pyo3 feature 启用时编译）
+// ============================================================================
+
+#[cfg(feature = "pyo3")]
+use pyo3::prelude::*;
+
+#[cfg(feature = "pyo3")]
+use crate::game_env::{BOARD_CHANNELS, SCALAR_FEATURE_COUNT};
+#[cfg(feature = "pyo3")]
+use crate::py::{
+    PyGameEpisode, PySelfPlayConfig, _run_parallel_self_play_with_predictor,
+    _run_self_play_with_predictor,
+};
+#[cfg(feature = "pyo3")]
+use crate::self_play::SelfPlayConfig;
+
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
+fn run_self_play_with_predictor(
+    _py: Python<'_>,
+    predict_fn: PyObject,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_games: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(_run_self_play_with_predictor(predict_fn, cfg, num_games, worker_id))
+}
+
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
+fn run_parallel_self_play_with_predictor(
+    _py: Python<'_>,
+    predict_fn: PyObject,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_workers: usize,
+    games_per_worker: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(_run_parallel_self_play_with_predictor(
+        predict_fn,
+        cfg,
+        num_workers,
+        games_per_worker,
+        worker_id,
+    ))
+}
+
+#[cfg(feature = "pyo3")]
+#[pymodule]
+fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyGameEpisode>()?;
+    m.add_class::<PySelfPlayConfig>()?;
+    m.add_function(wrap_pyfunction!(run_self_play_with_predictor, m)?)?;
+    m.add_function(wrap_pyfunction!(run_parallel_self_play_with_predictor, m)?)?;
+
+    m.add("BOARD_ROWS", BOARD_ROWS)?;
+    m.add("BOARD_COLS", BOARD_COLS)?;
+    m.add("BOARD_CHANNELS", BOARD_CHANNELS)?;
+    m.add("SCALAR_FEATURE_COUNT", SCALAR_FEATURE_COUNT)?;
+    m.add("ACTION_SPACE_SIZE", ACTION_SPACE_SIZE)?;
+
+    Ok(())
+}
