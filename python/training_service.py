@@ -34,6 +34,11 @@ MIN_SAMPLES_TO_START = 2000
 FETCH_LIMIT = 500                # 每次拉取的游戏数
 MAX_STEPS_PER_ROUND = 100        # 每轮最大训练步数
 
+# 验证集配置
+VAL_SPLIT = 0.1                  # 每次 fetch 最新数据中的 10% 做验证集
+VAL_BUFFER_CAPACITY = 5000       # 验证 Buffer 容量（足够做有意义的估计）
+VAL_EVAL_MIN_BATCHES = 10        # 验证 Buffer 至少要有这么多 batch 才评估
+
 # MongoDB 客户端单例
 _mongo_client = None
 _mongo_db = None
@@ -206,6 +211,47 @@ def train_step(model, optimizer, batch_data, device):
 
     return total_loss.item(), policy_loss.item(), value_loss.item()
 
+@torch.no_grad()
+def evaluate(model, buffer, batch_size, device):
+    """在验证/测试 Buffer 上计算平均 Loss（不更新权重）"""
+    model.eval()
+    indices = list(range(len(buffer)))
+    random.shuffle(indices)
+    num_batches = len(indices) // batch_size
+    if num_batches == 0:
+        return None
+
+    total_loss_sum = 0.0
+    policy_loss_sum = 0.0
+    value_loss_sum = 0.0
+
+    for step in range(num_batches):
+        batch_indices = indices[step * batch_size : (step + 1) * batch_size]
+        boards, scalars, target_probs, target_values, masks = buffer.get_batch(batch_indices)
+
+        boards = boards.to(device)
+        scalars = scalars.to(device)
+        target_probs = target_probs.to(device)
+        target_values = target_values.to(device).view(-1, 1)
+        masks = masks.to(device)
+
+        logits, values = model(boards, scalars)
+        masked_logits = logits + (masks - 1.0) * 1e9
+        log_probs = F.log_softmax(masked_logits, dim=1)
+        policy_loss = -torch.sum(target_probs * log_probs, dim=1).mean()
+        value_loss = F.mse_loss(values, target_values)
+        total_loss = policy_loss + value_loss
+
+        total_loss_sum += total_loss.item()
+        policy_loss_sum += policy_loss.item()
+        value_loss_sum += value_loss.item()
+
+    return (
+        total_loss_sum / num_batches,
+        policy_loss_sum / num_batches,
+        value_loss_sum / num_batches,
+    )
+
 def main():
     print(f"[Training] Starting service on {DEVICE}")
     
@@ -249,6 +295,7 @@ def main():
     db = get_mongo_db()
     collection = db[COLLECTION_NAME]
     buffer = DataBuffer(MAX_SAMPLE_BUFFER_SIZE)
+    val_buffer = DataBuffer(VAL_BUFFER_CAPACITY)
     
     print(f"[Training] 🚀 开始训练...")
     
@@ -277,15 +324,26 @@ def main():
             if not new_docs:
                 break  # 没有更多数据，训练结束
             
-            # 将游戏样本加载到缓冲区
-            count_new_samples = 0
-            for doc in new_docs:
+            # 将游戏样本加载到缓冲区（分出一部分做验证集）
+            split_point = int(len(new_docs) * (1.0 - VAL_SPLIT))
+            train_docs = new_docs[:split_point]
+            val_docs = new_docs[split_point:]
+
+            count_train = 0
+            for doc in train_docs:
                 if 'samples' in doc and doc['samples']:
                     buffer.add_samples(doc['samples'])
-                    count_new_samples += len(doc['samples'])
-            
+                    count_train += len(doc['samples'])
+
+            count_val = 0
+            for doc in val_docs:
+                if 'samples' in doc and doc['samples']:
+                    val_buffer.add_samples(doc['samples'])
+                    count_val += len(doc['samples'])
+
             last_id = new_docs[-1]['_id']
-            print(f"[Training] 📥 加载 {len(new_docs)} 局游戏，{count_new_samples} 个样本")
+            print(f"[Training] 📥 加载 {len(new_docs)} 局游戏 → "
+                  f"train: {count_train}, val: {count_val}")
             
             # 检查是否有足够数据训练
             if len(buffer) < BATCH_SIZE:
@@ -321,6 +379,16 @@ def main():
                 avg_p = batch_pol_l / num_batches
                 avg_v = batch_val_l / num_batches
                 print(f"[Training] 训练 {num_batches} 批次 - Loss: {avg_l:.4f} (Pol: {avg_p:.4f}, Val: {avg_v:.4f})")
+
+            # 4. 验证集评估
+            min_val_samples = BATCH_SIZE * VAL_EVAL_MIN_BATCHES
+            if len(val_buffer) >= min_val_samples:
+                val_result = evaluate(model, val_buffer, BATCH_SIZE, DEVICE)
+                if val_result is not None:
+                    vl, vp, vv = val_result
+                    flag = " ⚠️ 过拟合?" if vl > avg_l + 0.1 else ""
+                    print(f"[Training] 📊 验证集: Loss={vl:.4f} "
+                          f"(Pol: {vp:.4f}, Val: {vv:.4f}){flag}")
         
         # 输出总体训练统计
         if total_batches_trained > 0:
