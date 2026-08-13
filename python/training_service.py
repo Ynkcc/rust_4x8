@@ -34,6 +34,11 @@ MIN_SAMPLES_TO_START = 2000
 FETCH_LIMIT = 500                # 每次拉取的游戏数
 MAX_STEPS_PER_ROUND = 100        # 每轮最大训练步数
 
+# 闭环迭代配置
+CLOSED_LOOP = True               # True: 无新数据时等待；False: 训练完退出
+POLL_INTERVAL_SEC = 10           # 等待新数据的轮询间隔
+SAVE_EVERY_N_ROUNDS = 2          # 每训练多少轮重新导出模型（让 Rust 端加载）
+
 # MongoDB 客户端单例
 _mongo_client = None
 _mongo_db = None
@@ -254,6 +259,7 @@ def main():
     
     try:
         last_id = None
+        round_num = 0
         total_batches_trained = 0
         total_loss_sum = 0.0
         total_policy_loss_sum = 0.0
@@ -275,7 +281,20 @@ def main():
             new_docs = list(cursor)
             
             if not new_docs:
-                break  # 没有更多数据，训练结束
+                if not CLOSED_LOOP:
+                    break  # 离线模式：训练完退出
+                # 闭环模式：等待 Rust 端生成更多自对弈数据
+                last_save_round = round_num
+                saved_this_wait = False
+                while not new_docs:
+                    time.sleep(POLL_INTERVAL_SEC)
+                    # 在等待期间定期重新导出模型，让 Rust 端能加载更好的权重
+                    if round_num - last_save_round >= SAVE_EVERY_N_ROUNDS and not saved_this_wait:
+                        save_model(model)
+                        saved_this_wait = True
+                    cursor = collection.find(query).sort('_id', 1).limit(FETCH_LIMIT)
+                    new_docs = list(cursor)
+                continue  # 跳回顶部，重新训练新数据
             
             # 将游戏样本加载到缓冲区
             count_new_samples = 0
@@ -321,7 +340,13 @@ def main():
                 avg_p = batch_pol_l / num_batches
                 avg_v = batch_val_l / num_batches
                 print(f"[Training] 训练 {num_batches} 批次 - Loss: {avg_l:.4f} (Pol: {avg_p:.4f}, Val: {avg_v:.4f})")
-        
+
+            round_num += 1
+
+            # 闭环模式下定期导出模型，让 Rust 端能加载到最新权重
+            if round_num % SAVE_EVERY_N_ROUNDS == 0:
+                save_model(model)
+
         # 输出总体训练统计
         if total_batches_trained > 0:
             overall_avg_loss = total_loss_sum / total_batches_trained
