@@ -4,11 +4,6 @@
 torch>=2.0.0
 torchvision>=0.15.0
 
-# gRPC 通信
-grpcio>=1.60.0
-grpcio-tools>=1.60.0
-protobuf>=4.25.0
-
 # 数据处理
 numpy>=1.24.0
 pandas>=2.0.0
