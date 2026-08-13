@@ -29,10 +29,10 @@ LEARNING_RATE = 2e-4        # 略微调整学习率
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Buffer 配置
-MAX_SAMPLE_BUFFER_SIZE = 50000  # 增加缓冲区容量
+MAX_SAMPLE_BUFFER_SIZE = 50000  # Replay Buffer 容量（超出后 FIFO 淘汰最旧样本）
 MIN_SAMPLES_TO_START = 2000
-FETCH_LIMIT = 500                # 每次拉取的游戏数
-MAX_STEPS_PER_ROUND = 100        # 每轮最大训练步数
+FETCH_LIMIT = 2000               # 每次拉取的游戏数（增大以快速填充 Buffer）
+TRAIN_EPOCHS_PER_ROUND = 3       # 每轮对完整 Buffer 训练的 epoch 数
 
 # MongoDB 客户端单例
 _mongo_client = None
@@ -259,68 +259,76 @@ def main():
         total_policy_loss_sum = 0.0
         total_value_loss_sum = 0.0
         
-        # --- 分批加载和训练 ---
+        # --- 持久化训练断点 ---
+        last_id = get_last_processed_id(db)
+        if last_id is not None:
+            print(f"[Training] 📍 从断点继续，last_id={last_id}")
+
+        # --- 加载已有数据填充 Replay Buffer ---
+        initial_docs = list(collection.find({}).sort('_id', 1).limit(FETCH_LIMIT))
+        if initial_docs:
+            count_init = 0
+            for doc in initial_docs:
+                if 'samples' in doc and doc['samples']:
+                    buffer.add_samples(doc['samples'])
+                    count_init += len(doc['samples'])
+            last_id = initial_docs[-1]['_id']
+            print(f"[Training] 📥 初始加载 {len(initial_docs)} 局游戏，{count_init} 个样本 → Buffer={len(buffer)}")
+
+        # --- 持续拉新并训练（Replay Buffer 不清空） ---
         while True:
-            # 清空缓冲区，准备加载新一批数据
-            buffer.boards.clear()
-            buffer.scalars.clear()
-            buffer.probs.clear()
-            buffer.values.clear()
-            buffer.masks.clear()
-            buffer.root_visits.clear()
-            
-            # 从数据库加载一批游戏
+            # 1. 拉取新数据（不清空 Buffer，而是追加）
             query = {"_id": {"$gt": last_id}} if last_id else {}
             cursor = collection.find(query).sort('_id', 1).limit(FETCH_LIMIT)
             new_docs = list(cursor)
-            
-            if not new_docs:
-                break  # 没有更多数据，训练结束
-            
-            # 将游戏样本加载到缓冲区
-            count_new_samples = 0
-            for doc in new_docs:
-                if 'samples' in doc and doc['samples']:
-                    buffer.add_samples(doc['samples'])
-                    count_new_samples += len(doc['samples'])
-            
-            last_id = new_docs[-1]['_id']
-            print(f"[Training] 📥 加载 {len(new_docs)} 局游戏，{count_new_samples} 个样本")
-            
-            # 检查是否有足够数据训练
+
+            if new_docs:
+                count_new = 0
+                for doc in new_docs:
+                    if 'samples' in doc and doc['samples']:
+                        buffer.add_samples(doc['samples'])
+                        count_new += len(doc['samples'])
+                last_id = new_docs[-1]['_id']
+                print(f"[Training] 📥 新增 {len(new_docs)} 局游戏 / {count_new} 样本 → Buffer={len(buffer)}")
+
+            # 2. 检查是否有足够数据训练
             if len(buffer) < BATCH_SIZE:
-                print(f"[Training] ⚠️ 样本不足一个批次，跳过")
-                continue
-            
-            # 训练这批数据
-            indices = list(range(len(buffer)))
-            random.shuffle(indices)
-            
-            num_batches = len(indices) // BATCH_SIZE
-            batch_total_l, batch_pol_l, batch_val_l = 0.0, 0.0, 0.0
-            
-            for step in range(num_batches):
-                batch_indices = indices[step * BATCH_SIZE : (step + 1) * BATCH_SIZE]
-                batch_data = buffer.get_batch(batch_indices)
-                
-                tl, pl, vl = train_step(model, optimizer, batch_data, DEVICE)
-                
-                batch_total_l += tl
-                batch_pol_l += pl
-                batch_val_l += vl
-                total_batches_trained += 1
-            
-            # 累计损失
-            total_loss_sum += batch_total_l
-            total_policy_loss_sum += batch_pol_l
-            total_value_loss_sum += batch_val_l
-            
-            # 输出这批数据的训练统计
-            if num_batches > 0:
-                avg_l = batch_total_l / num_batches
-                avg_p = batch_pol_l / num_batches
-                avg_v = batch_val_l / num_batches
-                print(f"[Training] 训练 {num_batches} 批次 - Loss: {avg_l:.4f} (Pol: {avg_p:.4f}, Val: {avg_v:.4f})")
+                print(f"[Training] ⚠️ Buffer={len(buffer)} < BATCH_SIZE={BATCH_SIZE}，等待更多数据...")
+                break
+
+            # 3. 对完整 Buffer 训练多个 epoch
+            for epoch in range(TRAIN_EPOCHS_PER_ROUND):
+                indices = list(range(len(buffer)))
+                random.shuffle(indices)
+
+                num_batches = len(indices) // BATCH_SIZE
+                batch_total_l, batch_pol_l, batch_val_l = 0.0, 0.0, 0.0
+
+                for step in range(num_batches):
+                    batch_indices = indices[step * BATCH_SIZE : (step + 1) * BATCH_SIZE]
+                    batch_data = buffer.get_batch(batch_indices)
+
+                    tl, pl, vl = train_step(model, optimizer, batch_data, DEVICE)
+
+                    batch_total_l += tl
+                    batch_pol_l += pl
+                    batch_val_l += vl
+                    total_batches_trained += 1
+
+                total_loss_sum += batch_total_l
+                total_policy_loss_sum += batch_pol_l
+                total_value_loss_sum += batch_val_l
+
+                if num_batches > 0:
+                    avg_l = batch_total_l / num_batches
+                    avg_p = batch_pol_l / num_batches
+                    avg_v = batch_val_l / num_batches
+                    print(f"[Training] Epoch {epoch+1}/{TRAIN_EPOCHS_PER_ROUND} "
+                          f"| {num_batches} 批次 "
+                          f"| Loss: {avg_l:.4f} (Pol: {avg_p:.4f}, Val: {avg_v:.4f})")
+
+            # 4. 保存进度
+            save_progress(db, last_id)
         
         # 输出总体训练统计
         if total_batches_trained > 0:
