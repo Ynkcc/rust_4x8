@@ -150,6 +150,14 @@ impl PySelfPlayConfig {
     }
 }
 
+/// 串行版：连续生成直到累计 `num_games` 个**非空** episode。
+///
+/// 空局（`samples` 为空）不计入目标局数，打印告警后跳过并继续生成，
+/// 保证返回值长度恰好为 `num_games`。
+///
+/// 注意：并行版（`_run_parallel_self_play_with_predictor`）是"每 worker 固定运行
+/// `games_per_worker` 轮、空局跳过"，二者在"空局不占配额、返回非空局数量"上语义一致，
+/// 但并行版每 worker 返回数 ≤ `games_per_worker`，总量以 `take(total_games)` 兜底。
 #[cfg(feature = "pyo3")]
 pub fn _run_self_play_with_predictor(
     predict_fn: PyObject,
@@ -169,10 +177,7 @@ pub fn _run_self_play_with_predictor(
 
         if episode.samples.is_empty() {
             eprintln!("[Worker-{}] ⚠️ 生成了空游戏数据，跳过", worker_id);
-            game_count += 1;
-            if game_count >= num_games {
-                break;
-            }
+            // 空局不计入目标局数：继续生成，直到累计 num_games 个非空 episode。
             continue;
         }
 

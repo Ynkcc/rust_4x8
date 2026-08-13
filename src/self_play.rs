@@ -6,7 +6,7 @@
 // - 直接持有模型引用，无需 Channel 通信
 // - 使用 Gumbel AlphaZero MCTS
 
-use crate::game_env::{DarkChessEnv, Observation};
+use crate::game_env::{DarkChessEnv, Observation, Player};
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
 use crate::game_env::constants::MAX_STEPS_PER_EPISODE;
 use std::time::Instant;
@@ -166,15 +166,10 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
             let search_result = match mcts.run() {
                 Some(result) => result,
                 None => {
-                    let mut samples = Vec::new();
-                    for (obs, p, mcts_val, completed_q, root_visit_count, _, mask) in episode_data {
-                        samples.push((obs, p, mcts_val, completed_q, root_visit_count, 0.0, mask));
-                    }
-                    return GameEpisode {
-                        samples,
-                        game_length: step,
-                        winner: None,
-                    };
+                    // mcts.run() 返回 None = 当前玩家无合法走法 → 该玩家判负。
+                    // 调用环境终止条件获取真实 winner，回填正确的 ±1 胜负。
+                    let (_, _, winner) = env.check_game_over_conditions();
+                    return finalize_episode(episode_data, winner);
                 }
             };
 
@@ -206,39 +201,8 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                     mcts.step_next(&env, action);
 
                     if terminated || truncated {
-                        // --- 游戏结束处理 ---
-                        let reward_red: f32 = match winner {
-                            Some(1) => 1.0,
-                            Some(-1) => -1.0,
-                            _ => 0.0,
-                        };
-
-                        // --- 回填价值 ---
-                        let mut samples = Vec::new();
-                        for (obs, p, mcts_val, completed_q, root_visit_count, player, mask) in
-                            episode_data
-                        {
-                            let game_result_val: f32 = if player.val() == 1 {
-                                reward_red
-                            } else {
-                                -reward_red
-                            };
-                            samples.push((
-                                obs,
-                                p,
-                                mcts_val,
-                                completed_q,
-                                root_visit_count,
-                                game_result_val,
-                                mask,
-                            ));
-                        }
-
-                        return GameEpisode {
-                            samples,
-                            game_length: step,
-                            winner,
-                        };
+                        // --- 游戏结束处理：统一回填 ---
+                        return finalize_episode(episode_data, winner);
                     }
                 }
                 Err(e) => {
@@ -254,15 +218,9 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
             // --- 步数限制检查：使用统一常量 MAX_STEPS_PER_EPISODE ---
             step += 1;
             if step >= MAX_STEPS_PER_EPISODE {
-                let mut samples = Vec::new();
-                for (obs, p, mcts_val, completed_q, root_visit_count, _, mask) in episode_data {
-                    samples.push((obs, p, mcts_val, completed_q, root_visit_count, 0.0, mask));
-                }
-                return GameEpisode {
-                    samples,
-                    game_length: step,
-                    winner: None,
-                };
+                // 步数上限截断：环境视其为 truncated 平局 (winner=Some(0))，
+                // 与终局分支语义对齐，game_result 回填 0.0。
+                return finalize_episode(episode_data, Some(0));
             }
         }
     }
@@ -291,6 +249,50 @@ pub fn run_batch_self_play<E: Evaluator>(
 }
 
 // ================ 辅助函数 ================
+
+/// 按 winner 统一回填 episode_data 并构造 GameEpisode。
+///
+/// - reward_red：winner=Some(1) → 1.0，Some(-1) → -1.0，None/Some(0) → 0.0；
+/// - 每个样本按该样本玩家的视角换算 game_result（红方视角为正）；
+/// - game_length 统一为「已完成步数」= 样本数，消除各终止路径语义差 1 的不一致。
+///
+/// 该函数同时被三条终止路径调用：MCTS None 分支（无合法走法判负）、
+/// 终局分支（terminated/truncated）、步数上限分支。
+fn finalize_episode(
+    episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>)>,
+    winner: Option<i32>,
+) -> GameEpisode {
+    let game_length = episode_data.len();
+    let reward_red: f32 = match winner {
+        Some(1) => 1.0,
+        Some(-1) => -1.0,
+        _ => 0.0,
+    };
+    let samples = episode_data
+        .into_iter()
+        .map(|(obs, p, mcts_val, completed_q, root_visit_count, player, mask)| {
+            let game_result_val: f32 = if player.val() == 1 {
+                reward_red
+            } else {
+                -reward_red
+            };
+            (
+                obs,
+                p,
+                mcts_val,
+                completed_q,
+                root_visit_count,
+                game_result_val,
+                mask,
+            )
+        })
+        .collect();
+    GameEpisode {
+        samples,
+        game_length,
+        winner,
+    }
+}
 
 /// 选择 completed_Q 最大的动作（确定性）
 pub fn select_completed_q_action<E: Evaluator>(

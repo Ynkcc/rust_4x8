@@ -10,6 +10,13 @@ use super::config::{GumbelConfig, MctsSearchResult};
 use super::evaluator::Evaluator;
 use super::node::{MctsArena, MctsNode, get_outcome_id, value_from_perspective};
 
+/// 单次 `select_path_collect` 允许的最大路径步数。
+///
+/// 正常路径长度受棋盘规模与 MAX_STEPS_PER_EPISODE 约束，远小于该值；
+/// 该上限仅用于防御极端情况（如树结构损坏导致的无限循环）。
+/// 超限时按当前节点已有 Q 值回传兜底，避免静默丢弃路径。
+const MAX_SELECT_STEPS: usize = 512;
+
 /// 路径步骤
 ///
 /// 在 MCTS 路径遍历中，表示每一步是选择了一个动作还是发生是一个随机机会结果。
@@ -522,12 +529,34 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         };
 
         if current_idx.is_none() {
+            eprintln!(
+                "⚠️ MCTS: select_path_collect 根节点缺少候选动作 {} 的子节点",
+                action
+            );
             return;
         }
         let mut current_idx = current_idx.unwrap();
         let mut current_action = action;
+        let mut steps_taken = 0;
 
         loop {
+            steps_taken += 1;
+            if steps_taken > MAX_SELECT_STEPS {
+                // 步数上限兜底：不再深入，按当前节点已有 Q 值回传，
+                // 保证本次调用要么产出 batch、要么产生回传，不静默丢弃。
+                let leaf_player = self.arena.get(current_idx).player();
+                let leaf_value = self.node_q_value(current_idx);
+                let path_clone = path.clone();
+                Self::backprop_from_path(
+                    &mut self.arena,
+                    self.root_idx,
+                    &path_clone,
+                    leaf_player,
+                    leaf_value,
+                );
+                return;
+            }
+
             let is_chance = self.arena.get(current_idx).is_chance_node;
 
             if is_chance {
@@ -536,6 +565,10 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     let possible_states = self.arena.get(current_idx).possible_states.clone();
 
                     if possible_states.is_empty() {
+                        eprintln!(
+                            "⚠️ MCTS: chance 节点展开后无可选结果 (node={}, action={})",
+                            current_idx, current_action
+                        );
                         return;
                     }
 
@@ -563,7 +596,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 let possible_states = self.arena.get(current_idx).possible_states.clone();
                 let outcome_id = match Self::sample_outcome_id(&possible_states, rng) {
                     Some(id) => id,
-                    None => return,
+                    None => {
+                        eprintln!(
+                            "⚠️ MCTS: 已展开 chance 节点无结果可采样 (node={}, action={})",
+                            current_idx, current_action
+                        );
+                        return;
+                    }
                 };
                 path.push(PathStep::ChanceOutcome(outcome_id));
                 let next_idx = possible_states
@@ -634,7 +673,13 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
             let act = match best_action {
                 Some(a) => a,
-                None => return,
+                None => {
+                    eprintln!(
+                        "⚠️ MCTS: 已展开节点无可选子节点 (node={})",
+                        current_idx
+                    );
+                    return;
+                }
             };
             path.push(PathStep::Action(act));
             current_action = act;
@@ -812,6 +857,19 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             }
 
             budget.record_phase_usage(total_phase_usage);
+
+            // 空转防护：本阶段没有任何模拟产生（候选动作子树全部静默早退，
+            // 或 visits_per_action 为 0），继续按陈旧 completed_Q 剪枝没有意义，
+            // 提前终止搜索循环，直接返回当前剩余候选。
+            if total_phase_usage == 0 {
+                eprintln!(
+                    "⚠️ MCTS: phase {} 实际模拟数为 0 (visits_per_action={}, remaining={})，提前终止搜索",
+                    phase,
+                    visits_per_action,
+                    remaining.len()
+                );
+                break;
+            }
 
             // 根据 completed_Q 排序并淘汰
             if remaining.len() > 1 {

@@ -61,15 +61,11 @@ impl PyEvaluator {
                 PyRuntimeError::new_err(format!("values extraction failed: {}", e))
             })?;
 
-            let values_vec: Vec<f32> = if values_vec_flat.len() == batch_size {
-                values_vec_flat
-            } else {
-                values_vec_flat
-                    .chunks(values_vec_flat.len() / batch_size.max(1))
-                    .map(|c| c[0])
-                    .take(batch_size)
-                    .collect()
-            };
+            // 与 policy 的 normalize_policy_shape 一致：先截断到 batch_size，
+            // 不足部分补 0.0，保证任何返回形状下都不会触发 chunks(0) panic。
+            let mut values_vec = values_vec_flat;
+            values_vec.truncate(batch_size);
+            values_vec.resize(batch_size, 0.0);
 
             let policy_vec = Self::normalize_policy_shape(policy_vec, batch_size);
 
