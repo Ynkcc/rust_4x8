@@ -52,8 +52,9 @@ pub const PIECE_MAX_COUNTS: [usize; NUM_PIECE_TYPES] = [
 pub const SURVIVAL_VECTOR_SIZE: usize = TOTAL_PIECES_PER_PLAYER;
 
 /// Scalar 特征数量:
-/// 3个全局标量 (MoveCount, RedHP, BlackHP) + 2个存活向量(各16) + 动作掩码长度
-pub const SCALAR_FEATURE_COUNT: usize = 3 + 2 * SURVIVAL_VECTOR_SIZE + ACTION_SPACE_SIZE;
+/// 3个全局标量 (MoveCount, MyHP, OppHP) + 2个存活向量(各16) = 35
+/// 注意: Action Mask 不再作为 scalar 输入网络，它在 MCTS 动作选择和 Python loss 计算时单独使用
+pub const SCALAR_FEATURE_COUNT: usize = 3 + 2 * SURVIVAL_VECTOR_SIZE;
 
 /// 翻棋概率表大小: 2个玩家 * 7种棋子 = 14
 pub const REVEAL_PROBABILITY_SIZE: usize = 2 * NUM_PIECE_TYPES;
