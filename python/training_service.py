@@ -34,6 +34,11 @@ MIN_SAMPLES_TO_START = 2000
 FETCH_LIMIT = 2000               # 每次拉取的游戏数（增大以快速填充 Buffer）
 TRAIN_EPOCHS_PER_ROUND = 3       # 每轮对完整 Buffer 训练的 epoch 数
 
+# 闭环迭代配置
+CLOSED_LOOP = True               # True: 无新数据时等待；False: 训练完退出
+POLL_INTERVAL_SEC = 10           # 等待新数据的轮询间隔
+SAVE_EVERY_N_ROUNDS = 2          # 每训练多少轮重新导出模型（让 Rust 端加载）
+
 # MongoDB 客户端单例
 _mongo_client = None
 _mongo_db = None
@@ -259,6 +264,7 @@ def main():
     
     try:
         last_id = None
+        round_num = 0
         total_batches_trained = 0
         total_loss_sum = 0.0
         total_policy_loss_sum = 0.0
@@ -286,6 +292,74 @@ def main():
             query = {"_id": {"$gt": last_id}} if last_id else {}
             cursor = collection.find(query).sort('_id', 1).limit(FETCH_LIMIT)
             new_docs = list(cursor)
+            
+            if not new_docs:
+                if not CLOSED_LOOP:
+                    break  # 离线模式：训练完退出
+                # 闭环模式：等待 Rust 端生成更多自对弈数据
+                last_save_round = round_num
+                saved_this_wait = False
+                while not new_docs:
+                    time.sleep(POLL_INTERVAL_SEC)
+                    # 在等待期间定期重新导出模型，让 Rust 端能加载更好的权重
+                    if round_num - last_save_round >= SAVE_EVERY_N_ROUNDS and not saved_this_wait:
+                        save_model(model)
+                        saved_this_wait = True
+                    cursor = collection.find(query).sort('_id', 1).limit(FETCH_LIMIT)
+                    new_docs = list(cursor)
+                continue  # 跳回顶部，重新训练新数据
+            
+            # 将游戏样本加载到缓冲区
+            count_new_samples = 0
+            for doc in new_docs:
+                if 'samples' in doc and doc['samples']:
+                    buffer.add_samples(doc['samples'])
+                    count_new_samples += len(doc['samples'])
+            
+            last_id = new_docs[-1]['_id']
+            print(f"[Training] 📥 加载 {len(new_docs)} 局游戏，{count_new_samples} 个样本")
+            
+            # 检查是否有足够数据训练
+            if len(buffer) < BATCH_SIZE:
+                print(f"[Training] ⚠️ 样本不足一个批次，跳过")
+                continue
+            
+            # 训练这批数据
+            indices = list(range(len(buffer)))
+            random.shuffle(indices)
+            
+            num_batches = len(indices) // BATCH_SIZE
+            batch_total_l, batch_pol_l, batch_val_l = 0.0, 0.0, 0.0
+            
+            for step in range(num_batches):
+                batch_indices = indices[step * BATCH_SIZE : (step + 1) * BATCH_SIZE]
+                batch_data = buffer.get_batch(batch_indices)
+                
+                tl, pl, vl = train_step(model, optimizer, batch_data, DEVICE)
+                
+                batch_total_l += tl
+                batch_pol_l += pl
+                batch_val_l += vl
+                total_batches_trained += 1
+            
+            # 累计损失
+            total_loss_sum += batch_total_l
+            total_policy_loss_sum += batch_pol_l
+            total_value_loss_sum += batch_val_l
+            
+            # 输出这批数据的训练统计
+            if num_batches > 0:
+                avg_l = batch_total_l / num_batches
+                avg_p = batch_pol_l / num_batches
+                avg_v = batch_val_l / num_batches
+                print(f"[Training] 训练 {num_batches} 批次 - Loss: {avg_l:.4f} (Pol: {avg_p:.4f}, Val: {avg_v:.4f})")
+
+            round_num += 1
+
+            # 闭环模式下定期导出模型，让 Rust 端能加载到最新权重
+            if round_num % SAVE_EVERY_N_ROUNDS == 0:
+                save_model(model)
+
 
             if new_docs:
                 count_new = 0
