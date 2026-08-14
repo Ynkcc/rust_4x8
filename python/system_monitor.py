@@ -141,6 +141,7 @@ class SystemMonitor(threading.Thread):
         max_samples: int = 0,
         show_per_core: bool = False,
         csv_path: Optional[str] = None,
+        log_to_tb: bool = False,
         stop_flag: Optional[List[bool]] = None,
     ) -> None:
         super().__init__(name="SystemMonitor", daemon=True)
@@ -148,6 +149,7 @@ class SystemMonitor(threading.Thread):
         self.max_samples = max(0, int(max_samples))
         self.show_per_core = show_per_core
         self.csv_path = csv_path
+        self.log_to_tb = log_to_tb
         self.stop_flag = stop_flag if stop_flag is not None else [False]
         self._proc = psutil.Process()
         self._gpu = GpuMonitor()
@@ -248,6 +250,24 @@ class SystemMonitor(threading.Thread):
         self._csv_writer.writerow(row)
         self._csv_fp.flush()
 
+    def _log_to_tb(self, s: Dict, step: int) -> None:
+        """把本次采样写入 TensorBoard（tag 前缀 sys/，x 轴为采样序号）。"""
+        try:
+            from tb_logger import add_scalar
+        except ImportError:  # pragma: no cover
+            return
+        add_scalar("sys/cpu_percent", s["cpu_percent"], step)
+        if s["proc_cpu_percent"] is not None:
+            add_scalar("sys/proc_cpu_percent", s["proc_cpu_percent"], step)
+        add_scalar("sys/mem_percent", s["mem_percent"], step)
+        add_scalar("sys/mem_used_gb", s["mem_used"] / 2**30, step)
+        add_scalar("sys/proc_rss_gb", s["proc_rss"] / 2**30, step)
+        for g in s["gpus"]:
+            if "error" not in g:
+                add_scalar(f"sys/gpu{g['index']}_util", g["gpu_percent"], step)
+                add_scalar(f"sys/gpu{g['index']}_mem_percent", g["mem_percent"], step)
+                add_scalar(f"sys/gpu{g['index']}_temp", g["temp"], step)
+
     # ---- 线程主体 ----
 
     def run(self) -> None:
@@ -258,6 +278,8 @@ class SystemMonitor(threading.Thread):
                     break
                 s = self.sample()
                 self._write_csv(s)
+                if self.log_to_tb:
+                    self._log_to_tb(s, samples_done)
                 print(f"[Monitor] {time.strftime('%H:%M:%S')} | {self._format(s)}")
                 samples_done += 1
                 # 分片等待，快速响应 stop_flag

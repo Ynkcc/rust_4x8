@@ -35,6 +35,7 @@ except ImportError as exc:  # pragma: no cover
 from config import config
 from constant import ACTION_SPACE_SIZE
 from nn_model import BanqiNet, load_model_weights
+from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 
 
 # ============================================================================
@@ -253,6 +254,12 @@ class SelfPlayWorker(threading.Thread):
             "winner": int(ep["winner"]),
             "duration": float(duration),
         })
+
+        # TensorBoard 记录（x 轴为累计对局数）
+        if config.TENSORBOARD_ENABLED:
+            game_idx = self.total_games + 1
+            add_scalar("selfplay/game_length", int(ep["game_length"]), game_idx)
+            add_scalar("selfplay/steps_per_sec", ep["game_length"] / max(duration, 1e-9), game_idx)
 
     def stats(self) -> Dict[str, int]:
         with self._iter_lock:

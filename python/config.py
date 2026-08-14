@@ -82,6 +82,15 @@ class Config:
     MONITOR_CSV_PATH = os.getenv("MONITOR_CSV_PATH") or None         # CSV 落盘路径
 
     # =========================================================================
+    # TensorBoard 训练日志（tb_logger.py）
+    # =========================================================================
+    # 记录 train/val loss、lr、自对弈吞吐（selfplay/*）、系统资源（sys/*）。
+    # 查看方式: tensorboard --logdir <TENSORBOARD_LOG_DIR>
+    TENSORBOARD_ENABLED = os.getenv("TENSORBOARD_ENABLED", "1") != "0"
+    TENSORBOARD_LOG_DIR = os.getenv("TENSORBOARD_LOG_DIR", "runs")
+    TENSORBOARD_LOG_SYS = os.getenv("TENSORBOARD_LOG_SYS", "1") == "1"  # 系统资源写入 TB
+
+    # =========================================================================
     # MongoDB 冷存储归档（archiver）
     # =========================================================================
     MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")

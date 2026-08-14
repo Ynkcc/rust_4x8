@@ -30,6 +30,7 @@ from constant import (
     ACTION_SPACE_SIZE,
 )
 from nn_model import BanqiNet
+from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -482,6 +483,18 @@ class TrainWorker(threading.Thread):
         self.round_num += 1
         if self.round_num % config.CHECKPOINT_EVERY_N_ROUNDS == 0:
             save_checkpoint(self.model, self.optimizer, self.scheduler)
+
+        # ---- TensorBoard 训练日志（x 轴为累计训练 batch 数）----
+        if config.TENSORBOARD_ENABLED:
+            step = self.total_batches_trained
+            add_scalar("train/loss", entry["train_loss"], step)
+            add_scalar("train/policy_loss", entry["train_policy_loss"], step)
+            add_scalar("train/value_loss", entry["train_value_loss"], step)
+            add_scalar("train/lr", entry["lr"], step)
+            if val_tuple is not None:
+                add_scalar("val/loss", val_tuple[0], step)
+                add_scalar("val/policy_loss", val_tuple[1], step)
+                add_scalar("val/value_loss", val_tuple[2], step)
 
     def stats(self) -> Dict[str, float]:
         with self._stats_lock:

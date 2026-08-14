@@ -12,9 +12,11 @@ run_training.py — 自对弈 + 训练闭环入口（无 CLI 参数）
 
 from __future__ import annotations
 
+import os
 import queue
 import signal
 import sys
+import time
 from typing import List
 
 # Windows 控制台默认 GBK 无法编码 emoji 等字符，强制以 UTF-8 输出避免启动崩溃
@@ -45,8 +47,28 @@ try:
 except ImportError:  # pragma: no cover
     HAS_MONITOR = False
 
+# TensorBoard 训练日志（tb_logger 内部处理依赖缺失，可安全导入）
+try:
+    import tb_logger
+    HAS_TB_LOGGER = True
+except ImportError:  # pragma: no cover
+    HAS_TB_LOGGER = False
+
 
 def main() -> None:
+    # ---- TensorBoard 初始化（每次运行独立时间戳子目录，便于对比多次训练）----
+    tb_log_dir = ""
+    tb_ok = False
+    if HAS_TB_LOGGER:
+        tb_log_dir = os.path.join(
+            config.TENSORBOARD_LOG_DIR,
+            time.strftime("%Y%m%d-%H%M%S"),
+        )
+        tb_ok = tb_logger.init_summary_writer(
+            log_dir=tb_log_dir,
+            enabled=config.TENSORBOARD_ENABLED,
+        )
+
     print("=" * 56)
     print("  🚀 自对弈 + 训练闭环启动（单进程双线程 + Mongo 冷归档）")
     print("=" * 56)
@@ -61,6 +83,9 @@ def main() -> None:
     if config.MONITOR_ENABLED and HAS_MONITOR:
         print(f"  MONITOR         = 每 {config.MONITOR_INTERVAL:.0f}s 采样一次"
               f"（CSV: {config.MONITOR_CSV_PATH or '关闭'}）")
+    if config.TENSORBOARD_ENABLED and tb_ok:
+        print(f"  TENSORBOARD     = {tb_log_dir}"
+              f"（tensorboard --logdir {config.TENSORBOARD_LOG_DIR} 查看）")
     print("=" * 56)
 
     # ---- 优雅退出标志 ----
@@ -105,6 +130,7 @@ def main() -> None:
             interval=config.MONITOR_INTERVAL,
             show_per_core=config.MONITOR_PER_CORE,
             csv_path=config.MONITOR_CSV_PATH,
+            log_to_tb=bool(config.TENSORBOARD_LOG_SYS and tb_ok),
             stop_flag=stop_flag,
         )
         monitor.start()
@@ -128,8 +154,6 @@ def main() -> None:
         stop_flag[0] = True
     except AttributeError:
         # 平台不支持 signal.pause 时退化为轮询
-        import time
-
         while not stop_flag[0]:
             time.sleep(0.5)
 
@@ -156,6 +180,10 @@ def main() -> None:
     # 停止监控线程（共享 stop_flag，run 循环很快自行退出）
     if monitor is not None and monitor.is_alive():
         monitor.join(timeout=3)
+
+    # 关闭 TensorBoard writer（flush 落盘）
+    if HAS_TB_LOGGER:
+        tb_logger.close_summary_writer()
 
     # ---- 结束统计 ----
     sp_stats = self_play_worker.stats()
