@@ -17,6 +17,11 @@ import signal
 import sys
 from typing import List
 
+# Windows 控制台默认 GBK 无法编码 emoji 等字符，强制以 UTF-8 输出避免启动崩溃
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 try:
     import banqi_4x8
 except ImportError as exc:  # pragma: no cover
