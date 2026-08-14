@@ -56,8 +56,12 @@ pub struct GumbelMCTS<'a, E: Evaluator> {
     /// Scratch pad: 用于 Gumbel 采样阶段的临时存储，避免反复堆分配
     /// Vec<(action_index, gumbel_noise_logit)>
     scratch_gumbel: Vec<(usize, f32)>,
-    /// 缓存的 action mask，避免重复计算
-    cached_action_mask: Vec<i32>,
+    /// 根节点合法动作掩码：在 run() 入口处计算一次，搜索全程不可变。
+    /// 作为根节点合法动作的权威来源，直接用于结果返回。
+    root_action_mask: Vec<i32>,
+    /// 遍历临时缓冲：select_path_collect 中沿路径向下时复用，
+    /// 存储当前遍历节点的 action mask。与 root_action_mask 物理隔离。
+    traversal_action_mask: Vec<i32>,
     /// 复用的随机数生成器，避免每次搜索/采样重建 thread_rng
     rng: StdRng,
 }
@@ -84,7 +88,8 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             evaluator,
             config,
             scratch_gumbel: Vec::with_capacity(32),
-            cached_action_mask: vec![0; ACTION_SPACE_SIZE],
+            root_action_mask: vec![0; ACTION_SPACE_SIZE],
+            traversal_action_mask: vec![0; ACTION_SPACE_SIZE],
             rng: StdRng::from_entropy(),
         }
     }
@@ -627,15 +632,15 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 .expect("Node must have env")
                 .as_ref();
 
-            // 使用缓存的 action_mask
-            self.cached_action_mask.iter_mut().for_each(|m| *m = 0);
-            env.action_masks_into(&mut self.cached_action_mask);
+            // 使用遍历缓冲 action_mask
+            self.traversal_action_mask.iter_mut().for_each(|m| *m = 0);
+            env.action_masks_into(&mut self.traversal_action_mask);
 
             // 终局检测：优先使用节点缓存的 is_terminal（覆盖分数归零/全灭/
             // 无合法动作/连续无吃子判和/步数截断），按真实胜负回传；
             // action_mask 全 0 作为兜底（理论上已包含在 is_terminal 中）。
             if self.arena.get(current_idx).is_terminal
-                || self.cached_action_mask.iter().all(|&x| x == 0)
+                || self.traversal_action_mask.iter().all(|&x| x == 0)
             {
                 let leaf_player = self.arena.get(current_idx).player();
                 let (_, _, winner) = env.check_game_over_conditions();
@@ -761,10 +766,10 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             .as_ref()
             .expect("Root must have env")
             .as_ref();
-        self.cached_action_mask.iter_mut().for_each(|m| *m = 0);
-        env.action_masks_into(&mut self.cached_action_mask);
+        self.root_action_mask.iter_mut().for_each(|m| *m = 0);
+        env.action_masks_into(&mut self.root_action_mask);
 
-        if self.cached_action_mask.iter().all(|&x| x == 0) {
+        if self.root_action_mask.iter().all(|&x| x == 0) {
             return None;
         }
 
@@ -781,7 +786,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             .collect();
 
         // 3. Gumbel-Top-K 采样 (克隆 mask 以避免借用冲突)
-        let masks_cloned = self.cached_action_mask.clone();
+        let masks_cloned = self.root_action_mask.clone();
         let candidates =
             self.sample_gumbel_top_k(&logits, &masks_cloned, self.config.max_considered_actions);
         if candidates.is_empty() {
@@ -797,7 +802,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             let mcts_value = root.q_value();
             let completed_q = self.completed_q(action);
             let root_visit_count = root.visit_count;
-            let action_mask = self.cached_action_mask.clone();
+            let action_mask = self.root_action_mask.clone();
 
             return Some(MctsSearchResult {
                 action,
@@ -924,7 +929,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
         let mcts_value = root.q_value();
         let completed_q = self.completed_q(action);
         let root_visit_count = root.visit_count;
-        let action_mask = self.cached_action_mask.clone();
+        let action_mask = self.root_action_mask.clone();
 
         Some(MctsSearchResult {
             action,
