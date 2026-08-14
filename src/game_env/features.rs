@@ -100,4 +100,13 @@ impl DarkChessEnv {
 
         Observation { board, scalars }
     }
+
+    /// 仅将扁平特征写入外部缓冲区，不创建 Observation（避免 ndarray 分配 + clone）。
+    ///
+    /// 适用于只需要 flat `Vec<f32>` 的场景（如 PyEvaluator 批量推理），
+    /// 跳过 `get_state_into` 中 `Array3::from_shape_vec` / `Array1::from_vec` 的额外开销。
+    pub fn get_state_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        self.get_board_state_tensor_into(board_data);
+        self.get_scalar_state_vector_into(scalars_data);
+    }
 }

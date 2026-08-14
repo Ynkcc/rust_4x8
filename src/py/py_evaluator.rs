@@ -1,24 +1,58 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::PyModule;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::game_env::{
     ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
 };
 use crate::mcts::Evaluator;
 
+/// 连续失败阈值：超过此值时 panic，避免用垃圾数据持续搜索
+const MAX_CONSECUTIVE_FAILURES: u32 = 10;
+
 pub struct PyEvaluator {
     predict_fn: PyObject,
+    /// 缓存的 numpy 模块引用，避免每次 call_python 都重新 import
+    numpy_module: std::sync::OnceLock<Py<PyModule>>,
+    /// 连续失败计数器（AtomicU32 允许在多线程下安全递增）
+    consecutive_failures: AtomicU32,
 }
 
-// Safety: PyEvaluator 只持有 PyObject (=Py<PyAny>)。
-// Py<T> 实现了 Send + Sync (只要 T: Send + Sync；PyAny 就是 Send+Sync)。
+// Safety: PyEvaluator 只持有 PyObject (=Py<PyAny>) 和 Py<PyModule>。
+// Py<T> 实现了 Send + Sync (只要 T: Send + Sync；PyAny/PyModule 就是 Send+Sync)。
+// OnceLock<Py<PyModule>> 和 AtomicU32 都是 Sync。
 // 访问 Python 侧对象时必须先通过 Python::with_gil 获取 GIL，因此没有数据竞争。
 unsafe impl Send for PyEvaluator {}
 unsafe impl Sync for PyEvaluator {}
 
 impl PyEvaluator {
     pub fn new(predict_fn: PyObject) -> Self {
-        Self { predict_fn }
+        Self {
+            predict_fn,
+            numpy_module: std::sync::OnceLock::new(),
+            consecutive_failures: AtomicU32::new(0),
+        }
+    }
+
+    /// 获取或初始化 numpy 模块引用（懒加载，线程安全）
+    fn get_numpy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
+        // OnceLock 尚未初始化时执行 import
+        if self.numpy_module.get().is_none() {
+            let np = py
+                .import_bound("numpy")
+                .map_err(|e| PyRuntimeError::new_err(format!("numpy import failed: {}", e)))?;
+            // clone_ref 后存入 OnceLock；竞争条件下多个线程可能同时 import，
+            // 但 OnceLock::set 对第一个调用者生效，后续忽略，行为正确
+            let _ = self.numpy_module.set(np.clone().unbind());
+        }
+        // 已初始化则直接获取绑定引用
+        Ok(self
+            .numpy_module
+            .get()
+            .expect("numpy_module should be initialized")
+            .bind(py)
+            .clone())
     }
 
     fn call_python(
@@ -28,12 +62,15 @@ impl PyEvaluator {
         batch_size: usize,
     ) -> PyResult<(Vec<Vec<f32>>, Vec<f32>)> {
         Python::with_gil(|py| {
-            let boards_np = Self::to_numpy_4d(
-                py,
+            let np = self.get_numpy(py)?;
+
+            let boards_np = Self::to_numpy(
+                &np,
                 boards_flat,
                 &[batch_size, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS],
             )?;
-            let scalars_np = Self::to_numpy_2d(py, scalars_flat, &[batch_size, SCALAR_FEATURE_COUNT])?;
+            let scalars_np =
+                Self::to_numpy(&np, scalars_flat, &[batch_size, SCALAR_FEATURE_COUNT])?;
 
             let result = self
                 .predict_fn
@@ -73,26 +110,9 @@ impl PyEvaluator {
         })
     }
 
-    fn to_numpy_4d(py: Python<'_>, data: Vec<f32>, shape: &[usize]) -> PyResult<PyObject> {
-        let np = py
-            .import_bound("numpy")
-            .map_err(|e| PyRuntimeError::new_err(format!("numpy import failed: {}", e)))?;
-        let array = np
-            .call_method1("array", (data,))
-            .map_err(|e| PyRuntimeError::new_err(format!("numpy.array failed: {}", e)))?;
-        let reshaped = array
-            .call_method1("reshape", (shape.to_vec(),))
-            .map_err(|e| PyRuntimeError::new_err(format!("numpy reshape failed: {}", e)))?;
-        let astype = reshaped
-            .call_method1("astype", ("float32",))
-            .map_err(|e| PyRuntimeError::new_err(format!("numpy astype failed: {}", e)))?;
-        Ok(astype.into())
-    }
-
-    fn to_numpy_2d(py: Python<'_>, data: Vec<f32>, shape: &[usize]) -> PyResult<PyObject> {
-        let np = py
-            .import_bound("numpy")
-            .map_err(|e| PyRuntimeError::new_err(format!("numpy import failed: {}", e)))?;
+    /// 将 flat Vec<f32> 转换为指定 shape 的 float32 numpy 数组。
+    /// 合并了原 to_numpy_4d / to_numpy_2d 的逻辑。
+    fn to_numpy(np: &Bound<'_, PyModule>, data: Vec<f32>, shape: &[usize]) -> PyResult<PyObject> {
         let array = np
             .call_method1("array", (data,))
             .map_err(|e| PyRuntimeError::new_err(format!("numpy.array failed: {}", e)))?;
@@ -125,6 +145,22 @@ impl PyEvaluator {
         }
         policy
     }
+
+    /// 记录一次连续失败，超过阈值时 panic
+    fn record_failure(&self) {
+        let count = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if count >= MAX_CONSECUTIVE_FAILURES {
+            panic!(
+                "PyEvaluator: Python predictor 连续失败 {} 次 (阈值 {})，终止以避免垃圾数据污染搜索",
+                count, MAX_CONSECUTIVE_FAILURES
+            );
+        }
+    }
+
+    /// 记录一次成功，重置连续失败计数
+    fn record_success(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+    }
 }
 
 impl Evaluator for PyEvaluator {
@@ -138,21 +174,27 @@ impl Evaluator for PyEvaluator {
             Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
         let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * SCALAR_FEATURE_COUNT);
 
+        // 直接写入 flat buffer，避免创建 Observation（ndarray 分配 + clone）的开销
         let mut board_buf = Vec::new();
         let mut scalar_buf = Vec::new();
         for env in envs {
-            env.get_state_into(&mut board_buf, &mut scalar_buf);
+            env.get_state_flat_into(&mut board_buf, &mut scalar_buf);
             boards_flat.extend_from_slice(&board_buf);
             scalars_flat.extend_from_slice(&scalar_buf);
         }
 
         match self.call_python(boards_flat, scalars_flat, batch_size) {
-            Ok((logits, values)) => (logits, values),
+            Ok((logits, values)) => {
+                self.record_success();
+                (logits, values)
+            }
             Err(e) => {
+                let fail_count = self.consecutive_failures.load(Ordering::Relaxed) + 1;
                 eprintln!(
-                    "Python predictor error (falling back to uniform): {}",
-                    e
+                    "Python predictor error (falling back to uniform) [连续失败 {}/{}]: {}",
+                    fail_count, MAX_CONSECUTIVE_FAILURES, e
                 );
+                self.record_failure();
                 (
                     vec![vec![0.0; ACTION_SPACE_SIZE]; batch_size],
                     vec![0.0; batch_size],
