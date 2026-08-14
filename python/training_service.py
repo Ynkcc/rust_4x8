@@ -32,12 +32,20 @@ from constant import (
 from nn_model import BanqiNet
 from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _resolve_device(spec: str) -> "torch.device":
+    """按 config.TRAIN_DEVICE 解析训练设备；auto = CUDA 可用则用 CUDA。"""
+    if spec == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(spec)
 
-# 吞吐优化：TF32 + cudnn auto-tune（训练端）
+
+DEVICE = _resolve_device(config.TRAIN_DEVICE)
+
+# 吞吐优化：TF32 + cudnn auto-tune（训练端，GPU 时启用）
 if DEVICE.type == "cuda":
     torch.backends.cudnn.benchmark = True
     torch.set_float32_matmul_precision("high")
+print(f"[Training] 训练设备: {DEVICE}（config.TRAIN_DEVICE={config.TRAIN_DEVICE!r}）")
 
 
 # ============================================================================

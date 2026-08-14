@@ -65,6 +65,15 @@ class Config:
     STATE_DICT_PATH = "banqi_model_latest.pth"  # state_dict（供训练恢复）
 
     # =========================================================================
+    # 推理 / 训练设备分离
+    # =========================================================================
+    # 自对弈 MCTS 推理（Predictor）默认用 CPU，不占用 GPU 算力/显存，
+    # 把 GPU 完全留给训练；训练默认 auto（CUDA 可用则用 CUDA，否则回退 CPU）。
+    # 推理与训练是两个独立模型实例，通过 checkpoint 文件（.pt/.pth）同步权重。
+    INFER_DEVICE = os.getenv("INFER_DEVICE", "cpu")   # 推理设备（cpu / cuda / auto）
+    TRAIN_DEVICE = os.getenv("TRAIN_DEVICE", "auto")  # 训练设备（auto / cuda / cpu）
+
+    # =========================================================================
     # 队列 / 线程
     # =========================================================================
     DATA_QUEUE_MAXSIZE = 128       # 数据队列上限（episode 数）

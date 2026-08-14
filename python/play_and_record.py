@@ -38,6 +38,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+from config import config  # noqa: E402
 from self_play import build_predictor  # noqa: E402
 from storage import FileSaver  # noqa: E402
 
@@ -66,8 +67,8 @@ def main():
     out_dir = args.out_dir or os.path.join(_HERE, "output")
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1. 构建 Predictor（加载权重）
-    predictor, device = build_predictor(model_path)
+    # 1. 构建 Predictor（加载权重；推理用 CPU，不占 GPU）
+    predictor, device = build_predictor(model_path, device_str=config.INFER_DEVICE)
     print(f"[Record] device = {device}, model = {model_path}")
 
     # 2. 跑一局

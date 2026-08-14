@@ -80,6 +80,8 @@ def main() -> None:
     print(f"  STATE_DICT_PATH = {config.STATE_DICT_PATH}")
     print(f"  MONGO_URI       = {config.MONGO_URI}")
     print(f"  COLLECTION      = {config.DB_NAME}.{config.COLLECTION}")
+    print(f"  INFER_DEVICE    = {config.INFER_DEVICE}（自对弈 MCTS 推理）")
+    print(f"  TRAIN_DEVICE    = {config.TRAIN_DEVICE}（训练，auto 自动选择）")
     if config.MONITOR_ENABLED and HAS_MONITOR:
         print(f"  MONITOR         = 每 {config.MONITOR_INTERVAL:.0f}s 采样一次"
               f"（CSV: {config.MONITOR_CSV_PATH or '关闭'}）")
@@ -105,13 +107,15 @@ def main() -> None:
     archive_q: "queue.Queue" = queue.Queue(maxsize=config.ARCHIVE_QUEUE_MAXSIZE)
 
     # ---- 构建 Predictor + SelfPlayConfig ----
-    predictor, _device = build_predictor(config.MODEL_PATH, device_str="auto")
+    # 推理用 CPU（config.INFER_DEVICE），不占 GPU，把算力留给训练
+    predictor, infer_device = build_predictor(config.MODEL_PATH, device_str=config.INFER_DEVICE)
     sp_cfg = build_self_play_config()
     print(
         f"[Main] banqi_4x8: BOARD=({banqi_4x8.BOARD_CHANNELS},"
         f"{banqi_4x8.BOARD_ROWS},{banqi_4x8.BOARD_COLS}), "
         f"SCALAR={banqi_4x8.SCALAR_FEATURE_COUNT}, ACTION={banqi_4x8.ACTION_SPACE_SIZE}"
     )
+    print(f"[Main] 推理设备 = {infer_device}（MCTS 自对弈，GPU 专用于训练）")
 
     # ---- 三线程 ----
     workers = [

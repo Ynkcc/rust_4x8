@@ -228,7 +228,8 @@ def main() -> None:
     archive_q: "queue.Queue" = queue.Queue(maxsize=config.ARCHIVE_QUEUE_MAXSIZE)
 
     # ---- 构建 Predictor + SelfPlayConfig ----
-    predictor, _device = build_predictor(config.MODEL_PATH, device_str="auto")
+    # 推理用 CPU（config.INFER_DEVICE），不占 GPU
+    predictor, _device = build_predictor(config.MODEL_PATH, device_str=config.INFER_DEVICE)
     sp_cfg = build_self_play_config()
 
     # ---- 三线程（归档强制本地 JSONL，不依赖 Mongo） ----
