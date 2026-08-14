@@ -132,6 +132,36 @@ class BanqiNet(nn.Module):
         
         return policy_logits, value
 
+def load_model_weights(model: "nn.Module", path: str, device: "torch.device") -> None:
+    """
+    把 path 指向的权重文件加载进 model。自动识别三种格式：
+      1. TorchScript 归档 (.pt, training_service 中 torch.jit.trace 产出) —— torch.jit.load
+      2. 普通 state_dict (.pth)
+      3. 完整 checkpoint dict（含 model_state_dict / optimizer_state_dict 等）
+
+    注意：PyTorch 2.6+ 中 torch.load(weights_only=True) 无法加载 TorchScript
+    归档（抛 "Cannot use weights_only=True with TorchScript archives"），
+    因此必须先尝试 torch.jit.load。全部格式都失败时抛出最后一个异常，
+    由调用方决定如何处理（如保留旧模型）。
+    """
+    try:
+        jit_model = torch.jit.load(path, map_location=device)
+        model.load_state_dict(jit_model.state_dict())
+        return
+    except Exception:
+        pass
+    try:
+        state = torch.load(path, map_location=device, weights_only=True)
+    except Exception:
+        state = torch.load(path, map_location=device)
+    if hasattr(state, "state_dict"):
+        model.load_state_dict(state.state_dict())
+    elif isinstance(state, dict) and "model_state_dict" in state:
+        model.load_state_dict(state["model_state_dict"])
+    else:
+        model.load_state_dict(state)
+
+
 if __name__ == "__main__":
     # 简单测试：验证维度是否匹配
     batch_size = 4

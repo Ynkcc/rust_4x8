@@ -39,7 +39,7 @@ from constant import (
     SCALAR_FEATURE_COUNT,
     TOTAL_INPUT_CHANNELS,
 )
-from nn_model import BanqiNet
+from nn_model import BanqiNet, load_model_weights
 from storage import to_json_safe
 
 
@@ -78,13 +78,7 @@ def _reload_if_updated() -> None:
 
     if need_load and model_path and os.path.exists(model_path):
         try:
-            st = torch.load(model_path, map_location=_DEVICE, weights_only=True)
-            if hasattr(st, "state_dict"):
-                _MODEL.load_state_dict(st.state_dict())
-            elif isinstance(st, dict) and "model_state_dict" in st:
-                _MODEL.load_state_dict(st["model_state_dict"])
-            else:
-                _MODEL.load_state_dict(st)
+            load_model_weights(_MODEL, model_path, _DEVICE)
             print(f"[predictor_entry] Loaded weights from {model_path}")
         except Exception as exc:  # pragma: no cover
             print(f"[predictor_entry] Failed to load {model_path}: {exc}")

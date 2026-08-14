@@ -34,7 +34,7 @@ except ImportError as exc:  # pragma: no cover
 
 from config import config
 from constant import ACTION_SPACE_SIZE
-from nn_model import BanqiNet
+from nn_model import BanqiNet, load_model_weights
 
 
 # ============================================================================
@@ -64,14 +64,7 @@ class Predictor:
         mtime = os.path.getmtime(self.model_path)
         if force or mtime > self._mtime:
             try:
-                st = torch.load(self.model_path, map_location=self.device, weights_only=True)
-                # 兼容 .pt (TorchScript) 与 .pth (state_dict / checkpoint) 两种格式
-                if hasattr(st, "state_dict"):
-                    self.model.load_state_dict(st.state_dict())
-                elif isinstance(st, dict) and "model_state_dict" in st:
-                    self.model.load_state_dict(st["model_state_dict"])
-                else:
-                    self.model.load_state_dict(st)
+                load_model_weights(self.model, self.model_path, self.device)
                 self.model.eval()
                 self._mtime = mtime
                 print(f"[Predictor] 已重载权重: {self.model_path}")
