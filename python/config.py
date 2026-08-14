@@ -21,9 +21,10 @@ class Config:
     #    因此 MCTS 模拟数与温度探索窗口都应按"长局 + 高随机"特性选取。
     #  - scheduler.step() 在每个训练 batch 后调用一次，LR_DECAY_STEPS 需按
     #    预计总 batch 数估算，不能取小，否则 LR 过早衰减到 eta_min 导致模型"石化"。
-    # Gumbel AlphaZero 在小 sim 数下仍有效；64 sim 兼顾质量与吞吐（vs 基线 24 sim / 7.1 samples/s）
-    MCTS_SIMS = 64
-    MAX_CONSIDERED_ACTIONS = 16
+    # Gumbel AlphaZero 在小 sim 数下仍有效；128 sim 兼顾质量与吞吐（vs 基线 24 sim / 7.1 samples/s），
+    # 可显著减少日志中 "MCTS 实际模拟数为 0、提前终止搜索" 的终局搜索不足现象。
+    MCTS_SIMS = 128
+    MAX_CONSIDERED_ACTIONS = 24
     TEMPERATURE_STEPS = 16
     GAMES_PER_ITER = 100
     # 多 worker 并行自对弈：交错 CPU MCTS 遍历与 GPU 推理，消除 CPU/GPU 交替空闲
