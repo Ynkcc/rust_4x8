@@ -57,13 +57,15 @@ impl DarkChessEnv {
         vec.push(self.get_hp(my) as f32 / INITIAL_HEALTH_POINTS as f32);
         vec.push(self.get_hp(opp) as f32 / INITIAL_HEALTH_POINTS as f32);
 
+        let dead_counts = self.get_dead_piece_counts_by_type();
         for &player in &[my, opp] {
-            let bitboards = &self.get_piece_bitboards()[player.idx()];
             for pt in 0..NUM_PIECE_TYPES {
-                let count = bitboards[pt].count_ones() as usize;
-                let max_count = PIECE_MAX_COUNTS[pt];
+                // 存活数 = 该类总数 - 该类阵亡数
+                // （阵亡计数在 apply_move_action 吃子时维护，天然覆盖吃暗子/炮吃己方暗子）
+                let dead = dead_counts[player.idx()][pt] as usize;
+                let count = PIECE_MAX_COUNTS[pt].saturating_sub(dead);
                 vec.extend(std::iter::repeat(1.0).take(count));
-                vec.extend(std::iter::repeat(0.0).take(max_count - count));
+                vec.extend(std::iter::repeat(0.0).take(PIECE_MAX_COUNTS[pt] - count));
             }
         }
     }

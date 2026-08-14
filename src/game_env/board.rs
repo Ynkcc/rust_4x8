@@ -37,6 +37,8 @@ pub struct DarkChessEnv {
     dead_pieces_pool: [[PieceType; TOTAL_PIECES_PER_PLAYER]; 2],
     /// 阵亡棋子计数 [PlayerIdx]
     dead_pieces_count: [usize; 2],
+    /// 按棋子类型统计的阵亡计数 [PlayerIdx][PieceType]，供存活向量/棋谱推导使用
+    dead_piece_counts_by_type: [[u8; NUM_PIECE_TYPES]; 2],
 
     /// 玩家分数/血量
     scores: [i32; 2],
@@ -74,6 +76,7 @@ impl DarkChessEnv {
             // 初始化阵亡列表
             dead_pieces_pool: [[PieceType::default(); TOTAL_PIECES_PER_PLAYER]; 2],
             dead_pieces_count: [0; 2],
+            dead_piece_counts_by_type: [[0; NUM_PIECE_TYPES]; 2],
 
             scores: [0; 2],
             last_action: -1,
@@ -94,6 +97,44 @@ impl DarkChessEnv {
         env
     }
 
+    /// 从已解码的棋盘槽位与当前玩家重建环境（供对局记录还原 / 棋谱文字解析使用）。
+    ///
+    /// 与 `new()` 不同，此构造器不随机生成隐藏棋子，而是直接采用给定的槽位布局，
+    /// 因此只能用于校验类操作（如重新生成 action_masks / 展示棋盘），不能用于正常对局。
+    pub fn from_board(board: [Slot; TOTAL_POSITIONS], current_player: Player) -> Self {
+        let mut env = Self {
+            board,
+            current_player,
+            move_counter: 0,
+            total_step_counter: 0,
+            piece_bitboards: [[0; NUM_PIECE_TYPES]; 2],
+            revealed_bitboards: [0; 2],
+            hidden_bitboard: 0,
+            empty_bitboard: 0,
+            dead_pieces_pool: [[PieceType::default(); TOTAL_PIECES_PER_PLAYER]; 2],
+            dead_pieces_count: [0; 2],
+            dead_piece_counts_by_type: [[0; NUM_PIECE_TYPES]; 2],
+            scores: [INITIAL_HEALTH_POINTS, INITIAL_HEALTH_POINTS],
+            last_action: -1,
+            hidden_pieces_pool: [Piece::default(); TOTAL_POSITIONS],
+            hidden_pieces_count: 0,
+            reveal_probabilities: [0.0; REVEAL_PROBABILITY_SIZE],
+            seed: None,
+            true_board: None,
+        };
+        for (sq, slot) in board.iter().enumerate() {
+            match slot {
+                Slot::Empty => env.empty_bitboard |= ull(sq),
+                Slot::Hidden => env.hidden_bitboard |= ull(sq),
+                Slot::Revealed(p) => {
+                    env.revealed_bitboards[p.player.idx()] |= ull(sq);
+                    env.piece_bitboards[p.player.idx()][p.piece_type as usize] |= ull(sq);
+                }
+            }
+        }
+        env
+    }
+
     pub fn get_coords_for_action(&self, action: usize) -> Option<&Vec<usize>> {
         action_lookup_tables().action_to_coords.get(action)
     }
@@ -109,6 +150,7 @@ impl DarkChessEnv {
 
         // 重置阵亡计数，无需清空 pool 内容，依靠 count 即可
         self.dead_pieces_count = [0; 2];
+        self.dead_piece_counts_by_type = [[0; NUM_PIECE_TYPES]; 2];
 
         self.scores = [INITIAL_HEALTH_POINTS, INITIAL_HEALTH_POINTS];
 
@@ -348,46 +390,47 @@ impl DarkChessEnv {
         let p = attacker.player;
         let pt = attacker.piece_type as usize;
 
-        let my_revealed_bb = &mut self.revealed_bitboards[p.idx()];
-        *my_revealed_bb &= !attacker_mask;
-
-        let my_pt_bb = &mut self.piece_bitboards[p.idx()][pt];
-        *my_pt_bb &= !attacker_mask;
-
+        // --- 1. 清除攻击方在源格 from_sq 的 bitboard，源格标为空位 ---
+        self.revealed_bitboards[p.idx()] &= !attacker_mask;
+        self.piece_bitboards[p.idx()][pt] &= !attacker_mask;
         self.empty_bitboard |= attacker_mask;
 
-        *my_revealed_bb |= defender_mask;
-        *my_pt_bb |= defender_mask;
+        // --- 2. 目标格 to_sq：彻底清除所有既有归属，再写入攻击方 ---
+        // 这样保证 bitboard 与 board 数组严格一致，且不依赖"被吃子必为对方"的假设。
+        // （关键修复：炮隔子打己方暗子翻开己方棋子时，被翻开子与攻击方同阵营，
+        //   旧的增量清除逻辑会把攻击方自身从目标格误清，导致该格在观测中"全 0"。）
+        self.hidden_bitboard &= !defender_mask;
         self.empty_bitboard &= !defender_mask;
+        for player_idx in 0..2 {
+            self.revealed_bitboards[player_idx] &= !defender_mask;
+            for t in 0..NUM_PIECE_TYPES {
+                self.piece_bitboards[player_idx][t] &= !defender_mask;
+            }
+        }
+        self.revealed_bitboards[p.idx()] |= defender_mask;
+        self.piece_bitboards[p.idx()][pt] |= defender_mask;
 
         match target_slot {
             Slot::Empty => {
                 self.move_counter += 1;
             }
             Slot::Revealed(defender) => {
-                let opp = defender.player;
-                let opp_pt = defender.piece_type as usize;
-
-                let opp_revealed_bb = &mut self.revealed_bitboards[opp.idx()];
-                *opp_revealed_bb &= !defender_mask;
-
-                let opp_pt_bb = &mut self.piece_bitboards[opp.idx()][opp_pt];
-                *opp_pt_bb &= !defender_mask;
-
-                // 记录被吃子 (使用 Array + Count 模拟 push)
-                let opp_idx = defender.player.idx();
-                let dead_idx = self.dead_pieces_count[opp_idx];
+                // 吃子：移除被攻击棋子并扣其所属方血量。
+                // 注意：炮可以攻击同阵营暗子（翻开确认身份），defender 可能为己方棋子，
+                // 此时同样移除它并扣己方血量——规则允许炮吃己方暗子。
+                let victim_idx = defender.player.idx();
+                let dead_idx = self.dead_pieces_count[victim_idx];
                 if dead_idx < TOTAL_PIECES_PER_PLAYER {
-                    self.dead_pieces_pool[opp_idx][dead_idx] = defender.piece_type;
-                    self.dead_pieces_count[opp_idx] += 1;
+                    self.dead_pieces_pool[victim_idx][dead_idx] = defender.piece_type;
+                    self.dead_pieces_count[victim_idx] += 1;
+                    // 按棋子类型累计阵亡计数，供存活向量与棋谱推导
+                    self.dead_piece_counts_by_type[victim_idx][defender.piece_type as usize] += 1;
                 } else {
                     // 理论上不可能发生，除非逻辑错误
                     panic!("Dead pieces buffer overflow!");
                 }
-
                 let score = &mut self.scores[defender.player.idx()];
                 *score = score.saturating_sub(defender.piece_type.value());
-
                 self.move_counter = 0;
             }
             Slot::Hidden => {
@@ -532,6 +575,11 @@ impl DarkChessEnv {
         &self.piece_bitboards
     }
 
+    /// 获取按棋子类型统计的阵亡计数 (供 features.rs 计算存活向量)
+    pub(super) fn get_dead_piece_counts_by_type(&self) -> &[[u8; NUM_PIECE_TYPES]; 2] {
+        &self.dead_piece_counts_by_type
+    }
+
     pub(super) fn get_revealed_bitboards(&self) -> &[u64; 2] {
         &self.revealed_bitboards
     }
@@ -542,5 +590,107 @@ impl DarkChessEnv {
 
     pub(super) fn get_empty_bitboard(&self) -> u64 {
         self.empty_bitboard
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 随机走子对局，持续检查每个观测的 bitboard 一致性。
+    ///
+    /// 背景：修复前，炮隔子攻击己方暗子（翻开己方棋子）时，增量式 bitboard
+    /// 清除会把攻击方自身从目标格误清，导致该格在观测中"全 0"（16 通道均为 0）。
+    /// 本测试即回归测试，确保每个格子始终恰好属于一个状态。
+    #[test]
+    fn random_game_keeps_board_consistent() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let max_games = 200;
+        for game in 0..max_games {
+            let mut env = DarkChessEnv::new();
+            let mut steps = 0;
+            let mut action_history: Vec<usize> = Vec::new();
+            let mut consistent = true;
+            let mut fail_step = 0;
+            let mut fail_active = 0usize;
+            let mut fail_sq = 0usize;
+            // 诊断：失败最后一步的 from/to 槽位
+            let mut last_from_slot: Option<Slot> = None;
+            let mut last_to_slot: Option<Slot> = None;
+            while steps < 200 {
+                let masks = env.action_masks();
+                let legal: Vec<usize> = masks
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &m)| m == 1)
+                    .map(|(i, _)| i)
+                    .collect();
+                if legal.is_empty() {
+                    break;
+                }
+                let action = legal[rng.gen_range(0..legal.len())];
+                // 记录 step 前的源/目标格状态（诊断用）
+                let coords = action_lookup_tables().action_to_coords[action].clone();
+                last_to_slot = if coords.len() == 2 {
+                    Some(env.board[coords[1]])
+                } else {
+                    None
+                };
+                last_from_slot = if coords.len() == 2 {
+                    Some(env.board[coords[0]])
+                } else {
+                    None
+                };
+                match env.step(action, None) {
+                    Ok((obs, _, terminated, truncated, _)) => {
+                        action_history.push(action);
+                        // 检查一致性
+                        let b = obs.board.as_slice().unwrap();
+                        for sq in 0..TOTAL_POSITIONS {
+                            let active = (0..BOARD_CHANNELS)
+                                .filter(|&pt| b[pt * TOTAL_POSITIONS + sq] > 0.5)
+                                .count();
+                            if active != 1 {
+                                consistent = false;
+                                fail_step = steps + 1;
+                                fail_active = active;
+                                fail_sq = sq;
+                                break;
+                            }
+                        }
+                        if !consistent {
+                            break;
+                        }
+                        if terminated || truncated {
+                            break;
+                        }
+                        steps += 1;
+                    }
+                    Err(e) => {
+                        panic!("第{steps}步: env.step 返回 Err: {e}");
+                    }
+                }
+            }
+            if !consistent {
+                // 打印动作序列，便于精确复现
+                let coords: Vec<String> = action_history
+                    .iter()
+                    .map(|&a| match action_lookup_tables().action_to_coords[a].len() {
+                        1 => format!("翻({})", action_lookup_tables().action_to_coords[a][0]),
+                        _ => format!(
+                            "({}->{})",
+                            action_lookup_tables().action_to_coords[a][0],
+                            action_lookup_tables().action_to_coords[a][1]
+                        ),
+                    })
+                    .collect();
+                panic!(
+                    "第{game}局 第{fail_step}步: 第{fail_sq}格 归属通道数={fail_active} (应为1)\n\
+                     最后动作 from_slot={:?} to_slot={:?}\n动作序列: {coords:?}",
+                    last_from_slot, last_to_slot
+                );
+            }
+        }
     }
 }
