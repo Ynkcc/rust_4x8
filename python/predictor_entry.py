@@ -4,7 +4,7 @@ predictor_entry.py — PyO3 独立 Rust bin (banqi-py-collector) 使用的入口
 Rust bin 会：
 1. 以 Python 嵌入模式启动
 2. import 本模块
-3. 调用 `predict(board, scalars)` 做神经网络推理
+3. 调用 `predict(board, scalars)` 做神经网络推理（内部按 PREDICT_BATCH=32 分块）
 4. 可选调用 `save_episodes(episode_dicts)` 保存整局记录
 
 环境变量 (由 Rust bin 读取)：
@@ -19,105 +19,28 @@ Rust bin 会：
 
 from __future__ import annotations
 
-import os
 import json
-import glob
-from typing import List, Dict, Any, Tuple
+import os
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
 try:
     import torch
-    import torch.nn as nn
-    import torch.nn.functional as F
     HAS_TORCH = True
 except ImportError:  # pragma: no cover
     HAS_TORCH = False
 
 from constant import (
-    TOTAL_INPUT_CHANNELS,
-    HIDDEN_CHANNELS,
-    NUM_RES_BLOCKS,
+    ACTION_SPACE_SIZE,
+    BOARD_CHANNELS,
     BOARD_ROWS,
     BOARD_COLS,
-    BOARD_CHANNELS,
     SCALAR_FEATURE_COUNT,
-    ACTION_SPACE_SIZE,
-    NUM_PIECE_TYPES,
-    TOTAL_PIECES_PER_PLAYER,
+    TOTAL_INPUT_CHANNELS,
 )
-
-
-# ---------------------------------------------------------------------------
-# 模型定义 (与 python/nn_model.py 保持一致，避免循环 import)
-# ---------------------------------------------------------------------------
-
-class BasicBlock(nn.Module):
-    def __init__(self, channels: int) -> None:
-        super().__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(channels)
-
-    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
-        residual = x
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += residual
-        return F.relu(out)
-
-
-class BanqiNet(nn.Module):
-    def __init__(
-        self,
-        num_res_blocks: int = NUM_RES_BLOCKS,
-        hidden_channels: int = HIDDEN_CHANNELS,
-        policy_channels: int = 4,
-        value_channels: int = 4,
-    ) -> None:
-        super().__init__()
-        self.conv_input = nn.Conv2d(
-            TOTAL_INPUT_CHANNELS, hidden_channels,
-            kernel_size=3, padding=1, bias=False,
-        )
-        self.bn_input = nn.BatchNorm2d(hidden_channels)
-        self.res_tower = nn.ModuleList(
-            [BasicBlock(hidden_channels) for _ in range(num_res_blocks)]
-        )
-
-        self.policy_conv = nn.Conv2d(hidden_channels, policy_channels, kernel_size=1, bias=False)
-        self.policy_bn = nn.BatchNorm2d(policy_channels)
-        policy_flat = policy_channels * BOARD_ROWS * BOARD_COLS
-        self.policy_fc1 = nn.Linear(policy_flat + SCALAR_FEATURE_COUNT, 512)
-        self.policy_fc2 = nn.Linear(512, ACTION_SPACE_SIZE)
-
-        self.value_conv = nn.Conv2d(hidden_channels, value_channels, kernel_size=1, bias=False)
-        self.value_bn = nn.BatchNorm2d(value_channels)
-        value_flat = value_channels * BOARD_ROWS * BOARD_COLS
-        self.value_fc1 = nn.Linear(value_flat + SCALAR_FEATURE_COUNT, 256)
-        self.value_fc2 = nn.Linear(256, 1)
-
-    def forward(
-        self, board: "torch.Tensor", scalars: "torch.Tensor"
-    ) -> Tuple["torch.Tensor", "torch.Tensor"]:
-        x = F.relu(self.bn_input(self.conv_input(board)))
-        for block in self.res_tower:
-            x = block(x)
-
-        p = F.relu(self.policy_bn(self.policy_conv(x)))
-        p = p.view(p.size(0), -1)
-        p = torch.cat([p, scalars], dim=1)
-        p = F.relu(self.policy_fc1(p))
-        policy_logits = self.policy_fc2(p)
-
-        v = F.relu(self.value_bn(self.value_conv(x)))
-        v = v.view(v.size(0), -1)
-        v = torch.cat([v, scalars], dim=1)
-        v = F.relu(self.value_fc1(v))
-        value = torch.tanh(self.value_fc2(v))
-
-        return policy_logits, value
+from nn_model import BanqiNet
+from storage import to_json_safe
 
 
 # ---------------------------------------------------------------------------
@@ -155,8 +78,13 @@ def _reload_if_updated() -> None:
 
     if need_load and model_path and os.path.exists(model_path):
         try:
-            state = torch.load(model_path, map_location=_DEVICE, weights_only=True)
-            _MODEL.load_state_dict(state)
+            st = torch.load(model_path, map_location=_DEVICE, weights_only=True)
+            if hasattr(st, "state_dict"):
+                _MODEL.load_state_dict(st.state_dict())
+            elif isinstance(st, dict) and "model_state_dict" in st:
+                _MODEL.load_state_dict(st["model_state_dict"])
+            else:
+                _MODEL.load_state_dict(st)
             print(f"[predictor_entry] Loaded weights from {model_path}")
         except Exception as exc:  # pragma: no cover
             print(f"[predictor_entry] Failed to load {model_path}: {exc}")
@@ -164,8 +92,24 @@ def _reload_if_updated() -> None:
     _MODEL.eval()
 
 
+def _infer_batch(board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """单次推理，输入已是完整 batch（不拆分）。"""
+    from config import config
+
+    with torch.no_grad():
+        b = torch.from_numpy(np.ascontiguousarray(board)).to(_DEVICE)
+        s = torch.from_numpy(np.ascontiguousarray(scalars)).to(_DEVICE)
+        logits, value = _MODEL(b, s)  # type: ignore[misc]
+        # 忽略未使用的 import，避免仅用于类型提示时的告警
+        _ = config
+        return (
+            logits.detach().cpu().numpy().astype(np.float32),
+            value.detach().cpu().numpy().reshape(-1).astype(np.float32),
+        )
+
+
 # ---------------------------------------------------------------------------
-# Rust 回调：预测接口 (输入 numpy，返回 numpy)
+# Rust 回调：预测接口 (输入 numpy，返回 numpy；内部按 PREDICT_BATCH=32 分块)
 # ---------------------------------------------------------------------------
 
 def predict(board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -177,24 +121,43 @@ def predict(board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndar
     返回:
         policy_logits: (N, ACTION_SPACE_SIZE) float32
         values:        (N,) float32
+
+    注意：Rust 侧 envs.len() 可能任意，这里按 PREDICT_BATCH 分块送入模型，
+    再拼接结果，避免一次性推理过大 batch 导致显存/内存峰值。
     """
+    from config import config
+
     batch = board.shape[0]
 
-    if HAS_TORCH:
-        _reload_if_updated()
-        with torch.no_grad():
-            b = torch.from_numpy(np.ascontiguousarray(board)).to(_DEVICE)
-            s = torch.from_numpy(np.ascontiguousarray(scalars)).to(_DEVICE)
-            logits, value = _MODEL(b, s)  # type: ignore[misc]
-            return (
-                logits.detach().cpu().numpy().astype(np.float32),
-                value.detach().cpu().numpy().reshape(-1).astype(np.float32),
-            )
+    if not HAS_TORCH:
+        # 无 torch 时的退化：均匀 logits + 0 值
+        return (
+            np.zeros((batch, ACTION_SPACE_SIZE), dtype=np.float32),
+            np.zeros(batch, dtype=np.float32),
+        )
 
-    # 无 torch 时的退化：均匀 logits + 0 值
+    _reload_if_updated()
+
+    if batch == 0:
+        return (
+            np.zeros((0, ACTION_SPACE_SIZE), dtype=np.float32),
+            np.zeros(0, dtype=np.float32),
+        )
+
+    chunk = config.PREDICT_BATCH
+    if batch <= chunk:
+        return _infer_batch(board, scalars)
+
+    policy_list: List[np.ndarray] = []
+    value_list: List[np.ndarray] = []
+    for i in range(0, batch, chunk):
+        pl, vl = _infer_batch(board[i : i + chunk], scalars[i : i + chunk])
+        policy_list.append(pl)
+        value_list.append(vl)
+
     return (
-        np.zeros((batch, ACTION_SPACE_SIZE), dtype=np.float32),
-        np.zeros(batch, dtype=np.float32),
+        np.concatenate(policy_list, axis=0).astype(np.float32),
+        np.concatenate(value_list, axis=0).astype(np.float32),
     )
 
 
@@ -220,27 +183,13 @@ def save_episodes(episodes: List[Dict[str, Any]]) -> None:
     )
     with open(jsonl_path, "a", encoding="utf-8") as fp:
         for ep in episodes:
-            fp.write(json.dumps(_to_json_safe(ep), ensure_ascii=False))
+            fp.write(json.dumps(to_json_safe(ep), ensure_ascii=False))
             fp.write("\n")
 
     print(
         f"[predictor_entry] append {len(episodes)} episodes -> {jsonl_path}"
         f" (total now {_count_lines(jsonl_path)} lines)"
     )
-
-
-def _to_json_safe(obj: Any) -> Any:
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.floating):
-        return float(obj)
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, dict):
-        return {str(k): _to_json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_to_json_safe(v) for v in obj]
-    return obj
 
 
 def _count_lines(path: str) -> int:
@@ -251,16 +200,14 @@ def _count_lines(path: str) -> int:
         return 0
 
 
-# ---------------------------------------------------------------------------
-# CLI 自测：直接运行本脚本来验证模型 / predict 形状
-# ---------------------------------------------------------------------------
-
 # ============================================================================
 # 内存估算模块：估计挂起单局游戏 (游戏状态 + MCTS) 需要预留的内存大小
 # ============================================================================
 
 from dataclasses import dataclass, field
 from typing import List, Tuple
+
+from constant import NUM_PIECE_TYPES, TOTAL_PIECES_PER_PLAYER
 
 
 MAX_STEPS_PER_EPISODE = 100
@@ -596,22 +543,6 @@ def estimate_memory_bytes(
 ) -> int:
     """
     程序化 API：返回挂起单局游戏需要预留的内存字节数
-
-    Parameters
-    ----------
-    mcts_sims : int
-        每次 MCTS 决策的模拟次数
-    expected_game_length : int
-        预估单局游戏步数 (默认 100)
-    include_episode_storage : bool
-        是否包含整局训练数据 GameEpisode 的存储 (默认 True)
-    safety_factor : float
-        安全系数 (默认 1.5)
-
-    Returns
-    -------
-    int
-        建议预留的内存大小 (字节)
     """
     state_bytes = estimate_game_state_suspended().total_bytes
     tree_bytes = estimate_mcts_tree(mcts_sims).total_bytes
@@ -631,11 +562,3 @@ if __name__ == "__main__":
     assert pl.shape == (bs, ACTION_SPACE_SIZE)
     assert vl.shape == (bs,)
     print("OK")
-
-    print("\n" + "#" * 70)
-    print("#  运行内存估算演示")
-    print("#" * 70)
-    for sims in [32, 64, 128, 256]:
-        mem_bytes = estimate_memory_bytes(mcts_sims=sims, safety_factor=1.5)
-        print(f"  sims={sims:>4}  → 建议预留: {_sizeof_fmt(mem_bytes)}")
-    print_memory_estimate_report(mcts_sims=64, games_per_iter=10, num_workers=1)

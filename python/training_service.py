@@ -1,81 +1,56 @@
-import time
+"""
+training_service.py — 训练消费者模块（无 CLI 参数）
+
+从数据队列消费自对弈 episode，填充向量化 replay buffer，持续迭代训练，
+周期性导出 checkpoint（.pt 供 Rust 推理 / .pth 供训练恢复）。
+以线程形式运行（TrainWorker），由 run_training.py 编排。
+"""
+
+from __future__ import annotations
+
 import os
-import math
+import queue
+import random
+import threading
+import time
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
-import torch.nn.functional as F
-import numpy as np
-from pymongo import MongoClient
-import random
 
-from nn_model import BanqiNet
+from config import config
 from constant import (
     TOTAL_INPUT_CHANNELS,
     BOARD_ROWS,
     BOARD_COLS,
     SCALAR_FEATURE_COUNT,
-    ACTION_SPACE_SIZE
+    ACTION_SPACE_SIZE,
 )
+from nn_model import BanqiNet
 
-# --- Configuration ---
-MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-DB_NAME = "banqi_training"
-COLLECTION_NAME = "games"
-META_COLLECTION = "training_meta"
-MODEL_PATH = "banqi_model_latest.pt"
-STATE_DICT_PATH = "banqi_model_latest.pth"
-BATCH_SIZE = 512
-LEARNING_RATE = 2e-4
-MIN_LR = 1e-6
-LR_DECAY_STEPS = 5000
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Buffer 配置
-MAX_SAMPLE_BUFFER_SIZE = 50000
-MIN_SAMPLES_TO_START = 2000
-FETCH_LIMIT = 2000
-TRAIN_EPOCHS_PER_ROUND = 3
 
-# 闭环迭代配置
-CLOSED_LOOP = True
-POLL_INTERVAL_SEC = 10
-SAVE_EVERY_N_ROUNDS = 2
-
-# 验证集配置
-VAL_SPLIT = 0.1
-VAL_BUFFER_CAPACITY = 5000
-VAL_EVAL_MIN_BATCHES = 10
-
-# MongoDB 客户端单例
-_mongo_client = None
-_mongo_db = None
-
-
-def get_mongo_db():
-    global _mongo_client, _mongo_db
-    if _mongo_client is None:
-        _mongo_client = MongoClient(MONGO_URI)
-        _mongo_db = _mongo_client[DB_NAME]
-    return _mongo_db
-
-
-def get_mongo_collection():
-    return get_mongo_db()[COLLECTION_NAME]
-
+# ============================================================================
+# 向量化数据缓冲
+# ============================================================================
 
 class DataBuffer:
     """向量化缓冲区，优化内存并加速 Tensor 转换"""
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.boards = []
-        self.scalars = []
-        self.probs = []
-        self.values = []
-        self.masks = []
-        self.root_visits = []
 
-    def add_samples(self, samples):
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.boards: List[np.ndarray] = []
+        self.scalars: List[np.ndarray] = []
+        self.probs: List[np.ndarray] = []
+        self.values: List[float] = []
+        self.masks: List[np.ndarray] = []
+        self.root_visits: List[int] = []
+
+    def add_samples(self, samples: List[Dict]) -> None:
         for s in samples:
             board = np.array(s['board_state'], dtype=np.float32).reshape(
                 TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS
@@ -100,7 +75,7 @@ class DataBuffer:
             self.masks = self.masks[excess:]
             self.root_visits = self.root_visits[excess:]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.boards)
 
     def get_batch(self, indices):
@@ -112,27 +87,45 @@ class DataBuffer:
         return b, s, p, v, m
 
 
-def get_last_processed_id(db):
-    meta = db[META_COLLECTION].find_one({"type": "progress"})
-    return meta['last_id'] if meta else None
+def episode_to_samples(episode_dict: Dict) -> List[Dict]:
+    """
+    把一个 episode dict（来自 self_play 队列）转换为 DataBuffer 可消费的
+    sample dict 列表，字段与 Mongo GameDocument.samples 一致。
+    """
+    samples = []
+    for step_idx, (board, scalar, policy, mcts_val, completed_q,
+                    root_visit, game_result, mask) in enumerate(zip(
+        episode_dict["boards"], episode_dict["scalars"], episode_dict["policies"],
+        episode_dict["mcts_values"], episode_dict["completed_qs"],
+        episode_dict["root_visits"], episode_dict["game_results"],
+        episode_dict["action_masks"],
+    )):
+        samples.append({
+            "board_state": board,
+            "scalar_state": scalar,
+            "policy_probs": policy,
+            "mcts_value": float(mcts_val),
+            "completed_q": float(completed_q),
+            "root_visit_count": int(root_visit),
+            "game_result_value": float(game_result),
+            "action_mask": mask,
+            "step_in_game": step_idx,
+        })
+    return samples
 
 
-def save_progress(db, last_id):
-    db[META_COLLECTION].update_one(
-        {"type": "progress"},
-        {"$set": {"last_id": last_id, "updated_at": time.time()}},
-        upsert=True
-    )
+# ============================================================================
+# Checkpoint 保存 / 恢复
+# ============================================================================
 
-
-def save_checkpoint(model, optimizer, scheduler):
+def save_checkpoint(model, optimizer, scheduler) -> None:
     """
     保存完整训练状态:
     1. .pth: model + optimizer + scheduler 状态（用于断点恢复训练）
     2. .pt: TorchScript（供 Rust 推理加载）
     """
-    pt_temp_path = MODEL_PATH + ".tmp"
-    pth_temp_path = STATE_DICT_PATH + ".tmp"
+    pt_temp_path = config.MODEL_PATH + ".tmp"
+    pth_temp_path = config.STATE_DICT_PATH + ".tmp"
 
     try:
         model.eval()
@@ -149,7 +142,7 @@ def save_checkpoint(model, optimizer, scheduler):
                 'action_space': ACTION_SPACE_SIZE
             }
         }, pth_temp_path)
-        os.replace(pth_temp_path, STATE_DICT_PATH)
+        os.replace(pth_temp_path, config.STATE_DICT_PATH)
 
         with torch.no_grad():
             example_board = torch.randn(1, TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS, device=DEVICE)
@@ -157,8 +150,8 @@ def save_checkpoint(model, optimizer, scheduler):
             traced_model = torch.jit.trace(model, (example_board, example_scalars))
             traced_model.save(pt_temp_path)
 
-        os.replace(pt_temp_path, MODEL_PATH)
-        print(f"[Training] ✅ Checkpoint 保存成功: {STATE_DICT_PATH} + {MODEL_PATH}")
+        os.replace(pt_temp_path, config.MODEL_PATH)
+        print(f"[Training] ✅ Checkpoint 保存成功: {config.STATE_DICT_PATH} + {config.MODEL_PATH}")
     except Exception as e:
         print(f"[Training] ❌ Checkpoint 保存失败: {e}")
         for tmp in [pt_temp_path, pth_temp_path]:
@@ -166,16 +159,16 @@ def save_checkpoint(model, optimizer, scheduler):
                 os.remove(tmp)
 
 
-def load_checkpoint(model, optimizer, scheduler):
+def load_checkpoint(model, optimizer, scheduler) -> None:
     """
     从 .pth 恢复完整训练状态（model + optimizer + scheduler）。
     如果 .pth 不完整或缺失，回退到仅加载权重 (.pt / 全新模型)。
     """
     state_loaded = False
 
-    if os.path.exists(STATE_DICT_PATH):
+    if os.path.exists(config.STATE_DICT_PATH):
         try:
-            checkpoint = torch.load(STATE_DICT_PATH, map_location=DEVICE)
+            checkpoint = torch.load(config.STATE_DICT_PATH, map_location=DEVICE)
             model.load_state_dict(checkpoint['model_state_dict'])
             if 'optimizer_state_dict' in checkpoint:
                 try:
@@ -187,22 +180,26 @@ def load_checkpoint(model, optimizer, scheduler):
                     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 except Exception as e_sch:
                     print(f"[Training] ⚠️ Scheduler 状态加载失败 ({e_sch})，保持新初始化")
-            print(f"[Training] ✅ 从 {STATE_DICT_PATH} 恢复完整训练状态")
+            print(f"[Training] ✅ 从 {config.STATE_DICT_PATH} 恢复完整训练状态")
             state_loaded = True
         except Exception as e:
             print(f"[Training] ⚠️ 完整 .pth 加载失败 ({e})，尝试仅加载权重...")
 
-    if not state_loaded and os.path.exists(MODEL_PATH):
+    if not state_loaded and os.path.exists(config.MODEL_PATH):
         try:
-            jit_model = torch.jit.load(MODEL_PATH, map_location=DEVICE)
+            jit_model = torch.jit.load(config.MODEL_PATH, map_location=DEVICE)
             model.load_state_dict(jit_model.state_dict())
-            print(f"[Training] ✅ 从 {MODEL_PATH} 加载模型权重 (TorchScript 回退)")
+            print(f"[Training] ✅ 从 {config.MODEL_PATH} 加载模型权重 (TorchScript 回退)")
         except Exception as e2:
             print(f"[Training] ⚠️ 权重加载失败 ({e2})，使用全新模型")
 
-    if not state_loaded and not os.path.exists(MODEL_PATH) and not os.path.exists(STATE_DICT_PATH):
+    if not state_loaded and not os.path.exists(config.MODEL_PATH) and not os.path.exists(config.STATE_DICT_PATH):
         print("[Training] 📝 初始化全新模型（无 checkpoint）")
 
+
+# ============================================================================
+# 训练步骤
+# ============================================================================
 
 def train_step(model, optimizer, batch_data, device):
     model.train()
@@ -284,13 +281,13 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs):
     for epoch in range(num_epochs):
         indices = list(range(len(buffer)))
         random.shuffle(indices)
-        num_batches = len(indices) // BATCH_SIZE
+        num_batches = len(indices) // config.TRAIN_BATCH
         if num_batches == 0:
             break
 
         batch_total_l, batch_pol_l, batch_val_l = 0.0, 0.0, 0.0
         for step in range(num_batches):
-            batch_indices = indices[step * BATCH_SIZE : (step + 1) * BATCH_SIZE]
+            batch_indices = indices[step * config.TRAIN_BATCH : (step + 1) * config.TRAIN_BATCH]
             batch_data = buffer.get_batch(batch_indices)
             tl, pl, vl = train_step(model, optimizer, batch_data, DEVICE)
             scheduler.step()
@@ -311,172 +308,152 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs):
     return epoch_results, total_batches
 
 
-def main():
-    print(f"[Training] Starting service on {DEVICE}")
+# ============================================================================
+# 训练消费者线程
+# ============================================================================
 
-    # 1. 模型 + 优化器 + 调度器
-    model = BanqiNet().to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=LR_DECAY_STEPS,
-        eta_min=MIN_LR,
-    )
-    print(f"[Training] CosineAnnealingLR: lr_init={LEARNING_RATE:.2e}, "
-          f"lr_min={MIN_LR:.2e}, T_max={LR_DECAY_STEPS} steps")
+class TrainWorker(threading.Thread):
+    """
+    消费者线程：从数据队列消费 episode，填充 replay buffer 并训练。
+    训练期间缓存 0 元素（确保 sklearn/keras 风格的优雅等待）。
+    """
 
-    # 2. 恢复 checkpoint（权重 + optimizer + scheduler）
-    load_checkpoint(model, optimizer, scheduler)
+    def __init__(
+        self,
+        data_q: "queue.Queue",
+        stop_flag: "List[bool]",
+        model: Optional[BanqiNet] = None,
+    ) -> None:
+        super().__init__(name="TrainWorker", daemon=True)
+        self.data_q = data_q
+        self.stop_flag = stop_flag
+        self.model = model if model is not None else BanqiNet().to(DEVICE)
 
-    # 立即导出一次，确保 Rust 侧有可用的 .pt（如果模型是全新的就导出初始）
-    save_checkpoint(model, optimizer, scheduler)
+        # 模型 + 优化器 + 调度器
+        self.optimizer = optim.Adam(self.model.parameters(), lr=config.LEARNING_RATE)
+        self.scheduler = lr_scheduler.CosineAnnealingLR(
+            self.optimizer,
+            T_max=config.LR_DECAY_STEPS,
+            eta_min=config.MIN_LR,
+        )
+        # 恢复 checkpoint
+        load_checkpoint(self.model, self.optimizer, self.scheduler)
+        # 立即导出一次，确保 Rust 侧有可用的 .pt（全新模型也导出初始）
+        save_checkpoint(self.model, self.optimizer, self.scheduler)
 
-    # 3. 数据库连接和缓冲区
-    db = get_mongo_db()
-    collection = db[COLLECTION_NAME]
-    buffer = DataBuffer(MAX_SAMPLE_BUFFER_SIZE)
-    val_buffer = DataBuffer(VAL_BUFFER_CAPACITY)
+        self.buffer = DataBuffer(config.MAX_SAMPLE_BUFFER_SIZE)
+        self.val_buffer = DataBuffer(config.VAL_BUFFER_CAPACITY)
 
-    print(f"[Training] 🚀 开始训练（MinSamples={MIN_SAMPLES_TO_START}, "
-          f"Epochs/Round={TRAIN_EPOCHS_PER_ROUND}, ClosedLoop={CLOSED_LOOP}）...")
+        self.round_num = 0
+        self.total_batches_trained = 0
+        self.total_loss_sum = 0.0
+        self.total_policy_loss_sum = 0.0
+        self.total_value_loss_sum = 0.0
+        self._stats_lock = threading.Lock()
 
-    try:
-        last_id = get_last_processed_id(db)
-        if last_id is not None:
-            print(f"[Training] 📍 从断点继续，last_id={last_id}")
+    def _drain_new_episodes(self, max_items: int) -> List[Dict]:
+        """从队列取最多 max_items 个 episode；不足则阻塞等待首个。"""
+        episodes: List[Dict] = []
+        try:
+            first = self.data_q.get(timeout=0.5)
+        except queue.Empty:
+            return episodes
+        episodes.append(first)
+        # 尽量把队列里现有数据一次性取光
+        for _ in range(max_items - 1):
+            try:
+                episodes.append(self.data_q.get_nowait())
+            except queue.Empty:
+                break
+        return episodes
 
-        # 初始填充 replay buffer：取最新的 FETCH_LIMIT 局
-        initial_cursor = collection.find({}).sort('_id', -1).limit(FETCH_LIMIT)
-        initial_docs = list(initial_cursor)
-        # 初始数据按插入顺序（升序）加入，保持 last_id 指向最大的 _id
-        initial_docs_sorted = sorted(initial_docs, key=lambda d: d['_id'])
-        if initial_docs_sorted:
-            count_init = 0
-            for doc in initial_docs_sorted:
-                if 'samples' in doc and doc['samples']:
-                    buffer.add_samples(doc['samples'])
-                    count_init += len(doc['samples'])
-            last_id = initial_docs_sorted[-1]['_id']
-            print(f"[Training] 📥 初始加载 {len(initial_docs_sorted)} 局，{count_init} 样本 → Buffer={len(buffer)}")
+    def run(self) -> None:
+        print(f"[Training] 🚀 训练线程启动（batch={config.TRAIN_BATCH}, "
+              f"MinSamples={config.MIN_SAMPLES_TO_START}, "
+              f"Epochs/Round={config.TRAIN_EPOCHS_PER_ROUND}）...")
 
-        round_num = 0
-        total_batches_trained = 0
-        total_loss_sum = 0.0
-        total_policy_loss_sum = 0.0
-        total_value_loss_sum = 0.0
-
-        # 4. 主循环：拉新 → 训练 → 持久化
-        while True:
-            query = {"_id": {"$gt": last_id}} if last_id else {}
-            new_cursor = collection.find(query).sort('_id', 1).limit(FETCH_LIMIT)
-            new_docs = list(new_cursor)
-
-            if not new_docs:
-                if not CLOSED_LOOP:
-                    print("[Training] ✅ 离线模式：已处理完所有数据，退出")
+        while not self.stop_flag[0]:
+            episodes = self._drain_new_episodes(config.QUEUE_FETCH_BATCH)
+            if not episodes:
+                if self.stop_flag[0]:
                     break
-                # 闭环模式：等待新数据，期间每 SAVE_EVERY_N_ROUNDS 间隔尝试导出一次
-                last_save_round = round_num
-                saved_this_wait = False
-                wait_started = time.time()
-                while not new_docs:
-                    time.sleep(POLL_INTERVAL_SEC)
-                    elapsed_rounds_equiv = int((time.time() - wait_started) / 60) + round_num
-                    if elapsed_rounds_equiv - last_save_round >= SAVE_EVERY_N_ROUNDS and not saved_this_wait:
-                        save_checkpoint(model, optimizer, scheduler)
-                        saved_this_wait = True
-                    new_cursor = collection.find(query).sort('_id', 1).limit(FETCH_LIMIT)
-                    new_docs = list(new_cursor)
                 continue
 
-            # 拆分 train / val，追加到各自 buffer
-            split_point = int(len(new_docs) * (1.0 - VAL_SPLIT))
-            train_docs = new_docs[:split_point]
-            val_docs = new_docs[split_point:]
+            # 拆分 train / val（沿用原逻辑，尽量按新数据比例拆分）
+            split_point = max(1, int(len(episodes) * (1.0 - config.VAL_SPLIT)))
+            train_eps = episodes[:split_point]
+            val_eps = episodes[split_point:]
 
             count_train = 0
-            for doc in train_docs:
-                if 'samples' in doc and doc['samples']:
-                    buffer.add_samples(doc['samples'])
-                    count_train += len(doc['samples'])
+            for ep in train_eps:
+                if ep.get("num_samples", 0) > 0 or (ep.get("samples") or len(ep["boards"])):
+                    self.buffer.add_samples(episode_to_samples(ep))
+                    count_train += len(ep["boards"])
             count_val = 0
-            for doc in val_docs:
-                if 'samples' in doc and doc['samples']:
-                    val_buffer.add_samples(doc['samples'])
-                    count_val += len(doc['samples'])
+            for ep in val_eps:
+                if ep.get("num_samples", 0) > 0 or (ep.get("samples") or len(ep["boards"])):
+                    self.val_buffer.add_samples(episode_to_samples(ep))
+                    count_val += len(ep["boards"])
 
-            last_id = new_docs[-1]['_id']
-            print(f"[Training] 📥 Round#{round_num} 加载 {len(new_docs)} 局 → "
-                  f"train: {count_train}, val: {count_val} → Buffer={len(buffer)}")
+            print(f"[Training] 📥 消费 {len(episodes)} 局 → "
+                  f"train: {count_train}, val: {count_val} → Buffer={len(self.buffer)}")
 
-            # 最少样本检查（既保证 BATCH_SIZE 也保证 MIN_SAMPLES_TO_START）
-            min_required = max(BATCH_SIZE, MIN_SAMPLES_TO_START)
-            if len(buffer) < min_required:
-                print(f"[Training] ⚠️ Buffer={len(buffer)} < {min_required}，暂不训练，等待更多")
-                save_progress(db, last_id)
-                round_num += 1
+            # 最少样本检查
+            min_required = max(config.TRAIN_BATCH, config.MIN_SAMPLES_TO_START)
+            if len(self.buffer) < min_required:
+                print(f"[Training] ⚠️ Buffer={len(self.buffer)} < {min_required}，暂不训练，等待更多")
                 continue
 
-            # 对完整 Buffer 训练多个 epoch
-            epoch_results, batches_in_round = run_training_epochs(
-                model, optimizer, scheduler, buffer, TRAIN_EPOCHS_PER_ROUND
-            )
+            self._train_round()
 
-            total_batches_trained += batches_in_round
+    def _train_round(self) -> None:
+        """对完整 Buffer 训练多个 epoch，并做验证与 checkpoint。"""
+        epoch_results, batches_in_round = run_training_epochs(
+            self.model, self.optimizer, self.scheduler,
+            self.buffer, config.TRAIN_EPOCHS_PER_ROUND,
+        )
+
+        with self._stats_lock:
+            self.total_batches_trained += batches_in_round
             round_total = sum(r[0] for r in epoch_results)
             round_pol = sum(r[1] for r in epoch_results)
             round_val = sum(r[2] for r in epoch_results)
-            total_loss_sum += round_total
-            total_policy_loss_sum += round_pol
-            total_value_loss_sum += round_val
+            self.total_loss_sum += round_total
+            self.total_policy_loss_sum += round_pol
+            self.total_value_loss_sum += round_val
 
-            if epoch_results:
-                last_avg_l, last_avg_p, last_avg_v = epoch_results[-1]
-                cur_lr = optimizer.param_groups[0]['lr']
-                print(f"[Training] ✅ Round#{round_num} 结束 | {batches_in_round} 批次 | "
-                      f"Loss: {last_avg_l:.4f} (Pol: {last_avg_p:.4f}, Val: {last_avg_v:.4f}) "
-                      f"| lr={cur_lr:.2e}")
+        if epoch_results:
+            last_avg_l, last_avg_p, last_avg_v = epoch_results[-1]
+            cur_lr = self.optimizer.param_groups[0]['lr']
+            print(f"[Training] ✅ Round#{self.round_num} 结束 | {batches_in_round} 批次 | "
+                  f"Loss: {last_avg_l:.4f} (Pol: {last_avg_p:.4f}, Val: {last_avg_v:.4f}) "
+                  f"| lr={cur_lr:.2e}")
 
-            # 验证集评估
-            min_val_samples = BATCH_SIZE * VAL_EVAL_MIN_BATCHES
-            if len(val_buffer) >= min_val_samples:
-                val_result = evaluate(model, val_buffer, BATCH_SIZE, DEVICE)
-                if val_result is not None:
-                    vl, vp, vv = val_result
-                    train_ref = epoch_results[-1][0] if epoch_results else 0.0
-                    flag = " ⚠️ 过拟合?" if vl > train_ref + 0.1 else ""
-                    print(f"[Training] 📊 验证集: Loss={vl:.4f} (Pol: {vp:.4f}, Val: {vv:.4f}){flag}")
+        # 验证集评估
+        min_val_samples = config.TRAIN_BATCH * config.VAL_EVAL_MIN_BATCHES
+        if len(self.val_buffer) >= min_val_samples:
+            val_result = evaluate(self.model, self.val_buffer, config.TRAIN_BATCH, DEVICE)
+            if val_result is not None:
+                vl, vp, vv = val_result
+                train_ref = epoch_results[-1][0] if epoch_results else 0.0
+                flag = " ⚠️ 过拟合?" if vl > train_ref + 0.1 else ""
+                print(f"[Training] 📊 验证集: Loss={vl:.4f} (Pol: {vp:.4f}, Val: {vv:.4f}){flag}")
 
-            # 持久化进度 + 定时 checkpoint
-            save_progress(db, last_id)
-            round_num += 1
+        self.round_num += 1
+        if self.round_num % config.CHECKPOINT_EVERY_N_ROUNDS == 0:
+            save_checkpoint(self.model, self.optimizer, self.scheduler)
 
-            if round_num % SAVE_EVERY_N_ROUNDS == 0:
-                save_checkpoint(model, optimizer, scheduler)
+    def stats(self) -> Dict[str, float]:
+        with self._stats_lock:
+            return {
+                "round_num": self.round_num,
+                "total_batches": self.total_batches_trained,
+                "avg_loss": self.total_loss_sum / max(1, self.total_batches_trained),
+                "avg_policy_loss": self.total_policy_loss_sum / max(1, self.total_batches_trained),
+                "avg_value_loss": self.total_value_loss_sum / max(1, self.total_batches_trained),
+            }
 
-        # 循环结束 → 输出总体统计
-        if total_batches_trained > 0:
-            overall_avg_loss = total_loss_sum / total_batches_trained
-            overall_avg_pol = total_policy_loss_sum / total_batches_trained
-            overall_avg_val = total_value_loss_sum / total_batches_trained
-            print(f"\n[Training] ✅ 训练完成！总计 {total_batches_trained} 批次")
-            print(f"[Training] 平均 Loss: {overall_avg_loss:.4f} "
-                  f"(Pol: {overall_avg_pol:.4f}, Val: {overall_avg_val:.4f})")
-        else:
-            print("[Training] ⚠️ 本轮运行未执行足够训练批次")
-
-        save_checkpoint(model, optimizer, scheduler)
+    def finalize(self) -> None:
+        """最终落盘 checkpoint。"""
+        save_checkpoint(self.model, self.optimizer, self.scheduler)
         print("[Training] 🎉 最终 Checkpoint 已保存")
-
-    except KeyboardInterrupt:
-        print("[Training] Stopping (KeyboardInterrupt)...")
-        save_checkpoint(model, optimizer, scheduler)
-    except Exception as e:
-        import traceback
-        print(f"[Training] ❌ Error: {e}")
-        traceback.print_exc()
-        save_checkpoint(model, optimizer, scheduler)
-
-
-if __name__ == "__main__":
-    main()
