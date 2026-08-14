@@ -10,7 +10,7 @@ default-run = "banqi-tauri"
 [lib]
 name = "banqi_4x8"
 path = "src/lib.rs"
-crate-type = ["lib", "cdylib", "rlib"]
+crate-type = ["lib", "cdylib"]
 
 [[bin]]
 name = "banqi"
