@@ -15,6 +15,8 @@ use pyo3::types::PyDict;
 use std::env;
 use std::mem::size_of;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 // ============================================================================
@@ -78,6 +80,19 @@ pub mod memory_estimator {
                 size_bytes,
                 note: "subtotal".to_string(),
             });
+            self.total_bytes += size_bytes;
+            self.total_kb = self.total_bytes as f64 / 1024.0;
+            self.total_mb = self.total_kb / 1024.0;
+        }
+
+        /// 合并另一个 MemoryEstimate 的所有条目和总计到当前实例。
+        pub fn merge(&mut self, other: MemoryEstimate) {
+            for b in other.breakdown {
+                self.breakdown.push(b);
+            }
+            self.total_bytes += other.total_bytes;
+            self.total_kb = self.total_bytes as f64 / 1024.0;
+            self.total_mb = self.total_kb / 1024.0;
         }
 
         pub fn print_report(&self, title: &str) {
@@ -213,7 +228,7 @@ pub mod memory_estimator {
         avg_possible_states: usize,
         has_env: bool,
         has_state: bool,
-    ) -> (usize, MemoryEstimate) {
+    ) -> MemoryEstimate {
         let mut est = MemoryEstimate::new();
 
         let fixed_size = size_of::<u32>()      // visit_count
@@ -260,12 +275,7 @@ pub mod memory_estimator {
             );
         }
 
-        let total = fixed_size + children_size + vec_overhead()
-            + possible_size + vec_overhead()
-            + if has_env { box_overhead() + option_overhead() + estimate_dark_chess_env() } else { 0 }
-            + if has_state { estimate_observation() + option_overhead() } else { 0 };
-
-        (total, est)
+        est
     }
 
     pub fn estimate_mcts_tree(mcts_sims: usize) -> MemoryEstimate {
@@ -288,12 +298,13 @@ pub mod memory_estimator {
 
         let avg_children_regular = 8;
         let avg_possible_regular = 0;
-        let (regular_node_size, _) = estimate_mcts_node(
+        let regular_node_est = estimate_mcts_node(
             avg_children_regular,
             avg_possible_regular,
             false,
             false,
         );
+        let regular_node_size = regular_node_est.total_bytes;
         let regular_count = (total_nodes as f64 * (1.0 - chance_node_ratio)) as usize;
         est.add(
             &format!("普通决策节点 × {}", regular_count),
@@ -301,12 +312,13 @@ pub mod memory_estimator {
             &format!("avg {} children, 无env/state", avg_children_regular),
         );
 
-        let (chance_node_size, _) = estimate_mcts_node(
+        let chance_node_est = estimate_mcts_node(
             2,
             REVEAL_PROBABILITY_SIZE,
             false,
             false,
         );
+        let chance_node_size = chance_node_est.total_bytes;
         let chance_count = total_nodes - regular_count;
         est.add(
             &format!("机会节点 × {}", chance_count),
@@ -402,24 +414,16 @@ pub mod memory_estimator {
         );
 
         let state_est = estimate_game_state_suspended();
-        for b in &state_est.breakdown {
-            est.breakdown.push(b.clone());
-        }
-        est.total_bytes += state_est.total_bytes;
-        est.total_kb = est.total_bytes as f64 / 1024.0;
-        est.total_mb = est.total_kb / 1024.0;
+        let state_total = state_est.total_bytes;
+        est.merge(state_est);
 
         let tree_est = estimate_mcts_tree(mcts_sims);
-        for b in &tree_est.breakdown {
-            est.breakdown.push(b.clone());
-        }
-        est.total_bytes += tree_est.total_bytes;
-        est.total_kb = est.total_bytes as f64 / 1024.0;
-        est.total_mb = est.total_kb / 1024.0;
+        let tree_total = tree_est.total_bytes;
+        est.merge(tree_est);
 
         est.add(
             "--- 子项小计: 游戏状态 + MCTS树 (运行时) ---",
-            state_est.total_bytes + tree_est.total_bytes,
+            state_total + tree_total,
             "当次 MCTS 决策时的峰值占用",
         );
 
@@ -430,12 +434,7 @@ pub mod memory_estimator {
         );
 
         let ep_est = estimate_episode_storage(expected_total_steps);
-        for b in &ep_est.breakdown {
-            est.breakdown.push(b.clone());
-        }
-        est.total_bytes += ep_est.total_bytes;
-        est.total_kb = est.total_bytes as f64 / 1024.0;
-        est.total_mb = est.total_kb / 1024.0;
+        est.merge(ep_est);
 
         let _ = current_game_step;
 
@@ -465,7 +464,8 @@ pub mod memory_estimator {
             obs_sz as f64 / 1024.0,
         );
 
-        let (node_sz, _) = estimate_mcts_node(8, 0, false, false);
+        let node_est = estimate_mcts_node(8, 0, false, false);
+        let node_sz = node_est.total_bytes;
         println!(
             "  [基础结构大小]  MctsNode(普通,无env/state) = {} B",
             node_sz
@@ -545,14 +545,37 @@ fn load_python_saver(py: Python<'_>, module_path: &str, func_name: &str) -> Resu
         None => return Ok(None),
     };
 
+    // 与 load_python_predictor 保持一致：将模块父目录加入 sys.path，
+    // 否则当模块不在默认搜索路径时 import 会静默失败。
+    let dir = Path::new(module_path)
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or(".");
+    let sys = py.import_bound("sys")?;
+    let path_list = sys.getattr("path")?;
+    let _ = path_list.call_method1("insert", (0, dir));
+    let _ = path_list.call_method1("insert", (0, "."));
+
     let module = match py.import_bound(module_name) {
         Ok(m) => m,
-        Err(_) => return Ok(None),
+        Err(e) => {
+            eprintln!(
+                "[Saver] ⚠️ 无法导入 Python 模块 '{}' (函数 '{}'): {}",
+                module_name, func_name, e
+            );
+            return Ok(None);
+        }
     };
 
     let attr = match module.getattr(func_name) {
         Ok(a) => a,
-        Err(_) => return Ok(None),
+        Err(e) => {
+            eprintln!(
+                "[Saver] ⚠️ 模块 '{}' 中未找到函数 '{}': {}",
+                module_name, func_name, e
+            );
+            return Ok(None);
+        }
     };
 
     Ok(Some(attr.into()))
@@ -563,39 +586,13 @@ fn build_episode_dict<'py>(
     episode: &banqi_4x8::self_play::GameEpisode,
     iteration: usize,
     worker_id: usize,
-) -> Bound<'py, PyDict> {
-    let mut boards: Vec<Vec<f32>> = Vec::new();
-    let mut scalars: Vec<Vec<f32>> = Vec::new();
-    let mut policies: Vec<Vec<f32>> = Vec::new();
-    let mut mcts_values: Vec<f32> = Vec::new();
-    let mut completed_qs: Vec<f32> = Vec::new();
-    let mut root_visits: Vec<u32> = Vec::new();
-    let mut game_results: Vec<f32> = Vec::new();
-    let mut action_masks: Vec<Vec<i32>> = Vec::new();
-    for (obs, p, mv, cq, rv, gr, m) in &episode.samples {
-        boards.push(obs.board.as_slice().unwrap().to_vec());
-        scalars.push(obs.scalars.as_slice().unwrap().to_vec());
-        policies.push(p.clone());
-        mcts_values.push(*mv);
-        completed_qs.push(*cq);
-        root_visits.push(*rv);
-        game_results.push(*gr);
-        action_masks.push(m.clone());
-    }
-    let d = PyDict::new_bound(py);
-    d.set_item("game_length", episode.game_length).ok();
-    d.set_item("winner", episode.winner).ok();
-    d.set_item("boards", boards).ok();
-    d.set_item("scalars", scalars).ok();
-    d.set_item("policies", policies).ok();
-    d.set_item("mcts_values", mcts_values).ok();
-    d.set_item("completed_qs", completed_qs).ok();
-    d.set_item("root_visits", root_visits).ok();
-    d.set_item("game_results", game_results).ok();
-    d.set_item("action_masks", action_masks).ok();
-    d.set_item("iteration", iteration).ok();
-    d.set_item("worker_id", worker_id).ok();
-    d
+) -> PyResult<Bound<'py, PyDict>> {
+    // 复用 py::episode_to_dict，消除重复的样本序列化逻辑
+    let d = banqi_4x8::py::episode_to_dict(py, episode)?;
+    // episode_to_dict 不包含 iteration / worker_id，这里补充
+    d.set_item("iteration", iteration)?;
+    d.set_item("worker_id", worker_id)?;
+    Ok(d)
 }
 
 fn main() -> Result<()> {
@@ -627,6 +624,17 @@ fn main() -> Result<()> {
     println!("MCTS Sims: {}", mcts_sims);
     println!("Games per iteration: {}", games_per_iteration);
 
+    // 注册 Ctrl-C 信号处理器，实现优雅退出
+    let should_exit = Arc::new(AtomicBool::new(false));
+    {
+        let flag = Arc::clone(&should_exit);
+        ctrlc::set_handler(move || {
+            flag.store(true, Ordering::SeqCst);
+            eprintln!("\n[Worker-{}] 收到 Ctrl-C 信号，将在当前局结束后优雅退出...", worker_id);
+        })
+        .context("Failed to set Ctrl-C handler")?;
+    }
+
     memory_estimator::print_full_memory_report(mcts_sims, games_per_iteration);
 
     Python::with_gil(|py| -> Result<()> {
@@ -647,20 +655,34 @@ fn main() -> Result<()> {
         let mut iteration: usize = 0;
 
         loop {
+            // 检查是否收到退出信号
+            if should_exit.load(Ordering::SeqCst) {
+                eprintln!(
+                    "[Worker-{}] 优雅退出: iter={}, game_count={}",
+                    worker_id, iteration, game_count
+                );
+                break;
+            }
+
             let start_time = Instant::now();
             let episode = run_self_play(&evaluator, &config);
             let duration = start_time.elapsed();
+
+            // 再次检查信号（run_self_play 可能耗时较长）
+            if should_exit.load(Ordering::SeqCst) {
+                eprintln!(
+                    "[Worker-{}] 优雅退出（局后检查）: iter={}, game_count={}",
+                    worker_id, iteration, game_count
+                );
+                break;
+            }
 
             if episode.samples.is_empty() {
                 eprintln!(
                     "[Worker-{}] ⚠️ 生成了空游戏数据，跳过保存",
                     worker_id
                 );
-                game_count = game_count.saturating_add(1);
-                if game_count >= games_per_iteration {
-                    iteration = iteration.saturating_add(1);
-                    game_count = 0;
-                }
+                // 空局不占用迭代配额，与 data_collector.rs 语义一致
                 continue;
             }
 
@@ -681,7 +703,16 @@ fn main() -> Result<()> {
             );
 
             if let Some(ref save_cb) = saver {
-                let d = build_episode_dict(py, &episode, iteration, worker_id);
+                let d = match build_episode_dict(py, &episode, iteration, worker_id) {
+                    Ok(dict) => dict,
+                    Err(e) => {
+                        eprintln!(
+                            "[Worker-{}] ⚠️ 构建 episode dict 失败: {}",
+                            worker_id, e
+                        );
+                        continue;
+                    }
+                };
                 if let Err(e) = save_cb.call1(py, (vec![d],)) {
                     eprintln!(
                         "[Worker-{}] ⚠️ Python save callback failed: {}",
@@ -707,5 +738,8 @@ fn main() -> Result<()> {
                 game_count = 0;
             }
         }
+
+        println!("[Worker-{}] 数据收集器已停止", worker_id);
+        Ok(())
     })
 }

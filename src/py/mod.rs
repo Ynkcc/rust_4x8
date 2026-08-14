@@ -76,30 +76,55 @@ impl PyGameEpisode {
     }
 
     fn to_dict<'py>(slf: PyRef<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let game_length = slf.inner.game_length;
-        let winner = slf.inner.winner;
-        let num_samples = slf.inner.samples.len();
-        let (boards, scalars, policies, mcts_values, completed_qs, root_visits, game_results, action_masks) =
-            Self::get_samples(slf);
-
-        let dict = PyDict::new_bound(py);
-        dict.set_item("game_length", game_length)?;
-        dict.set_item("winner", winner)?;
-        dict.set_item("num_samples", num_samples)?;
-        dict.set_item("boards", boards)?;
-        dict.set_item("scalars", scalars)?;
-        dict.set_item("policies", policies)?;
-        dict.set_item("mcts_values", mcts_values)?;
-        dict.set_item("completed_qs", completed_qs)?;
-        dict.set_item("root_visits", root_visits)?;
-        dict.set_item("game_results", game_results)?;
-        dict.set_item("action_masks", action_masks)?;
-        dict.set_item("board_shape", vec![BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS])?;
-        dict.set_item("scalar_shape", vec![SCALAR_FEATURE_COUNT])?;
-        dict.set_item("action_space", ACTION_SPACE_SIZE)?;
-
-        Ok(dict)
+        episode_to_dict(py, &slf.inner)
     }
+}
+
+/// 将 GameEpisode 序列化为 PyDict（供 `PyGameEpisode::to_dict` 和
+/// `py_data_collector.rs` 共用，消除重复逻辑）。
+#[cfg(feature = "pyo3")]
+pub fn episode_to_dict<'py>(
+    py: Python<'py>,
+    episode: &GameEpisode,
+) -> PyResult<Bound<'py, PyDict>> {
+    let n = episode.samples.len();
+    let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);
+    let mut scalars: Vec<Vec<f32>> = Vec::with_capacity(n);
+    let mut policies: Vec<Vec<f32>> = Vec::with_capacity(n);
+    let mut mcts_values: Vec<f32> = Vec::with_capacity(n);
+    let mut completed_qs: Vec<f32> = Vec::with_capacity(n);
+    let mut root_visits: Vec<u32> = Vec::with_capacity(n);
+    let mut game_results: Vec<f32> = Vec::with_capacity(n);
+    let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
+
+    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask) in &episode.samples {
+        boards.push(obs.board.as_slice().unwrap().to_vec());
+        scalars.push(obs.scalars.as_slice().unwrap().to_vec());
+        policies.push(policy.clone());
+        mcts_values.push(*mcts_val);
+        completed_qs.push(*completed_q);
+        root_visits.push(*root_visit);
+        game_results.push(*game_result);
+        action_masks.push(mask.clone());
+    }
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("game_length", episode.game_length)?;
+    dict.set_item("winner", episode.winner)?;
+    dict.set_item("num_samples", n)?;
+    dict.set_item("boards", boards)?;
+    dict.set_item("scalars", scalars)?;
+    dict.set_item("policies", policies)?;
+    dict.set_item("mcts_values", mcts_values)?;
+    dict.set_item("completed_qs", completed_qs)?;
+    dict.set_item("root_visits", root_visits)?;
+    dict.set_item("game_results", game_results)?;
+    dict.set_item("action_masks", action_masks)?;
+    dict.set_item("board_shape", vec![BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS])?;
+    dict.set_item("scalar_shape", vec![SCALAR_FEATURE_COUNT])?;
+    dict.set_item("action_space", ACTION_SPACE_SIZE)?;
+
+    Ok(dict)
 }
 
 #[cfg(feature = "pyo3")]
@@ -151,11 +176,11 @@ impl PySelfPlayConfig {
 /// 空局（`samples` 为空）不计入目标局数，打印告警后跳过并继续生成，
 /// 保证返回值长度恰好为 `num_games`。
 ///
-/// 注意：并行版（`_run_parallel_self_play_with_predictor`）是"每 worker 固定运行
+/// 注意：并行版（`run_parallel_self_play_with_predictor_impl`）是"每 worker 固定运行
 /// `games_per_worker` 轮、空局跳过"，二者在"空局不占配额、返回非空局数量"上语义一致，
 /// 但并行版每 worker 返回数 ≤ `games_per_worker`，总量以 `take(total_games)` 兜底。
 #[cfg(feature = "pyo3")]
-pub fn _run_self_play_with_predictor(
+pub fn run_self_play_with_predictor_impl(
     predict_fn: PyObject,
     cfg: SelfPlayConfig,
     num_games: usize,
@@ -210,7 +235,7 @@ pub fn _run_self_play_with_predictor(
 ///   若 predictor 内部有 time.sleep / IO 等待，sleep 会释放 GIL，从而让多个 worker 的等待
 ///   可以真正并发叠加，吞吐随 worker 数近似线性扩展。
 #[cfg(feature = "pyo3")]
-pub fn _run_parallel_self_play_with_predictor(
+pub fn run_parallel_self_play_with_predictor_impl(
     predict_fn: PyObject,
     cfg: SelfPlayConfig,
     num_workers: usize,

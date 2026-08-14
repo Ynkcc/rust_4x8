@@ -46,6 +46,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 num_cpus = "1.17"
 mongodb = { version = "3.8" }
 bson = "2.15"
+ctrlc = "3.4"
 
 # gRPC 依赖 - 保留用于可能的 Python 服务通信
 tonic = "0.12"

@@ -52,8 +52,8 @@ use pyo3::prelude::*;
 use crate::game_env::{BOARD_CHANNELS, SCALAR_FEATURE_COUNT};
 #[cfg(feature = "pyo3")]
 use crate::py::{
-    PyGameEpisode, PySelfPlayConfig, _run_parallel_self_play_with_predictor,
-    _run_self_play_with_predictor,
+    PyGameEpisode, PySelfPlayConfig, run_parallel_self_play_with_predictor_impl,
+    run_self_play_with_predictor_impl,
 };
 #[cfg(feature = "pyo3")]
 use crate::self_play::SelfPlayConfig;
@@ -72,7 +72,7 @@ fn run_self_play_with_predictor(
         Some(c) => c.inner.clone(),
         None => SelfPlayConfig::default(),
     };
-    Ok(_run_self_play_with_predictor(predict_fn, cfg, num_games, worker_id))
+    Ok(run_self_play_with_predictor_impl(predict_fn, cfg, num_games, worker_id))
 }
 
 #[cfg(feature = "pyo3")]
@@ -90,7 +90,7 @@ fn run_parallel_self_play_with_predictor(
         Some(c) => c.inner.clone(),
         None => SelfPlayConfig::default(),
     };
-    Ok(_run_parallel_self_play_with_predictor(
+    Ok(run_parallel_self_play_with_predictor_impl(
         predict_fn,
         cfg,
         num_workers,
