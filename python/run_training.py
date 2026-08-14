@@ -84,6 +84,9 @@ def main() -> None:
     print(f"  INFER_DEVICE    = {config.INFER_DEVICE}（自对弈 MCTS 推理）")
     print(f"  CPU_AUX_WORKERS = {config.INFER_CPU_AUX_WORKERS}（>0 启用 GPU+CPU 混合推理）")
     print(f"  TRAIN_DEVICE    = {config.TRAIN_DEVICE}（训练，auto 自动选择）")
+    print(f"  AUGMENT         = {'✅ 开' if config.DATA_AUGMENT_ENABLED else '❌ 关'}"
+          f"（对称变换: {config.DATA_AUGMENT_TRANSFORMS}，"
+          f"保留原始: {config.DATA_AUGMENT_KEEP_ORIGINAL}；仅训练侧，冷存储存原始数据）")
     if config.MONITOR_ENABLED and HAS_MONITOR:
         print(f"  MONITOR         = 每 {config.MONITOR_INTERVAL:.0f}s 采样一次"
               f"（CSV: {config.MONITOR_CSV_PATH or '关闭'}）")

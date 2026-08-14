@@ -32,6 +32,13 @@ from constant import (
 from nn_model import BanqiNet
 from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 
+# 训练数据对称增强（仅训练侧；冷存储归档不应用，见 run_training.py 队列拆分）
+try:
+    from data_augmentation import augment_samples
+    HAS_AUGMENT = True
+except ImportError:  # pragma: no cover
+    HAS_AUGMENT = False
+
 def _resolve_device(spec: str) -> "torch.device":
     """按 config.TRAIN_DEVICE 解析训练设备；auto = CUDA 可用则用 CUDA。"""
     if spec == "auto":
@@ -364,11 +371,25 @@ class TrainWorker(threading.Thread):
                     continue
                 train_samples.extend(episode_to_samples(ep))
 
+            # 对称增强（仅训练侧）：冷存储 archive_q 保存的仍是原始 episode，
+            # 此处增强只作用于训练 replay buffer 的数据源。
+            aug_count = 0
+            if HAS_AUGMENT and config.DATA_AUGMENT_ENABLED and train_samples:
+                transforms = [t.strip() for t in config.DATA_AUGMENT_TRANSFORMS.split(",") if t.strip()]
+                raw_count = len(train_samples)
+                train_samples = augment_samples(
+                    train_samples,
+                    transforms=transforms,
+                    keep_original=config.DATA_AUGMENT_KEEP_ORIGINAL,
+                )
+                aug_count = len(train_samples) - raw_count
+
             if train_samples:
                 self.buffer.add_samples(train_samples)
 
+            aug_note = f"（增强 +{aug_count}）" if aug_count else ""
             print(f"[Training] 📥 消费 {len(episodes)} 局 → "
-                  f"train: {len(train_samples)} → Buffer={len(self.buffer)}")
+                  f"train: {len(train_samples)}{aug_note} → Buffer={len(self.buffer)}")
 
             # 最少样本检查
             min_required = max(config.TRAIN_BATCH, config.MIN_SAMPLES_TO_START)

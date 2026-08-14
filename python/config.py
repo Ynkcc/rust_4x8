@@ -54,6 +54,14 @@ class Config:
     # 每次从数据队列批量取出的局数
     QUEUE_FETCH_BATCH = 8
 
+    # =========================================================================
+    # 训练数据对称增强（data_augmentation.py）
+    # =========================================================================
+    # 仅作用于训练侧 replay buffer；冷存储（MongoDB/JSONL 归档）始终保存原始数据。
+    DATA_AUGMENT_ENABLED = os.getenv("DATA_AUGMENT_ENABLED", "1") != "0"  # 是否启用
+    DATA_AUGMENT_KEEP_ORIGINAL = os.getenv("DATA_AUGMENT_KEEP_ORIGINAL", "1") == "1"  # 增强时同时保留原始样本
+    DATA_AUGMENT_TRANSFORMS = os.getenv("DATA_AUGMENT_TRANSFORMS", "hflip,vflip,rot180")  # 候选变换（逗号分隔）
+
     # 模型文件
     MODEL_PATH = "banqi_model_latest.pt"      # TorchScript（供 Rust 推理）
     STATE_DICT_PATH = "banqi_model_latest.pth"  # state_dict（供训练恢复）
