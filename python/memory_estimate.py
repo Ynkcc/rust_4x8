@@ -5,8 +5,7 @@ memory_estimate.py — ReplayBuffer 最大内存占用估算（无 CLI 参数）
 
 补全说明（对比早期仅调用 estimate_episode_storage 的版本）：
 - ReplayBuffer 的真实实现是 training_service.DataBuffer，其容量单位是【样本数】，
-  由 config.MAX_SAMPLE_BUFFER_SIZE 决定（而非"局数"）。验证集另有一个
-  DataBuffer(config.VAL_SIZE)。本脚本据此做精确估算。
+  由 config.MAX_SAMPLE_BUFFER_SIZE 决定（而非"局数"）。本脚本据此做精确估算。
 - DataBuffer 每个字段用 Python list 存储，元素为独立 numpy 数组
   (boards / scalars / probs / masks) 或 Python 标量 (values / root_visits)，
   因此必须计入 numpy 数组对象头、Python 浮点/整型对象与 list 指针开销。
@@ -134,23 +133,19 @@ def estimate_buffer(capacity: int, label: str) -> BufferEstimate:
 
 def estimate_replay_buffer_bytes(
     train_capacity: int | None = None,
-    val_capacity: int | None = None,
 ) -> dict:
     """
     程序化 API：返回 ReplayBuffer 整体内存估算。
 
     返回 dict:
         train_buffer: BufferEstimate
-        val_buffer:   BufferEstimate
-        total_bytes:  int  （train + val 合计）
+        total_bytes:  int
     """
     train_capacity = config.MAX_SAMPLE_BUFFER_SIZE if train_capacity is None else train_capacity
-    val_capacity = config.VAL_SIZE if val_capacity is None else val_capacity
 
     train = estimate_buffer(train_capacity, "train buffer")
-    val = estimate_buffer(val_capacity, "val buffer")
-    total = train.total_bytes + val.total_bytes
-    return {"train_buffer": train, "val_buffer": val, "total_bytes": total}
+    total = train.total_bytes
+    return {"train_buffer": train, "total_bytes": total}
 
 
 def _print_field_breakdown(est: BufferEstimate) -> None:
@@ -219,7 +214,6 @@ def estimate_episode_storage_for_suspended(steps: int) -> int:
 def main() -> None:
     result = estimate_replay_buffer_bytes()
     train: BufferEstimate = result["train_buffer"]
-    val: BufferEstimate = result["val_buffer"]
     total_bytes: int = result["total_bytes"]
 
     print("\n" + "=" * 78)
@@ -227,7 +221,7 @@ def main() -> None:
     print("=" * 78)
     print(
         f"  容量来源: config.MAX_SAMPLE_BUFFER_SIZE = {config.MAX_SAMPLE_BUFFER_SIZE:,} 样本"
-        f"（训练 buffer）, config.VAL_SIZE = {config.VAL_SIZE:,} 样本（验证 buffer）"
+        f"（训练 buffer）"
     )
     print(
         f"  注: 每样本字段对应 DataBuffer 存储结构 "
@@ -237,13 +231,9 @@ def main() -> None:
     print(f"[1] {train.label}")
     _print_field_breakdown(train)
 
-    print(f"\n[2] {val.label}")
-    _print_field_breakdown(val)
-
     print("\n" + "=" * 78)
     print(f"  TOTAL: {_sizeof_fmt(total_bytes)}")
     print(f"    train buffer: {_sizeof_fmt(train.total_bytes)}")
-    print(f"    val buffer:   {_sizeof_fmt(val.total_bytes)}")
     print(f"  Python list 扩容/GC 预留建议 ×1.2: {_sizeof_fmt(int(total_bytes * 1.2))}")
     print("=" * 78 + "\n")
 

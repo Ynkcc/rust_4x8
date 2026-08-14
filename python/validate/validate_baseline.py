@@ -6,7 +6,7 @@ validate_baseline.py — 基线训练结果校验（纯 CPU，无 banqi_4x8 依�
 
 判定维度：
   1. 训练轮次 / 批次达标
-  2. train / val loss 全部有限（无 NaN/Inf/负值）
+  2. train loss 全部有限（无 NaN/Inf/负值）
   3. loss 趋势下降（末段均值 < 初段 × 0.95，或 value loss 改善）
   4. value loss 不爆炸（全程 < 1.5 且末段 < 0.8）
   5. 局统计合理（局数 / 平均局长度 / 胜负分布非单边 / 吞吐 > 0）
@@ -79,21 +79,12 @@ def _head_mean(values: List[float], frac: float = 0.5) -> float:
 
 
 def _check_loss_finite(rep: Reporter, round_history: List[dict]) -> None:
-    """train / val loss 全部有限且非负。"""
+    """train loss 全部有限且非负。"""
     train_losses = [r["train_loss"] for r in round_history]
     rep.check(
         len(train_losses) > 0 and _finite_nonneg(train_losses),
         f"train loss 全部有限非负 ({len(train_losses)} 轮)",
     )
-
-    val_losses = [
-        r["val_loss"] for r in round_history if r.get("val_loss") is not None
-    ]
-    if val_losses:
-        rep.check(_finite_nonneg(val_losses), f"val loss 全部有限非负 ({len(val_losses)} 轮)")
-    else:
-        # 验证集样本不足时可能无 val loss，不算失败，仅提示
-        print("    [INFO] 无验证集 loss（val buffer 样本不足），跳过 val 有限性检查")
 
 
 def _check_loss_trend(rep: Reporter, round_history: List[dict]) -> None:

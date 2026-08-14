@@ -82,8 +82,6 @@ def _override_baseline_config() -> Dict:
         "MAX_SAMPLE_BUFFER_SIZE": 50000,
         "MIN_SAMPLES_TO_START": 128,
         "QUEUE_FETCH_BATCH": 4,
-        "VAL_SIZE": 256,
-        "VAL_EVAL_MIN_BATCHES": 2,
         # 独立 checkpoint 路径（隔离生产模型）
         "MODEL_PATH": BASELINE_MODEL_PATH,
         "STATE_DICT_PATH": BASELINE_STATE_DICT_PATH,

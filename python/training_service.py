@@ -245,47 +245,6 @@ def train_step(model, optimizer, batch_data, device):
     return total_loss.item(), policy_loss.item(), value_loss.item()
 
 
-@torch.inference_mode()
-def evaluate(model, buffer, batch_size, device):
-    model.eval()
-    indices = list(range(len(buffer)))
-    random.shuffle(indices)
-    num_batches = len(indices) // batch_size
-    if num_batches == 0:
-        return None
-
-    total_loss_sum = 0.0
-    policy_loss_sum = 0.0
-    value_loss_sum = 0.0
-
-    for step in range(num_batches):
-        batch_indices = indices[step * batch_size : (step + 1) * batch_size]
-        boards, scalars, target_probs, target_values, masks = buffer.get_batch(batch_indices)
-
-        boards = boards.to(device, non_blocking=True)
-        scalars = scalars.to(device, non_blocking=True)
-        target_probs = target_probs.to(device, non_blocking=True)
-        target_values = target_values.to(device, non_blocking=True).view(-1, 1)
-        masks = masks.to(device, non_blocking=True)
-
-        logits, values = model(boards, scalars)
-        masked_logits = logits + (masks - 1.0) * 1e9
-        log_probs = F.log_softmax(masked_logits, dim=1)
-        policy_loss = -torch.sum(target_probs * log_probs, dim=1).mean()
-        value_loss = F.mse_loss(values, target_values)
-        total_loss = policy_loss + value_loss
-
-        total_loss_sum += total_loss.item()
-        policy_loss_sum += policy_loss.item()
-        value_loss_sum += value_loss.item()
-
-    return (
-        total_loss_sum / num_batches,
-        policy_loss_sum / num_batches,
-        value_loss_sum / num_batches,
-    )
-
-
 def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs):
     """
     在完整 replay buffer 上训练指定个 epoch。
@@ -359,7 +318,6 @@ class TrainWorker(threading.Thread):
         save_checkpoint(self.model, self.optimizer, self.scheduler)
 
         self.buffer = DataBuffer(config.MAX_SAMPLE_BUFFER_SIZE)
-        self.val_buffer = DataBuffer(config.VAL_SIZE)
 
         self.round_num = 0
         self.total_batches_trained = 0
@@ -398,33 +356,19 @@ class TrainWorker(threading.Thread):
                     break
                 continue
 
-            # 固定留出验证集：仅从最早到达的数据中抽取一次，填满后不再追加，
-            # 也不进入训练 buffer，更不会被滚动窗口覆盖（真正的 held-out）。
-            val_remaining = config.VAL_SIZE - len(self.val_buffer)
-            val_samples: List[Dict] = []
             train_samples: List[Dict] = []
-
             for ep in episodes:
                 has_data = ep.get("num_samples", 0) > 0 or (
                     ep.get("samples") or ep.get("boards"))
                 if not has_data:
                     continue
-                samples = episode_to_samples(ep)
-                if val_remaining > 0:
-                    take = min(len(samples), val_remaining)
-                    val_samples.extend(samples[:take])
-                    val_remaining -= take
-                    samples = samples[take:]
-                train_samples.extend(samples)
+                train_samples.extend(episode_to_samples(ep))
 
-            if val_samples:
-                self.val_buffer.add_samples(val_samples)
             if train_samples:
                 self.buffer.add_samples(train_samples)
 
             print(f"[Training] 📥 消费 {len(episodes)} 局 → "
-                  f"train: {len(train_samples)}, val: {len(val_samples)} "
-                  f"→ Buffer={len(self.buffer)}, ValBuffer={len(self.val_buffer)}")
+                  f"train: {len(train_samples)} → Buffer={len(self.buffer)}")
 
             # 最少样本检查
             min_required = max(config.TRAIN_BATCH, config.MIN_SAMPLES_TO_START)
@@ -457,18 +401,6 @@ class TrainWorker(threading.Thread):
                   f"Loss: {last_avg_l:.4f} (Pol: {last_avg_p:.4f}, Val: {last_avg_v:.4f}) "
                   f"| lr={cur_lr:.2e}")
 
-        # 验证集评估
-        val_tuple = None
-        min_val_samples = config.TRAIN_BATCH * config.VAL_EVAL_MIN_BATCHES
-        if len(self.val_buffer) >= min_val_samples:
-            val_result = evaluate(self.model, self.val_buffer, config.TRAIN_BATCH, DEVICE)
-            if val_result is not None:
-                vl, vp, vv = val_result
-                val_tuple = (vl, vp, vv)
-                train_ref = epoch_results[-1][0] if epoch_results else 0.0
-                flag = " ⚠️ 过拟合?" if vl > train_ref + 0.1 else ""
-                print(f"[Training] 📊 验证集: Loss={vl:.4f} (Pol: {vp:.4f}, Val: {vv:.4f}){flag}")
-
         # 逐轮指标记录（在锁内追加，供基线验证读取）
         with self._stats_lock:
             if epoch_results:
@@ -481,9 +413,6 @@ class TrainWorker(threading.Thread):
                 "train_loss": last_avg_l,
                 "train_policy_loss": last_avg_p,
                 "train_value_loss": last_avg_v,
-                "val_loss": val_tuple[0] if val_tuple else None,
-                "val_policy_loss": val_tuple[1] if val_tuple else None,
-                "val_value_loss": val_tuple[2] if val_tuple else None,
                 "lr": self.optimizer.param_groups[0]['lr'],
             }
             self.round_history.append(entry)
@@ -499,10 +428,6 @@ class TrainWorker(threading.Thread):
             add_scalar("train/policy_loss", entry["train_policy_loss"], step)
             add_scalar("train/value_loss", entry["train_value_loss"], step)
             add_scalar("train/lr", entry["lr"], step)
-            if val_tuple is not None:
-                add_scalar("val/loss", val_tuple[0], step)
-                add_scalar("val/policy_loss", val_tuple[1], step)
-                add_scalar("val/value_loss", val_tuple[2], step)
 
     def stats(self) -> Dict[str, float]:
         with self._stats_lock:

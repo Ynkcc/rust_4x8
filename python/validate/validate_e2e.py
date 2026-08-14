@@ -40,7 +40,6 @@ def _override_tiny_config() -> None:
     config.TRAIN_EPOCHS_PER_ROUND = 1
     config.MIN_SAMPLES_TO_START = 4
     config.MAX_SAMPLE_BUFFER_SIZE = 1000
-    config.VAL_SIZE = 0
     config.QUEUE_FETCH_BATCH = 2
     config.DATA_QUEUE_MAXSIZE = 8
     config.ARCHIVE_QUEUE_MAXSIZE = 16

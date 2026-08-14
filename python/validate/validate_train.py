@@ -1,5 +1,5 @@
 """
-validate_train.py — 验证 train_step / evaluate（纯 CPU）。
+validate_train.py — 验证 train_step（纯 CPU）。
 
 检查项：
   1. train_step 损失有限且 > 0
@@ -7,7 +7,6 @@ validate_train.py — 验证 train_step / evaluate（纯 CPU）。
      或验证屏蔽后合法动作上的分布近似目标）
   3. backward 后参数更新（optimizer.step 生效）
   4. clip_grad_norm 生效（梯度范数受限于 1.0）
-  5. evaluate 与手动 loss 一致
 
 运行：python python/validate/validate_train.py
 """
@@ -23,7 +22,7 @@ from validate_common import DEVICE, Reporter, run_part
 
 from constant import ACTION_SPACE_SIZE, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, TOTAL_INPUT_CHANNELS
 from nn_model import BanqiNet
-from training_service import DataBuffer, evaluate, train_step
+from training_service import train_step
 
 
 def _make_batch_data(batch: int, rng: np.random.Generator, legal_frac: float = 0.3):
@@ -138,36 +137,11 @@ def test_grad_clip() -> None:
     rep.summary()
 
 
-def test_evaluate_consistency() -> None:
-    """evaluate 返回的 loss 应与在同样数据上手动计算的 loss 一致。"""
-    rep = Reporter("evaluate consistency")
-    model = BanqiNet().to(DEVICE)
-    rng = np.random.default_rng(4)
-    # 用 DataBuffer 存样本
-    buf = DataBuffer(capacity=100)
-    from validate_common import make_episode
-    from training_service import episode_to_samples
-    for _ in range(2):
-        ep = make_episode(num_steps=5, winner=1, rng=rng)
-        buf.add_samples(episode_to_samples(ep))
-    res = evaluate(model, buf, batch_size=4, device=DEVICE)
-    rep.check(res is not None, "evaluate returned a result")
-    if res is None:
-        rep.summary()
-        return
-    vl, vp, vv = res
-    rep.check(np.isfinite(vl), f"eval total loss finite: {vl:.6f}")
-    rep.check(abs(vl - (vp + vv)) < 1e-4,
-              f"total == policy+value ({vl:.6f} vs {vp+vv:.6f})")
-    rep.summary()
-
-
 def main() -> None:
     run_part("train: train_step loss", test_train_step_loss)
     run_part("train: mask blocks illegal", test_mask_blocks_illegal)
     run_part("train: parameter update", test_parameter_update)
     run_part("train: grad clip", test_grad_clip)
-    run_part("train: evaluate consistency", test_evaluate_consistency)
 
 
 if __name__ == "__main__":

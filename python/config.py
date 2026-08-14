@@ -54,12 +54,6 @@ class Config:
     # 每次从数据队列批量取出的局数
     QUEUE_FETCH_BATCH = 8
 
-    # 验证集配置（固定留出）
-    # VAL_SIZE: 从最早到达的自对弈数据中固定留出的验证样本数，填满后不再追加、
-    #           永不进入训练 buffer、也永不被滚动窗口覆盖（真正的 held-out）。
-    VAL_SIZE = 2000
-    VAL_EVAL_MIN_BATCHES = 10
-
     # 模型文件
     MODEL_PATH = "banqi_model_latest.pt"      # TorchScript（供 Rust 推理）
     STATE_DICT_PATH = "banqi_model_latest.pth"  # state_dict（供训练恢复）
@@ -106,7 +100,7 @@ class Config:
     # =========================================================================
     # TensorBoard 训练日志（tb_logger.py）
     # =========================================================================
-    # 记录 train/val loss、lr、自对弈吞吐（selfplay/*）、系统资源（sys/*）。
+    # 记录 train loss、lr、自对弈吞吐（selfplay/*）、系统资源（sys/*）。
     # 查看方式: tensorboard --logdir <TENSORBOARD_LOG_DIR>
     TENSORBOARD_ENABLED = os.getenv("TENSORBOARD_ENABLED", "1") != "0"
     TENSORBOARD_LOG_DIR = os.getenv("TENSORBOARD_LOG_DIR", "runs")
