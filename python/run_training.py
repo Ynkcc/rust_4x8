@@ -35,6 +35,7 @@ from config import config
 from archiver import ArchiverWorker
 from self_play import (
     SelfPlayWorker,
+    build_mixed_predictor,
     build_predictor,
     build_self_play_config,
 )
@@ -81,6 +82,7 @@ def main() -> None:
     print(f"  MONGO_URI       = {config.MONGO_URI}")
     print(f"  COLLECTION      = {config.DB_NAME}.{config.COLLECTION}")
     print(f"  INFER_DEVICE    = {config.INFER_DEVICE}（自对弈 MCTS 推理）")
+    print(f"  CPU_AUX_WORKERS = {config.INFER_CPU_AUX_WORKERS}（>0 启用 GPU+CPU 混合推理）")
     print(f"  TRAIN_DEVICE    = {config.TRAIN_DEVICE}（训练，auto 自动选择）")
     if config.MONITOR_ENABLED and HAS_MONITOR:
         print(f"  MONITOR         = 每 {config.MONITOR_INTERVAL:.0f}s 采样一次"
@@ -108,7 +110,18 @@ def main() -> None:
 
     # ---- 构建 Predictor + SelfPlayConfig ----
     # 推理用 CPU（config.INFER_DEVICE），不占 GPU，把算力留给训练
-    predictor, infer_device = build_predictor(config.MODEL_PATH, device_str=config.INFER_DEVICE)
+    # 若启用了 CPU 辅助推理（INFER_CPU_AUX_WORKERS>0）且主设备为 CUDA，
+    # 则构建 GPU+CPU 混合推理 Predictor，用空闲 CPU 算力分担 GPU 推理。
+    if config.INFER_CPU_AUX_WORKERS > 0:
+        predictor, infer_device = build_mixed_predictor(
+            config.MODEL_PATH,
+            device_str=config.INFER_DEVICE,
+            cpu_workers=config.INFER_CPU_AUX_WORKERS,
+            cpu_fraction=config.INFER_CPU_FRACTION,
+            min_split_batch=config.INFER_MIN_SPLIT_BATCH,
+        )
+    else:
+        predictor, infer_device = build_predictor(config.MODEL_PATH, device_str=config.INFER_DEVICE)
     sp_cfg = build_self_play_config()
     print(
         f"[Main] banqi_4x8: BOARD=({banqi_4x8.BOARD_CHANNELS},"
@@ -116,6 +129,11 @@ def main() -> None:
         f"SCALAR={banqi_4x8.SCALAR_FEATURE_COUNT}, ACTION={banqi_4x8.ACTION_SPACE_SIZE}"
     )
     print(f"[Main] 推理设备 = {infer_device}（MCTS 自对弈，GPU 专用于训练）")
+    if config.INFER_CPU_AUX_WORKERS > 0 and infer_device.type == "cuda":
+        print(
+            f"[Main] ✅ CPU 辅助推理已启用: {config.INFER_CPU_AUX_WORKERS} 个 CPU 线程, "
+            f"每批 {config.INFER_CPU_FRACTION:.0%} 给 CPU"
+        )
 
     # ---- 三线程 ----
     workers = [

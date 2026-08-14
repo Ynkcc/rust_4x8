@@ -15,6 +15,7 @@ import os
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -120,6 +121,89 @@ class Predictor:
                 logits.cpu().numpy().astype(np.float32),
                 value.cpu().numpy().reshape(-1).astype(np.float32),
             )
+
+
+# ============================================================================
+# GPU + CPU 混合推理 Predictor
+# ============================================================================
+
+class MultiDevicePredictor:
+    """
+    GPU + CPU 混合推理 Predictor。
+
+    把一批输入按比例拆成两份：GPU 推理线程处理大头，若干个 CPU 推理线程处理
+    小头，并行推理后合并返回。这样在单个 GPU 推理线程吞吐不足以喂饱 CPU MCTS
+    自对弈时，用空闲的 CPU 算力分担推理，总吞吐 ≈ GPU 吞吐 + CPU 吞吐。
+
+    用法与 `Predictor` 完全一致：直接 `predictor(board, scalars)`，
+    返回 (policy_logits (N,352) float32, values (N,) float32)。
+
+    线程模型：
+      - GPU 侧：1 个专用线程（gpu_pool），串行化对同一个 GPU 模型的访问，
+        避免多个 MCTS worker 并发触碰 CUDA 上下文；
+      - CPU 侧：`cpu_workers` 个线程（cpu_pool），CPU 子批再均分并行推理。
+
+    依赖 PyTorch 推理时（C++ 算子执行）会释放 GIL 的特性，GPU/CPU 两个推理
+    线程的计算才能真正并行；numpy 搬运等 Python 层开销由 GIL 串行化，占比小。
+
+    权重热重载：两个子 Predictor 各自检查 model_path 的 mtime 独立热重载，
+    训练侧导出 checkpoint（原子 replace）后两者会先后加载同一份新权重。
+    """
+
+    def __init__(
+        self,
+        gpu_predictor: Predictor,
+        cpu_predictor: Predictor,
+        cpu_fraction: float = 0.3,
+        cpu_workers: int = 1,
+        min_split_batch: int = 16,
+    ) -> None:
+        if not 0.0 < cpu_fraction < 1.0:
+            raise ValueError(f"cpu_fraction 应在 (0, 1) 之间，实际为 {cpu_fraction}")
+        self._gpu = gpu_predictor
+        self._cpu = cpu_predictor
+        self.cpu_fraction = cpu_fraction
+        self.cpu_workers = max(1, cpu_workers)
+        self.min_split_batch = max(2, min_split_batch)
+        self._gpu_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-infer")
+        self._cpu_pool = ThreadPoolExecutor(max_workers=self.cpu_workers, thread_name_prefix="cpu-infer")
+
+    def __call__(self, board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        batch = board.shape[0]
+        # batch 太小：线程/拼接开销超过拆分收益，直接 GPU 一次推理
+        if batch <= self.min_split_batch:
+            return self._gpu(board, scalars)
+
+        cpu_n = max(1, min(batch - 1, int(round(batch * self.cpu_fraction))))
+        gpu_n = batch - cpu_n
+
+        # GPU 大头交给 gpu_pool（单线程，串行化 GPU 访问）
+        gpu_future = self._gpu_pool.submit(self._gpu, board[:gpu_n], scalars[:gpu_n])
+
+        # CPU 小头按 cpu_workers 均分，并行推理后按序拼接
+        cpu_board, cpu_scalar = board[gpu_n:], scalars[gpu_n:]
+        workers = min(self.cpu_workers, cpu_n)
+        if workers <= 1:
+            pl_c, vl_c = self._cpu(cpu_board, cpu_scalar)
+        else:
+            edges = [cpu_n * k // workers for k in range(workers + 1)]
+            futures = [
+                self._cpu_pool.submit(
+                    self._cpu,
+                    cpu_board[edges[i] : edges[i + 1]],
+                    cpu_scalar[edges[i] : edges[i + 1]],
+                )
+                for i in range(workers)
+            ]
+            parts = [f.result() for f in futures]
+            pl_c = np.concatenate([p[0] for p in parts], axis=0).astype(np.float32)
+            vl_c = np.concatenate([p[1] for p in parts], axis=0).astype(np.float32)
+
+        pl_g, vl_g = gpu_future.result()
+        return (
+            np.concatenate([pl_g, pl_c], axis=0).astype(np.float32),
+            np.concatenate([vl_g, vl_c], axis=0).astype(np.float32),
+        )
 
 
 # ============================================================================
@@ -302,6 +386,56 @@ def build_predictor(model_path: str | None, device_str: str = "auto") -> Tuple[P
     else:
         print(f"[SelfPlay] 未指定有效模型路径，使用全新初始化网络")
     return predictor, device
+
+
+def build_mixed_predictor(
+    model_path: str | None,
+    device_str: str = "auto",
+    cpu_workers: int = 1,
+    cpu_fraction: float = 0.3,
+    min_split_batch: int = 16,
+) -> Tuple["Predictor", "torch.device"]:
+    """
+    构建 GPU + CPU 混合推理 Predictor（MultiDevicePredictor）。
+
+    主设备（INFER_DEVICE）必须解析为 CUDA 才有混合意义：GPU 处理大头、
+    CPU 处理小头。若主设备不是 CUDA（例如 INFER_DEVICE=cpu），回退到
+    普通单设备 Predictor。
+    """
+    if not HAS_TORCH:
+        print("[SelfPlay] 警告：未安装 PyTorch，无法启用 GPU+CPU 混合推理，回退单设备")
+        return build_predictor(model_path, device_str)
+
+    device = (
+        torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device_str == "auto"
+        else torch.device(device_str)
+    )
+    if device.type != "cuda":
+        print(f"[SelfPlay] 主推理设备 = {device}（非 CUDA），跳过 GPU+CPU 混合推理")
+        return build_predictor(model_path, device_str)
+
+    print(
+        f"[SelfPlay] 启用 GPU+CPU 混合推理: GPU={device}, "
+        f"CPU线程={cpu_workers}, CPU比例={cpu_fraction:.2f}"
+    )
+    gpu_model = BanqiNet().to(device)
+    gpu_predictor = Predictor(gpu_model, device, model_path)
+
+    cpu_device = torch.device("cpu")
+    cpu_model = BanqiNet().to(cpu_device)
+    cpu_predictor = Predictor(cpu_model, cpu_device, model_path)
+
+    return (
+        MultiDevicePredictor(
+            gpu_predictor,
+            cpu_predictor,
+            cpu_fraction=cpu_fraction,
+            cpu_workers=cpu_workers,
+            min_split_batch=min_split_batch,
+        ),
+        device,
+    )
 
 
 def build_self_play_config() -> "banqi_4x8.SelfPlayConfig":

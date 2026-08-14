@@ -74,6 +74,19 @@ class Config:
     TRAIN_DEVICE = os.getenv("TRAIN_DEVICE", "auto")  # 训练设备（auto / cuda / cpu）
 
     # =========================================================================
+    # GPU + CPU 混合推理（CPU 辅助推理线程）
+    # =========================================================================
+    # 部分设备上单个 GPU 推理线程的吞吐不足以喂饱 CPU MCTS 自对弈（推理请求
+    # 在队列中堆积，CPU 利用率低）。启用后，每批推理按 INFER_CPU_FRACTION
+    # 比例拆成两份，GPU 推理线程处理大头、INFER_CPU_AUX_WORKERS 个 CPU 推理
+    # 线程处理小头，并行推理后合并，总吞吐 ≈ GPU 吞吐 + CPU 吞吐。
+    # 注意：仅当 INFER_DEVICE 解析为 CUDA 时生效（INFER_DEVICE=cpu 时无需混合）；
+    #       模型为 760K 小参数量，CPU 推理速度可观，混合后提升明显。
+    INFER_CPU_AUX_WORKERS = int(os.getenv("INFER_CPU_AUX_WORKERS", "0"))   # CPU 辅助推理线程数（0=关闭）
+    INFER_CPU_FRACTION = float(os.getenv("INFER_CPU_FRACTION", "0.3"))     # 每批拆分给 CPU 的比例 (0~1)
+    INFER_MIN_SPLIT_BATCH = int(os.getenv("INFER_MIN_SPLIT_BATCH", "16"))  # batch 小于该值时不拆分，直接 GPU
+
+    # =========================================================================
     # 队列 / 线程
     # =========================================================================
     DATA_QUEUE_MAXSIZE = 128       # 数据队列上限（episode 数）

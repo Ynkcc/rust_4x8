@@ -10,3 +10,5 @@ banqi_pb2.py
 *.ot
 *.pt
 .idea
+training_data
+runs
