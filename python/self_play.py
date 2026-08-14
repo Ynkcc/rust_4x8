@@ -44,10 +44,11 @@ from nn_model import BanqiNet, load_model_weights
 class Predictor:
     """
     薄包装：
-      - 确保模型在 eval / no_grad
+      - 确保模型在 eval / inference_mode
       - 输入/输出都是 numpy（Rust 侧转成 numpy 后传进来）
       - 简易模型热重载（检查 --model 文件 mtime）
       - 对任意 batch 按 PREDICT_BATCH 分块推理，避免显存/内存峰值
+      - TF32 + cudnn benchmark 优化吞吐
     """
 
     def __init__(self, model: "BanqiNet", device: "torch.device", model_path: str | None) -> None:
@@ -56,6 +57,14 @@ class Predictor:
         self.model_path: str | None = model_path
         self._mtime: float = 0.0
         self.model.eval()
+
+        # 吞吐优化：TF32 + cudnn auto-tune
+        # torch.compile 在 Windows 上需要 Triton（不可用），跳过；TF32 + cudnn 已提供大部分加速
+        if HAS_TORCH and device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
+            torch.set_float32_matmul_precision("high")
+            print("[Predictor] 吞吐优化: TF32 + cudnn.benchmark 已启用")
+
         self._maybe_reload_weights(force=True)
 
     def _maybe_reload_weights(self, force: bool = False) -> None:
@@ -102,13 +111,13 @@ class Predictor:
         )
 
     def _infer(self, board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        with torch.no_grad():
-            b = torch.from_numpy(np.ascontiguousarray(board)).to(self.device)
-            s = torch.from_numpy(np.ascontiguousarray(scalars)).to(self.device)
+        with torch.inference_mode():
+            b = torch.from_numpy(np.ascontiguousarray(board)).to(self.device, non_blocking=True)
+            s = torch.from_numpy(np.ascontiguousarray(scalars)).to(self.device, non_blocking=True)
             logits, value = self.model(b, s)
             return (
-                logits.detach().cpu().numpy().astype(np.float32),
-                value.detach().cpu().numpy().reshape(-1).astype(np.float32),
+                logits.cpu().numpy().astype(np.float32),
+                value.cpu().numpy().reshape(-1).astype(np.float32),
             )
 
 
@@ -157,6 +166,8 @@ class SelfPlayWorker(threading.Thread):
         self.total_samples = 0
         self.iteration = 0
         self._game_count = 0  # 当前迭代内局数
+        # 逐局统计记录（供基线验证/监控读取；纯追加，不改默认行为）
+        self.game_records: List[Dict] = []
         self._iter_lock = threading.Lock()
 
     def _put(self, q: "queue.Queue", item: Dict) -> None:
@@ -172,7 +183,19 @@ class SelfPlayWorker(threading.Thread):
         """主循环，与 data_collector.rs / py_data_collector.rs 迭代语义一致。"""
         while not self.stop_flag[0]:
             t0 = time.time()
-            if config.NUM_WORKERS > 1:
+            if config.USE_BATCHED_SELF_PLAY and hasattr(
+                banqi_4x8, "run_batched_self_play_with_predictor"
+            ):
+                # 批量自对弈：同时推进 BATCH_CONCURRENCY 局，合并成大 batch 推理，
+                # 摊薄 GPU 推理固定开销，提升吞吐。每批目标局数 = 一次迭代局数。
+                episodes = banqi_4x8.run_batched_self_play_with_predictor(
+                    predict_fn=self.predictor,
+                    config=self.sp_cfg,
+                    num_games=config.GAMES_PER_ITER,
+                    concurrency=config.BATCH_CONCURRENCY,
+                    worker_id=self.worker_id,
+                )
+            elif config.NUM_WORKERS > 1:
                 episodes = banqi_4x8.run_parallel_self_play_with_predictor(
                     predict_fn=self.predictor,
                     config=self.sp_cfg,
@@ -224,6 +247,12 @@ class SelfPlayWorker(threading.Thread):
             f"步数={ep['game_length']}, 结果={winner_str}, "
             f"耗时={duration:.1f}s ({ep['game_length'] / max(duration, 1e-9):.1f} steps/s)"
         )
+        # 逐局统计记录（在 _iter_lock 临界区内调用）
+        self.game_records.append({
+            "game_length": int(ep["game_length"]),
+            "winner": int(ep["winner"]),
+            "duration": float(duration),
+        })
 
     def stats(self) -> Dict[str, int]:
         with self._iter_lock:
@@ -232,6 +261,11 @@ class SelfPlayWorker(threading.Thread):
                 "total_games": self.total_games,
                 "total_samples": self.total_samples,
             }
+
+    def game_records_snapshot(self) -> List[Dict]:
+        """返回逐局统计记录的浅拷贝（供基线验证/监控线程安全读取）。"""
+        with self._iter_lock:
+            return list(self.game_records)
 
 
 # ============================================================================

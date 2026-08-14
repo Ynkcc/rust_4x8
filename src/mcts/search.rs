@@ -33,7 +33,7 @@ pub enum PathStep {
 /// 用于区分"预算自然耗尽"（正常退出）与"所有候选路径命中终局"（退化但良性）
 /// 两类空转，避免日志误导。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SelectPathOutcome {
+pub(crate) enum SelectPathOutcome {
     /// 正常：产出了待评估项，或完成了有效回传
     Normal,
     /// 路径命中终局节点并静默回传（未产出评估项）
@@ -64,20 +64,20 @@ pub struct GumbelMCTS<'a, E: Evaluator> {
     /// 搜索树的根节点在 Arena 中的索引
     pub root_idx: usize,
     /// 状态评估器
-    evaluator: &'a E,
+    pub(crate) evaluator: &'a E,
     /// 搜索配置
-    config: GumbelConfig,
+    pub(crate) config: GumbelConfig,
     /// Scratch pad: 用于 Gumbel 采样阶段的临时存储，避免反复堆分配
     /// Vec<(action_index, gumbel_noise_logit)>
-    scratch_gumbel: Vec<(usize, f32)>,
+    pub(crate) scratch_gumbel: Vec<(usize, f32)>,
     /// 根节点合法动作掩码：在 run() 入口处计算一次，搜索全程不可变。
     /// 作为根节点合法动作的权威来源，直接用于结果返回。
-    root_action_mask: Vec<i32>,
+    pub(crate) root_action_mask: Vec<i32>,
     /// 遍历临时缓冲：select_path_collect 中沿路径向下时复用，
     /// 存储当前遍历节点的 action mask。与 root_action_mask 物理隔离。
-    traversal_action_mask: Vec<i32>,
+    pub(crate) traversal_action_mask: Vec<i32>,
     /// 复用的随机数生成器，避免每次搜索/采样重建 thread_rng
-    rng: StdRng,
+    pub(crate) rng: StdRng,
 }
 
 impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
@@ -167,7 +167,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 从 Logits 中添加 Gumbel 噪声并选择前 K 个动作。
     /// 这是 Gumbel AlphaZero 的核心机制，用于在不进行完全树搜索的情况下选择候选动作。
     /// 使用内部 scratch_gumbel 缓存以避免重复堆分配。
-    fn sample_gumbel_top_k(&mut self, logits: &[f32], masks: &[i32], k: usize) -> Vec<usize> {
+    pub(crate) fn sample_gumbel_top_k(&mut self, logits: &[f32], masks: &[i32], k: usize) -> Vec<usize> {
         let gumbel_dist = Gumbel::new(0.0, 1.0).unwrap();
 
         // 清空并复用 scratch_gumbel
@@ -199,7 +199,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// - N > 0 时：使用 W / N
     /// - N = 0 时：使用网络预测的 initial_value，或已访问兄弟子节点的平均 Q
     /// - 根节点不存在该子动作时：返回 0.0（中性）
-    fn completed_q(&self, action: usize) -> f32 {
+    pub(crate) fn completed_q(&self, action: usize) -> f32 {
         let root = self.arena.get(self.root_idx);
         if let Some((_, child_idx)) = root
             .children
@@ -224,7 +224,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     }
 
     /// 根据 Logits 和动作掩码计算概率分布
-    fn compute_probs_from_logits(&self, logits: &[f32], masks: &[i32]) -> Vec<f32> {
+    pub(crate) fn compute_probs_from_logits(&self, logits: &[f32], masks: &[i32]) -> Vec<f32> {
         let mut probs = vec![0.0; logits.len()];
         let mut max_logit = f32::NEG_INFINITY;
 
@@ -267,7 +267,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     ///
     /// 如果路径中的任何一步在树中不存在，则会 panic。
     /// (在正常逻辑中，路径应该主要来自于树中已存在的节点，或者是刚刚扩展的节点)
-    fn get_node_idx_by_path(arena: &MctsArena, mut current_idx: usize, path: &[PathStep]) -> usize {
+    pub(crate) fn get_node_idx_by_path(arena: &MctsArena, mut current_idx: usize, path: &[PathStep]) -> usize {
         for step in path {
             let current = arena.get(current_idx);
             match *step {
@@ -309,7 +309,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// # 返回
     ///
     /// 返回从当前节点视角看到的价值 (已根据玩家视角翻转)。
-    fn backprop_from_path(
+    pub(crate) fn backprop_from_path(
         arena: &mut MctsArena,
         node_idx: usize,
         path: &[PathStep],
@@ -405,7 +405,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// * `env` - 叶子节点对应的环境
     /// * `probs` - 动作概率 (Policy)
     /// * `logits` - 动作 Logits
-    fn build_children_from_eval(
+    pub(crate) fn build_children_from_eval(
         arena: &mut MctsArena,
         node_idx: usize,
         env: &DarkChessEnv,
@@ -456,7 +456,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 该方法会列举所有可能的翻棋结果（根据剩余的暗棋），并创建对应的子节点。
     ///
     /// 大语言模型注意: 不要修改此处的全量展开逻辑。
-    fn expand_chance_node(arena: &mut MctsArena, node_idx: usize, action: usize) {
+    pub(crate) fn expand_chance_node(arena: &mut MctsArena, node_idx: usize, action: usize) {
         let (env_clone, hidden_pieces) = {
             let env = arena
                 .get(node_idx)
@@ -542,7 +542,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 模拟过程中使用 PUCT 公式 (Predictor + Upper Confidence Bound applied to Trees) 选择动作：
     /// Score = Q(s, a) + U(s, a)
     /// U(s, a) = c_puct * P(s, a) * sqrt(N(parent)) / (1 + N(child))
-    fn select_path_collect(
+    pub(crate) fn select_path_collect(
         &mut self,
         action: usize,
         batch: &mut Vec<PendingEval>,
@@ -734,7 +734,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 展开根节点
     ///
     /// 在搜索开始前，确保根节点已经被评估和扩展。
-    fn expand_root(&mut self) {
+    pub(crate) fn expand_root(&mut self) {
         let is_expanded = self.arena.get(self.root_idx).is_expanded;
         if is_expanded {
             return;

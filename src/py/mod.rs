@@ -324,6 +324,53 @@ pub fn run_parallel_self_play_with_predictor_impl(
         .collect()
 }
 
+/// 批量版：同时驱动 `concurrency` 局自对弈，并把多棵树的 MCTS 叶子评估合并成
+/// 一个大 batch 送给 predictor，显著提升推理吞吐。
+///
+/// - 空局（samples 为空）不计入目标局数，跳过后继续生成，保证返回长度 = `num_games`。
+/// - 内部使用 `self_play::run_batched_self_play`，每波并发 `concurrency` 局。
+#[cfg(feature = "pyo3")]
+pub fn run_batched_self_play_with_predictor_impl<'py>(
+    py: Python<'py>,
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    let evaluator = PyEvaluator::new(predict_fn);
+
+    let mut episodes: Vec<PyGameEpisode> = Vec::with_capacity(num_games);
+    let mut game_count = 0;
+
+    // 循环生成，直到累计 num_games 个非空 episode。
+    // 关键：`run_batched_self_play` 内部起了一个后台评估线程，评估时会
+    // `Python::with_gil`；此处必须 `py.allow_threads` 释放 GIL，否则后台线程
+    // 拿不到 GIL、主线程又等它返回，会形成互等死锁。
+    while game_count < num_games {
+        let batch: Vec<GameEpisode> = py.allow_threads(|| {
+            self_play::run_batched_self_play(
+                &evaluator,
+                &cfg,
+                num_games - game_count,
+                concurrency,
+            )
+        });
+        for ep in batch {
+            if ep.samples.is_empty() {
+                eprintln!("[Worker-{}] ⚠️ 生成了空游戏数据，跳过", worker_id);
+                continue;
+            }
+            episodes.push(PyGameEpisode { inner: ep });
+            game_count += 1;
+            if game_count >= num_games {
+                break;
+            }
+        }
+    }
+    episodes
+}
+
 /// 从对局记录 dict（`GameEpisode::to_dict()` 的输出）解析人类可读的中文棋谱描述。
 ///
 /// 内部使用 boards/scalars 逐手还原棋盘 → 重建环境 → 重新生成 action_masks 并与记录

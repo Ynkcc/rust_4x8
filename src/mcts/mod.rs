@@ -12,6 +12,7 @@
 // 2. Sequential Halving: 逐轮淘汰候选动作，分配搜索预算
 // 3. 同步执行: 无异步/递归，直接持有模型
 // 4. 确定性动作选择: 最终选择 completed_Q 最高的动作
+pub mod batched;
 pub mod budget;
 pub mod config;
 pub mod evaluator;
@@ -19,6 +20,7 @@ pub mod node;
 pub mod search;
 
 // 统一导出所有公共接口
+pub use batched::BatchedTree;
 pub use budget::SequentialHalvingBudget;
 pub use config::{GumbelConfig, MctsSearchResult};
 pub use evaluator::Evaluator;

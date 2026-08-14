@@ -53,8 +53,8 @@ use pyo3::prelude::*;
 use crate::game_env::{BOARD_CHANNELS, SCALAR_FEATURE_COUNT};
 #[cfg(feature = "pyo3")]
 use crate::py::{
-    PyGameEpisode, PySelfPlayConfig, run_parallel_self_play_with_predictor_impl,
-    run_self_play_with_predictor_impl,
+    PyGameEpisode, PySelfPlayConfig, run_batched_self_play_with_predictor_impl,
+    run_parallel_self_play_with_predictor_impl, run_self_play_with_predictor_impl,
 };
 #[cfg(feature = "pyo3")]
 use crate::self_play::SelfPlayConfig;
@@ -74,6 +74,31 @@ fn run_self_play_with_predictor(
         None => SelfPlayConfig::default(),
     };
     Ok(run_self_play_with_predictor_impl(predict_fn, cfg, num_games, worker_id))
+}
+
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (predict_fn, config=None, num_games=1, concurrency=4, worker_id=0))]
+fn run_batched_self_play_with_predictor(
+    py: Python<'_>,
+    predict_fn: PyObject,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(run_batched_self_play_with_predictor_impl(
+        py,
+        predict_fn,
+        cfg,
+        num_games,
+        concurrency,
+        worker_id,
+    ))
 }
 
 #[cfg(feature = "pyo3")]
@@ -107,6 +132,7 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySelfPlayConfig>()?;
     m.add_function(wrap_pyfunction!(run_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_parallel_self_play_with_predictor, m)?)?;
+    m.add_function(wrap_pyfunction!(run_batched_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(crate::py::describe_record, m)?)?;
 
     m.add("BOARD_ROWS", BOARD_ROWS)?;

@@ -15,9 +15,9 @@ pub struct GumbelConfig {
     pub max_considered_actions: usize,
     /// 访问次数缩放因子 (c_visit)
     /// 预留用于策略或 completed_Q 的尺度调节（当前不直接参与核心计算）
-    pub c_visit: f32,
+    pub(crate) c_visit: f32,
     /// Gumbel 噪声缩放因子 (c_scale)
-    pub c_scale: f32,
+    pub(crate) c_scale: f32,
     // 注意：Gumbel AlphaZero 的根节点探索由 Gumbel 噪声（Top-K 采样）与
     // Sequential Halving 提供；根节点子节点的 prior 不参与任何搜索决策
     // （Top-K 用 logit、根选择不经 PUCT、训练目标用 logit + σ·Q）。

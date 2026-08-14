@@ -33,6 +33,11 @@ from nn_model import BanqiNet
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# 吞吐优化：TF32 + cudnn auto-tune（训练端）
+if DEVICE.type == "cuda":
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
+
 
 # ============================================================================
 # 向量化数据缓冲
@@ -127,6 +132,9 @@ def save_checkpoint(model, optimizer, scheduler) -> None:
     pt_temp_path = config.MODEL_PATH + ".tmp"
     pth_temp_path = config.STATE_DICT_PATH + ".tmp"
 
+    # 若模型被 torch.compile 包装，取底层原始模型用于 JIT trace
+    trace_model = getattr(model, "_orig_mod", model)
+
     try:
         model.eval()
 
@@ -144,10 +152,10 @@ def save_checkpoint(model, optimizer, scheduler) -> None:
         }, pth_temp_path)
         os.replace(pth_temp_path, config.STATE_DICT_PATH)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             example_board = torch.randn(1, TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS, device=DEVICE)
             example_scalars = torch.randn(1, SCALAR_FEATURE_COUNT, device=DEVICE)
-            traced_model = torch.jit.trace(model, (example_board, example_scalars))
+            traced_model = torch.jit.trace(trace_model, (example_board, example_scalars))
             traced_model.save(pt_temp_path)
 
         os.replace(pt_temp_path, config.MODEL_PATH)
@@ -205,11 +213,11 @@ def train_step(model, optimizer, batch_data, device):
     model.train()
     boards_t, scalars_t, target_probs_t, target_values_t, masks_t = batch_data
 
-    boards_t = boards_t.to(device)
-    scalars_t = scalars_t.to(device)
-    target_probs_t = target_probs_t.to(device)
-    target_values_t = target_values_t.to(device).view(-1, 1)
-    masks_t = masks_t.to(device)
+    boards_t = boards_t.to(device, non_blocking=True)
+    scalars_t = scalars_t.to(device, non_blocking=True)
+    target_probs_t = target_probs_t.to(device, non_blocking=True)
+    target_values_t = target_values_t.to(device, non_blocking=True).view(-1, 1)
+    masks_t = masks_t.to(device, non_blocking=True)
 
     optimizer.zero_grad()
     logits, values = model(boards_t, scalars_t)
@@ -228,7 +236,7 @@ def train_step(model, optimizer, batch_data, device):
     return total_loss.item(), policy_loss.item(), value_loss.item()
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def evaluate(model, buffer, batch_size, device):
     model.eval()
     indices = list(range(len(buffer)))
@@ -245,11 +253,11 @@ def evaluate(model, buffer, batch_size, device):
         batch_indices = indices[step * batch_size : (step + 1) * batch_size]
         boards, scalars, target_probs, target_values, masks = buffer.get_batch(batch_indices)
 
-        boards = boards.to(device)
-        scalars = scalars.to(device)
-        target_probs = target_probs.to(device)
-        target_values = target_values.to(device).view(-1, 1)
-        masks = masks.to(device)
+        boards = boards.to(device, non_blocking=True)
+        scalars = scalars.to(device, non_blocking=True)
+        target_probs = target_probs.to(device, non_blocking=True)
+        target_values = target_values.to(device, non_blocking=True).view(-1, 1)
+        masks = masks.to(device, non_blocking=True)
 
         logits, values = model(boards, scalars)
         masked_logits = logits + (masks - 1.0) * 1e9
@@ -342,13 +350,15 @@ class TrainWorker(threading.Thread):
         save_checkpoint(self.model, self.optimizer, self.scheduler)
 
         self.buffer = DataBuffer(config.MAX_SAMPLE_BUFFER_SIZE)
-        self.val_buffer = DataBuffer(config.VAL_BUFFER_CAPACITY)
+        self.val_buffer = DataBuffer(config.VAL_SIZE)
 
         self.round_num = 0
         self.total_batches_trained = 0
         self.total_loss_sum = 0.0
         self.total_policy_loss_sum = 0.0
         self.total_value_loss_sum = 0.0
+        # 逐轮训练指标历史（供基线验证/长时间运行监控读取；纯追加，不改默认行为）
+        self.round_history: List[Dict] = []
         self._stats_lock = threading.Lock()
 
     def _drain_new_episodes(self, max_items: int) -> List[Dict]:
@@ -379,24 +389,33 @@ class TrainWorker(threading.Thread):
                     break
                 continue
 
-            # 拆分 train / val（沿用原逻辑，尽量按新数据比例拆分）
-            split_point = max(1, int(len(episodes) * (1.0 - config.VAL_SPLIT)))
-            train_eps = episodes[:split_point]
-            val_eps = episodes[split_point:]
+            # 固定留出验证集：仅从最早到达的数据中抽取一次，填满后不再追加，
+            # 也不进入训练 buffer，更不会被滚动窗口覆盖（真正的 held-out）。
+            val_remaining = config.VAL_SIZE - len(self.val_buffer)
+            val_samples: List[Dict] = []
+            train_samples: List[Dict] = []
 
-            count_train = 0
-            for ep in train_eps:
-                if ep.get("num_samples", 0) > 0 or (ep.get("samples") or len(ep["boards"])):
-                    self.buffer.add_samples(episode_to_samples(ep))
-                    count_train += len(ep["boards"])
-            count_val = 0
-            for ep in val_eps:
-                if ep.get("num_samples", 0) > 0 or (ep.get("samples") or len(ep["boards"])):
-                    self.val_buffer.add_samples(episode_to_samples(ep))
-                    count_val += len(ep["boards"])
+            for ep in episodes:
+                has_data = ep.get("num_samples", 0) > 0 or (
+                    ep.get("samples") or ep.get("boards"))
+                if not has_data:
+                    continue
+                samples = episode_to_samples(ep)
+                if val_remaining > 0:
+                    take = min(len(samples), val_remaining)
+                    val_samples.extend(samples[:take])
+                    val_remaining -= take
+                    samples = samples[take:]
+                train_samples.extend(samples)
+
+            if val_samples:
+                self.val_buffer.add_samples(val_samples)
+            if train_samples:
+                self.buffer.add_samples(train_samples)
 
             print(f"[Training] 📥 消费 {len(episodes)} 局 → "
-                  f"train: {count_train}, val: {count_val} → Buffer={len(self.buffer)}")
+                  f"train: {len(train_samples)}, val: {len(val_samples)} "
+                  f"→ Buffer={len(self.buffer)}, ValBuffer={len(self.val_buffer)}")
 
             # 最少样本检查
             min_required = max(config.TRAIN_BATCH, config.MIN_SAMPLES_TO_START)
@@ -430,14 +449,35 @@ class TrainWorker(threading.Thread):
                   f"| lr={cur_lr:.2e}")
 
         # 验证集评估
+        val_tuple = None
         min_val_samples = config.TRAIN_BATCH * config.VAL_EVAL_MIN_BATCHES
         if len(self.val_buffer) >= min_val_samples:
             val_result = evaluate(self.model, self.val_buffer, config.TRAIN_BATCH, DEVICE)
             if val_result is not None:
                 vl, vp, vv = val_result
+                val_tuple = (vl, vp, vv)
                 train_ref = epoch_results[-1][0] if epoch_results else 0.0
                 flag = " ⚠️ 过拟合?" if vl > train_ref + 0.1 else ""
                 print(f"[Training] 📊 验证集: Loss={vl:.4f} (Pol: {vp:.4f}, Val: {vv:.4f}){flag}")
+
+        # 逐轮指标记录（在锁内追加，供基线验证读取）
+        with self._stats_lock:
+            if epoch_results:
+                last_avg_l, last_avg_p, last_avg_v = epoch_results[-1]
+            else:
+                last_avg_l = last_avg_p = last_avg_v = 0.0
+            entry: Dict = {
+                "round": self.round_num,
+                "batches": batches_in_round,
+                "train_loss": last_avg_l,
+                "train_policy_loss": last_avg_p,
+                "train_value_loss": last_avg_v,
+                "val_loss": val_tuple[0] if val_tuple else None,
+                "val_policy_loss": val_tuple[1] if val_tuple else None,
+                "val_value_loss": val_tuple[2] if val_tuple else None,
+                "lr": self.optimizer.param_groups[0]['lr'],
+            }
+            self.round_history.append(entry)
 
         self.round_num += 1
         if self.round_num % config.CHECKPOINT_EVERY_N_ROUNDS == 0:
@@ -452,6 +492,11 @@ class TrainWorker(threading.Thread):
                 "avg_policy_loss": self.total_policy_loss_sum / max(1, self.total_batches_trained),
                 "avg_value_loss": self.total_value_loss_sum / max(1, self.total_batches_trained),
             }
+
+    def round_history_snapshot(self) -> List[Dict]:
+        """返回逐轮指标历史的浅拷贝（供基线验证/监控线程安全读取）。"""
+        with self._stats_lock:
+            return list(self.round_history)
 
     def finalize(self) -> None:
         """最终落盘 checkpoint。"""
