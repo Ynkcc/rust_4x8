@@ -72,6 +72,16 @@ class Config:
     CHECKPOINT_EVERY_N_ROUNDS = 2  # 每 N 轮训练导出一次 checkpoint
 
     # =========================================================================
+    # 系统资源监控（system_monitor.py，psutil + pynvml）
+    # =========================================================================
+    # 训练期间周期性采样并打印 CPU / 内存 / GPU 用量；
+    # 无 NVIDIA 驱动或未安装 pynvml 时 GPU 部分自动降级跳过。
+    MONITOR_ENABLED = os.getenv("MONITOR_ENABLED", "1") != "0"
+    MONITOR_INTERVAL = float(os.getenv("MONITOR_INTERVAL", "10.0"))  # 采样间隔（秒）
+    MONITOR_PER_CORE = os.getenv("MONITOR_PER_CORE", "0") == "1"     # 显示每核 CPU
+    MONITOR_CSV_PATH = os.getenv("MONITOR_CSV_PATH") or None         # CSV 落盘路径
+
+    # =========================================================================
     # MongoDB 冷存储归档（archiver）
     # =========================================================================
     MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")

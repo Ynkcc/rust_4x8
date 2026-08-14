@@ -38,6 +38,13 @@ from self_play import (
 )
 from training_service import TrainWorker
 
+# 系统资源监控（psutil + pynvml），缺失依赖时静默禁用
+try:
+    from system_monitor import SystemMonitor
+    HAS_MONITOR = True
+except ImportError:  # pragma: no cover
+    HAS_MONITOR = False
+
 
 def main() -> None:
     print("=" * 56)
@@ -51,6 +58,9 @@ def main() -> None:
     print(f"  STATE_DICT_PATH = {config.STATE_DICT_PATH}")
     print(f"  MONGO_URI       = {config.MONGO_URI}")
     print(f"  COLLECTION      = {config.DB_NAME}.{config.COLLECTION}")
+    if config.MONITOR_ENABLED and HAS_MONITOR:
+        print(f"  MONITOR         = 每 {config.MONITOR_INTERVAL:.0f}s 采样一次"
+              f"（CSV: {config.MONITOR_CSV_PATH or '关闭'}）")
     print("=" * 56)
 
     # ---- 优雅退出标志 ----
@@ -87,6 +97,21 @@ def main() -> None:
 
     for w in workers:
         w.start()
+
+    # ---- 系统资源监控线程（psutil + pynvml）----
+    monitor = None
+    if config.MONITOR_ENABLED and HAS_MONITOR:
+        monitor = SystemMonitor(
+            interval=config.MONITOR_INTERVAL,
+            show_per_core=config.MONITOR_PER_CORE,
+            csv_path=config.MONITOR_CSV_PATH,
+            stop_flag=stop_flag,
+        )
+        monitor.start()
+        print(f"[Main] 📊 系统资源监控已启动（每 {config.MONITOR_INTERVAL:.0f}s 采样）")
+    elif not HAS_MONITOR:
+        print("[Main] ⚠️ 未安装 psutil/nvidia-ml-py，系统资源监控已跳过"
+              "（pip install psutil nvidia-ml-py）")
 
     print("[Main] 三线程已启动，正在运行（Ctrl-C 优雅退出）...\n")
 
@@ -127,6 +152,10 @@ def main() -> None:
     archiver_worker: ArchiverWorker = workers[2]  # type: ignore[assignment]
     if archiver_worker.is_alive():
         archiver_worker.join(timeout=15)
+
+    # 停止监控线程（共享 stop_flag，run 循环很快自行退出）
+    if monitor is not None and monitor.is_alive():
+        monitor.join(timeout=3)
 
     # ---- 结束统计 ----
     sp_stats = self_play_worker.stats()

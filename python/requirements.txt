@@ -15,6 +15,11 @@ pymongo>=4.6.0
 tensorboard>=2.15.0
 wandb>=0.16.0  # 可选，用于实验跟踪
 
+# 系统资源监控（CPU/内存/GPU，见 system_monitor.py）
+# nvidia-ml-py 为官方维护的 pynvml（import 名仍是 pynvml）
+psutil>=5.9.0
+nvidia-ml-py>=12.0.0
+
 # 工具
 tqdm>=4.66.0
 pyyaml>=6.0
