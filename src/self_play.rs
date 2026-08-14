@@ -25,11 +25,11 @@ pub struct GameStats {
 /// 单局游戏的完整数据记录
 ///
 /// 包含该局游戏中每一步的观测状态、MCTS 搜索产生的策略概率、
-/// MCTS 估算的根节点价值以及最终的游戏结果。
+/// MCTS 估算的根节点价值、实际选择的动作以及最终的游戏结果。
 #[derive(Debug, Clone)]
 pub struct GameEpisode {
-    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码)
-    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>)>,
+    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码, 实际动作)
+    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>, usize)>,
     /// 游戏总步数
     pub game_length: usize,
     /// 获胜方
@@ -178,6 +178,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 
             // --- 收集样本数据 ---
             // 注意: improved_policy 仍使用 Gumbel AlphaZero 的 σ(Q) + logit 公式作为训练目标
+            // 实际动作 action 一并记录，用于对局回放 / 文字棋谱还原与交叉校验
             episode_data.push((
                 search_result.state,
                 search_result.improved_policy,
@@ -186,6 +187,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                 search_result.root_visit_count,
                 search_result.player,
                 search_result.action_mask,
+                action,
             ));
 
             // --- 执行动作 ---
@@ -253,7 +255,7 @@ pub fn run_batch_self_play<E: Evaluator>(
 /// 该函数同时被三条终止路径调用：MCTS None 分支（无合法走法判负）、
 /// 终局分支（terminated/truncated）、步数上限分支。
 fn finalize_episode(
-    episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>)>,
+    episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize)>,
     winner: Option<i32>,
 ) -> GameEpisode {
     let game_length = episode_data.len();
@@ -264,7 +266,7 @@ fn finalize_episode(
     };
     let samples = episode_data
         .into_iter()
-        .map(|(obs, p, mcts_val, completed_q, root_visit_count, player, mask)| {
+        .map(|(obs, p, mcts_val, completed_q, root_visit_count, player, mask, action)| {
             let game_result_val: f32 = if player.val() == 1 {
                 reward_red
             } else {
@@ -278,6 +280,7 @@ fn finalize_episode(
                 root_visit_count,
                 game_result_val,
                 mask,
+                action,
             )
         })
         .collect();

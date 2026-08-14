@@ -30,6 +30,8 @@ pub struct SampleDocument {
     pub root_visit_count: u32,
     pub game_result_value: f32,
     pub action_mask: Vec<i32>,
+    /// 实际选择的动作（action 空间索引）
+    pub action: usize,
     pub step_in_game: usize,
 }
 
@@ -136,7 +138,7 @@ impl MongoStorage {
 
             for (
                 step_idx,
-                (obs, probs, mcts_val, completed_q, root_visit_count, game_result_val, mask),
+                (obs, probs, mcts_val, completed_q, root_visit_count, game_result_val, mask, action),
             ) in episode.samples.iter().enumerate()
             {
                 let board_state: Vec<f32> = obs.board.as_slice().unwrap().to_vec();
@@ -151,6 +153,7 @@ impl MongoStorage {
                     root_visit_count: *root_visit_count,
                     game_result_value: *game_result_val,
                     action_mask: mask.clone(),
+                    action: *action,
                     step_in_game: step_idx,
                 });
             }
