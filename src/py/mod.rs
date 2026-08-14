@@ -261,44 +261,53 @@ pub fn run_parallel_self_play_with_predictor_impl(
         .build()
         .expect("failed to build rayon thread pool for parallel self_play");
 
-    let episodes_by_worker: Vec<Vec<PyGameEpisode>> = pool.install(|| {
-        predict_fn_per_worker
-            .into_par_iter()
-            .enumerate()
-            .map(|(wid, pf)| {
-                let evaluator = PyEvaluator::new(pf);
-                let mut local = Vec::with_capacity(games_per_worker);
-                for g in 0..games_per_worker {
-                    let start = std::time::Instant::now();
-                    let episode = self_play::run_self_play(&evaluator, &cfg);
-                    if episode.samples.is_empty() {
-                        eprintln!(
-                            "[ParallelWorker-{}/game{}] ⚠️ 空游戏数据，跳过",
-                            wid, g
-                        );
-                        continue;
-                    }
-                    let dur = start.elapsed().as_secs_f64();
-                    let winner_str = match episode.winner {
-                        Some(1) => "红胜",
-                        Some(-1) => "黑胜",
-                        _ => "平局",
-                    };
-                    println!(
-                        "[PW-{}] #{}/{} steps={} {} {:.2}s ({:.0} steps/s)",
-                        wid,
-                        g + 1,
-                        games_per_worker,
-                        episode.game_length,
-                        winner_str,
-                        dur,
-                        episode.game_length as f64 / dur.max(1e-9)
-                    );
-                    local.push(PyGameEpisode { inner: episode });
-                }
-                local
+    // 关键：用 allow_threads 释放 GIL 后再进入 rayon 并行区。
+    // pool.install 会阻塞主线程直到全部并行任务完成；若此时仍持有 GIL，
+    // worker 线程内的 Python::with_gil 将永远等不到 GIL，形成互等死锁。
+    // allow_threads 在等待期间释放 GIL，worker 按需获取；predictor 内部
+    // sleep/IO 会再次释放 GIL，实现多 worker 的等待真正并发叠加。
+    let episodes_by_worker: Vec<Vec<PyGameEpisode>> = Python::with_gil(|py| {
+        py.allow_threads(|| {
+            pool.install(|| {
+                predict_fn_per_worker
+                    .into_par_iter()
+                    .enumerate()
+                    .map(|(wid, pf)| {
+                        let evaluator = PyEvaluator::new(pf);
+                        let mut local = Vec::with_capacity(games_per_worker);
+                        for g in 0..games_per_worker {
+                            let start = std::time::Instant::now();
+                            let episode = self_play::run_self_play(&evaluator, &cfg);
+                            if episode.samples.is_empty() {
+                                eprintln!(
+                                    "[ParallelWorker-{}/game{}] ⚠️ 空游戏数据，跳过",
+                                    wid, g
+                                );
+                                continue;
+                            }
+                            let dur = start.elapsed().as_secs_f64();
+                            let winner_str = match episode.winner {
+                                Some(1) => "红胜",
+                                Some(-1) => "黑胜",
+                                _ => "平局",
+                            };
+                            println!(
+                                "[PW-{}] #{}/{} steps={} {} {:.2}s ({:.0} steps/s)",
+                                wid,
+                                g + 1,
+                                games_per_worker,
+                                episode.game_length,
+                                winner_str,
+                                dur,
+                                episode.game_length as f64 / dur.max(1e-9)
+                            );
+                            local.push(PyGameEpisode { inner: episode });
+                        }
+                        local
+                    })
+                    .collect()
             })
-            .collect()
+        })
     });
 
     episodes_by_worker

@@ -28,6 +28,20 @@ pub enum PathStep {
     ChanceOutcome(usize),
 }
 
+/// `select_path_collect` 单次调用的结果，供空转防护诊断。
+///
+/// 用于区分"预算自然耗尽"（正常退出）与"所有候选路径命中终局"（退化但良性）
+/// 两类空转，避免日志误导。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectPathOutcome {
+    /// 正常：产出了待评估项，或完成了有效回传
+    Normal,
+    /// 路径命中终局节点并静默回传（未产出评估项）
+    TerminalBackprop,
+    /// 其他静默早退（根缺子节点 / chance 无结果 / 无子节点 / 步数超限）
+    EarlyReturn,
+}
+
 /// 待评估项 (Pending Evaluation)
 ///
 /// 表示在模拟过程中到达叶子节点后，需要进行网络评估的状态。
@@ -528,7 +542,11 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
     /// 模拟过程中使用 PUCT 公式 (Predictor + Upper Confidence Bound applied to Trees) 选择动作：
     /// Score = Q(s, a) + U(s, a)
     /// U(s, a) = c_puct * P(s, a) * sqrt(N(parent)) / (1 + N(child))
-    fn select_path_collect(&mut self, action: usize, batch: &mut Vec<PendingEval>) {
+    fn select_path_collect(
+        &mut self,
+        action: usize,
+        batch: &mut Vec<PendingEval>,
+    ) -> SelectPathOutcome {
         let mut path = vec![PathStep::Action(action)];
         let current_idx = {
             let root = self.arena.get(self.root_idx);
@@ -543,7 +561,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                 "⚠️ MCTS: select_path_collect 根节点缺少候选动作 {} 的子节点",
                 action
             );
-            return;
+            return SelectPathOutcome::EarlyReturn;
         }
         let mut current_idx = current_idx.unwrap();
         let mut current_action = action;
@@ -564,7 +582,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     leaf_player,
                     leaf_value,
                 );
-                return;
+                return SelectPathOutcome::EarlyReturn;
             }
 
             let is_chance = self.arena.get(current_idx).is_chance_node;
@@ -579,7 +597,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                             "⚠️ MCTS: chance 节点展开后无可选结果 (node={}, action={})",
                             current_idx, current_action
                         );
-                        return;
+                        return SelectPathOutcome::EarlyReturn;
                     }
 
                     let base_path = path.clone();
@@ -600,7 +618,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                             leaf_player,
                         });
                     }
-                    return;
+                    return SelectPathOutcome::Normal;
                 }
 
                 let possible_states = self.arena.get(current_idx).possible_states.clone();
@@ -611,7 +629,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                             "⚠️ MCTS: 已展开 chance 节点无结果可采样 (node={}, action={})",
                             current_idx, current_action
                         );
-                        return;
+                        return SelectPathOutcome::EarlyReturn;
                     }
                 };
                 path.push(PathStep::ChanceOutcome(outcome_id));
@@ -657,7 +675,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     leaf_player,
                     leaf_value,
                 );
-                return;
+                return SelectPathOutcome::TerminalBackprop;
             }
 
             if !self.arena.get(current_idx).is_expanded {
@@ -667,7 +685,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                     env: *env,
                     leaf_player,
                 });
-                return;
+                return SelectPathOutcome::Normal;
             }
 
             let current = self.arena.get(current_idx);
@@ -699,7 +717,7 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
                         "⚠️ MCTS: 已展开节点无可选子节点 (node={})",
                         current_idx
                     );
-                    return;
+                    return SelectPathOutcome::EarlyReturn;
                 }
             };
             path.push(PathStep::Action(act));
@@ -834,10 +852,16 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
 
             // 执行本阶段的搜索
             let mut total_phase_usage = 0;
+            // 本阶段内所有候选路径中，命中终局节点静默回传的次数（供空转告警诊断）
+            let mut terminal_hits = 0;
             for _ in 0..visits_per_action {
                 let mut batch: Vec<PendingEval> = Vec::new();
                 for &action in &remaining {
-                    self.select_path_collect(action, &mut batch);
+                    if self.select_path_collect(action, &mut batch)
+                        == SelectPathOutcome::TerminalBackprop
+                    {
+                        terminal_hits += 1;
+                    }
                 }
 
                 if !batch.is_empty() {
@@ -882,11 +906,21 @@ impl<'a, E: Evaluator> GumbelMCTS<'a, E> {
             // 或 visits_per_action 为 0），继续按陈旧 completed_Q 剪枝没有意义，
             // 提前终止搜索循环，直接返回当前剩余候选。
             if total_phase_usage == 0 {
+                // visits_per_action == 0：预算排程自然耗尽（remaining_budget <
+                // num_actions），属正常退出，静默 break 不打印告警。
+                if visits_per_action == 0 {
+                    break;
+                }
+                // 有预算却无产出：候选路径全部静默早退。若终局回传占满全部调用，
+                // 说明子树已全部命中终局（如接近判和/截断阈值的局面），退化但良性。
+                let total_calls = visits_per_action * remaining.len();
                 eprintln!(
-                    "⚠️ MCTS: phase {} 实际模拟数为 0 (visits_per_action={}, remaining={})，提前终止搜索",
+                    "⚠️ MCTS: phase {} 实际模拟数为 0 (visits_per_action={}, remaining={}, 终局回传 {}/{})，提前终止搜索",
                     phase,
                     visits_per_action,
-                    remaining.len()
+                    remaining.len(),
+                    terminal_hits,
+                    total_calls
                 );
                 break;
             }

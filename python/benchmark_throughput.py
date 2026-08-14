@@ -1,7 +1,7 @@
 """
 benchmark_throughput.py — 吞吐量基准测试
 
-场景：模拟 predictor (predictor(batch=128, 每批模拟 ~ 0.01s）
+场景：模拟 predictor (predictor(batch=128, 每批模拟 ~ 0.05s）
 统计 10 秒内能完成多少局自对弈游戏；对比 baseline vs 优化后。
 
 用法：
@@ -36,20 +36,20 @@ from constant import (
 
 
 # ============================================================================
-# 模拟 Predictor: 每批 ≥1 个样本，模拟 0.01s 延迟（并按batch 128 的粒度来凑整）
+# 模拟 Predictor: 每批 ≥1 个样本，模拟 0.05s 延迟（并按batch 128 的粒度来凑整）
 # ============================================================================
 
 class SimulatedPredictor:
     """
     纯随机返回 policy (均匀logits) + value (0)，模拟：
     - 每当调用 predict(boards, scalars)
-    - batch_size 向上取整到 128 的块数 × 0.01s，模拟推理延迟
+    - batch_size 向上取整到 128 的块数 × 0.05s，模拟推理延迟
 
-    （相当于：1 块（<=128样本）0.01s；129~256 样本 0.02s，以此类推）
+    （相当于：1 块（<=128样本）0.05s；129~256 样本 0.02s，以此类推）
     """
 
     BATCH_SIZE = 128
-    PER_BATCH_SECONDS = 0.01
+    PER_BATCH_SECONDS = 0.05
 
     def __init__(self, name: str = "sim") -> None:
         self.name = name
@@ -272,8 +272,8 @@ def main() -> None:
                         help="并行版 每 worker games 数")
     parser.add_argument("--batch-size", type=int, default=128,
                         help="模拟的批大小(默认 128")
-    parser.add_argument("--per-batch-sleep", type=float, default=0.01,
-                        help="每批模拟延迟秒 (默认 0.01s)")
+    parser.add_argument("--per-batch-sleep", type=float, default=0.05,
+                        help="每批模拟延迟秒 (默认 0.05s)")
     parser.add_argument("--parallel-only", action="store_true",
                         help="只跑并行版")
     parser.add_argument("--serial-only", action="store_true",
