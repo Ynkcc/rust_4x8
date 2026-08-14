@@ -17,6 +17,7 @@
 pub mod game_env;
 pub mod mcts;
 pub mod mongodb_storage;
+pub mod replay;
 pub mod self_play;
 
 pub mod py;
@@ -106,6 +107,7 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySelfPlayConfig>()?;
     m.add_function(wrap_pyfunction!(run_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_parallel_self_play_with_predictor, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::py::describe_record, m)?)?;
 
     m.add("BOARD_ROWS", BOARD_ROWS)?;
     m.add("BOARD_COLS", BOARD_COLS)?;

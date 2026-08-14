@@ -41,7 +41,8 @@ impl PyGameEpisode {
         slf.inner.samples.len()
     }
 
-    fn get_samples(slf: PyRef<'_, Self>) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<u32>, Vec<f32>, Vec<Vec<i32>>) {
+    #[allow(clippy::type_complexity)]
+    fn get_samples(slf: PyRef<'_, Self>) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<u32>, Vec<f32>, Vec<Vec<i32>>, Vec<usize>) {
         let n = slf.inner.samples.len();
         let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);
         let mut scalars: Vec<Vec<f32>> = Vec::with_capacity(n);
@@ -51,8 +52,9 @@ impl PyGameEpisode {
         let mut root_visits: Vec<u32> = Vec::with_capacity(n);
         let mut game_results: Vec<f32> = Vec::with_capacity(n);
         let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
+        let mut actions: Vec<usize> = Vec::with_capacity(n);
 
-        for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask) in &slf.inner.samples {
+        for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action) in &slf.inner.samples {
             boards.push(obs.board.as_slice().unwrap().to_vec());
             scalars.push(obs.scalars.as_slice().unwrap().to_vec());
             policies.push(policy.clone());
@@ -61,6 +63,7 @@ impl PyGameEpisode {
             root_visits.push(*root_visit);
             game_results.push(*game_result);
             action_masks.push(mask.clone());
+            actions.push(*action);
         }
 
         (
@@ -72,6 +75,7 @@ impl PyGameEpisode {
             root_visits,
             game_results,
             action_masks,
+            actions,
         )
     }
 
@@ -96,8 +100,9 @@ pub fn episode_to_dict<'py>(
     let mut root_visits: Vec<u32> = Vec::with_capacity(n);
     let mut game_results: Vec<f32> = Vec::with_capacity(n);
     let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
+    let mut actions: Vec<usize> = Vec::with_capacity(n);
 
-    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask) in &episode.samples {
+    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action) in &episode.samples {
         boards.push(obs.board.as_slice().unwrap().to_vec());
         scalars.push(obs.scalars.as_slice().unwrap().to_vec());
         policies.push(policy.clone());
@@ -106,6 +111,7 @@ pub fn episode_to_dict<'py>(
         root_visits.push(*root_visit);
         game_results.push(*game_result);
         action_masks.push(mask.clone());
+        actions.push(*action);
     }
 
     let dict = PyDict::new_bound(py);
@@ -120,6 +126,7 @@ pub fn episode_to_dict<'py>(
     dict.set_item("root_visits", root_visits)?;
     dict.set_item("game_results", game_results)?;
     dict.set_item("action_masks", action_masks)?;
+    dict.set_item("actions", actions)?;
     dict.set_item("board_shape", vec![BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS])?;
     dict.set_item("scalar_shape", vec![SCALAR_FEATURE_COUNT])?;
     dict.set_item("action_space", ACTION_SPACE_SIZE)?;
@@ -315,4 +322,37 @@ pub fn run_parallel_self_play_with_predictor_impl(
         .flatten()
         .take(total_games)
         .collect()
+}
+
+/// 从对局记录 dict（`GameEpisode::to_dict()` 的输出）解析人类可读的中文棋谱描述。
+///
+/// 内部使用 boards/scalars 逐手还原棋盘 → 重建环境 → 重新生成 action_masks 并与记录
+/// 断言一致，同时断言 actions[i] 一定在合法掩码内；阵营由手数奇偶决定
+/// （i%2==0 → 红方、i%2==1 → 黑方），无需手动传入颜色。
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+pub fn describe_record(record: &Bound<'_, PyDict>) -> PyResult<String> {
+    let boards: Vec<Vec<f32>> = record
+        .get_item("boards")?
+        .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("记录缺少 boards"))?
+        .extract()?;
+    let scalars: Vec<Vec<f32>> = record
+        .get_item("scalars")?
+        .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("记录缺少 scalars"))?
+        .extract()?;
+    let action_masks: Vec<Vec<i32>> = record
+        .get_item("action_masks")?
+        .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("记录缺少 action_masks"))?
+        .extract()?;
+    let actions: Vec<usize> = record
+        .get_item("actions")?
+        .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("记录缺少 actions"))?
+        .extract()?;
+
+    Ok(crate::replay::describe_record(
+        &boards,
+        &scalars,
+        &action_masks,
+        &actions,
+    ))
 }
