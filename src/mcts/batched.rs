@@ -171,6 +171,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                         &pending.env,
                         &probs,
                         logits,
+                        *value,
                     );
                     GumbelMCTS::<G, E>::backprop_from_path(
                         &mut self.tree.arena,
@@ -284,7 +285,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
         let mut masks = vec![0; G::action_space_size()];
         env.action_masks_into(&mut masks);
         let probs = self.tree.compute_probs_from_logits(logits, &masks);
-        GumbelMCTS::<G, E>::build_children_from_eval(&mut self.tree.arena, root_idx, &env, &probs, logits);
+        GumbelMCTS::<G, E>::build_children_from_eval(&mut self.tree.arena, root_idx, &env, &probs, logits, value);
         let root = self.tree.arena.get_mut(root_idx);
         root.initial_value = value;
         root.visit_count += 1;

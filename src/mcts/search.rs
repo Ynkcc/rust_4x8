@@ -408,15 +408,23 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// * `env` - 叶子节点对应的环境
     /// * `probs` - 动作概率 (Policy)
     /// * `logits` - 动作 Logits
+    /// * `parent_value` - 父节点（`node_idx`）的评估值（从父节点玩家视角）
+    ///
+    /// 子节点的 `initial_value` 继承父节点评估值（从子节点玩家视角换算），
+    /// 即 Gumbel AlphaZero 标准的 Q(s,a) ≈ V(s) 先验。没有该先验时，
+    /// 未访问子节点（N=0）的 completed_q 恒为 0，Sequential Halving 在
+    /// 浅搜索下无法区分候选，可能淘汰最优动作。
     pub(crate) fn build_children_from_eval(
         arena: &mut MctsArena<G>,
         node_idx: usize,
         env: &G,
         probs: &[f32],
         logits: &[f32],
+        parent_value: f32,
     ) {
         let mut masks = vec![0; G::action_space_size()];
         env.action_masks_into(&mut masks);
+        let parent_player = arena.get(node_idx).player();
 
         let mut children_to_add = Vec::new();
 
@@ -435,7 +443,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     Some(t)
                 };
                 let child_state = child_env.as_ref().map(|e| e.get_state());
-                let child_node = MctsNode::new(
+                let mut child_node = MctsNode::new(
                     prior,
                     logit,
                     is_chance,
@@ -443,6 +451,10 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     child_state,
                     false,
                 );
+                // Q 先验：机会节点子玩家=父玩家，原样；常规节点子玩家=对手，取反。
+                let child_player = child_node.player();
+                child_node.initial_value =
+                    value_from_perspective(child_player, parent_player, parent_value);
                 let child_idx = arena.allocate(child_node);
                 children_to_add.push((action_idx, child_idx));
             }
@@ -731,7 +743,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         env.action_masks_into(&mut masks);
         let probs = self.compute_probs_from_logits(logits, &masks);
 
-        Self::build_children_from_eval(&mut self.arena, self.root_idx, &env, &probs, logits);
+        Self::build_children_from_eval(&mut self.arena, self.root_idx, &env, &probs, logits, value);
 
         let root = self.arena.get_mut(self.root_idx);
         root.initial_value = value;
@@ -862,6 +874,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                             &pending.env,
                             &probs,
                             logits,
+                            value,
                         );
                         Self::backprop_from_path(
                             &mut self.arena,
