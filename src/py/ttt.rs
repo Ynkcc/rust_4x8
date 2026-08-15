@@ -113,6 +113,8 @@ impl PyTicTacToe {
 /// - `player`：当前玩家（1 或 -1）
 /// - `num_simulations`：模拟次数
 /// - `max_considered_actions`：Gumbel Top-K 候选动作数
+/// - `c_visit`：PUCT/改进策略探索系数。默认 50.0 为暗棋调优值；
+///   井字棋建议用 1.0（对齐验证镜像），削弱先验对搜索的压制。
 ///
 /// 返回 dict：
 /// `action / policy / mcts_value / completed_q / root_visit_count / player / action_mask / board`
@@ -123,6 +125,7 @@ impl PyTicTacToe {
     player=1,
     num_simulations=64,
     max_considered_actions=9,
+    c_visit=50.0,
 ))]
 pub fn ttt_mcts_search(
     predict_fn: PyObject,
@@ -130,6 +133,7 @@ pub fn ttt_mcts_search(
     player: i32,
     num_simulations: usize,
     max_considered_actions: usize,
+    c_visit: f32,
 ) -> PyResult<Py<PyDict>> {
     if cells.len() != TTT_ACTION_SPACE_SIZE {
         return Err(PyValueError::new_err(format!(
@@ -209,6 +213,7 @@ pub fn ttt_mcts_search(
     max_considered_actions=9,
     temperature_steps=6,
     num_games=1,
+    c_visit=50.0,
 ))]
 pub fn run_ttt_self_play_with_predictor(
     predict_fn: PyObject,
@@ -216,12 +221,14 @@ pub fn run_ttt_self_play_with_predictor(
     max_considered_actions: usize,
     temperature_steps: usize,
     num_games: usize,
+    c_visit: f32,
 ) -> PyResult<Vec<Py<PyDict>>> {
     let evaluator = PyEvaluator::<TicTacToeEnv>::new(predict_fn);
     let cfg = SelfPlayConfig {
         mcts_sims,
         max_considered_actions,
         temperature_steps,
+        c_visit,
         ..Default::default()
     };
 

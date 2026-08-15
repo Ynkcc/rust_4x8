@@ -98,6 +98,9 @@ pub struct SelfPlayConfig {
     pub temperature_steps: usize,
     /// 训练场景
     pub scenario: ScenarioType,
+    /// PUCT/改进策略的探索系数（c_visit）。默认 50.0 为暗棋调优值；
+    /// 小状态空间游戏（如井字棋）可调低（如 1.0）以削弱先验对搜索的压制。
+    pub c_visit: f32,
 }
 
 impl Default for SelfPlayConfig {
@@ -107,6 +110,7 @@ impl Default for SelfPlayConfig {
             max_considered_actions: 16,
             temperature_steps: 10,
             scenario: ScenarioType::Standard,
+            c_visit: 50.0,
         }
     }
 }
@@ -157,7 +161,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
         let mcts_config = GumbelConfig {
             num_simulations: self.config.mcts_sims,
             max_considered_actions: self.config.max_considered_actions,
-            c_visit: 50.0,
+            c_visit: self.config.c_visit,
             c_scale: 1.0,
         };
         let mut mcts = GumbelMCTS::new(&env, self.evaluator, mcts_config.clone());
@@ -403,7 +407,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
     let gumbel_cfg = GumbelConfig {
         num_simulations: config.mcts_sims,
         max_considered_actions: config.max_considered_actions,
-        c_visit: 50.0,
+        c_visit: config.c_visit,
         c_scale: 1.0,
     };
 
