@@ -13,6 +13,9 @@ pub use py_evaluator::PyEvaluator;
 pub mod ttt;
 
 #[cfg(feature = "pyo3")]
+pub mod darkchess_env;
+
+#[cfg(feature = "pyo3")]
 use crate::game_env::{
     ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
 };

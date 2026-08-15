@@ -547,6 +547,18 @@ impl DarkChessEnv {
         self.current_player
     }
 
+    /// 切换当前玩家（视角反转验证专用）。
+    ///
+    /// 仅改变 `current_player` 字段，**不改变**棋盘棋子归属 / hp / 死子计数等
+    /// 绝对状态，因此 `get_state()` 返回同一绝对局面从另一玩家视角的观测
+    /// （my/opp 通道与存活向量互换）。
+    ///
+    /// 注意：这会改变游戏规则语义（合法动作 / 胜负判定按新的当前玩家），
+    /// 仅供视角反转验证获取不同视角观测，**不可用于继续对局**。
+    pub fn flip_player(&mut self) {
+        self.current_player = self.current_player.opposite();
+    }
+
     pub fn get_move_counter(&self) -> usize {
         self.move_counter
     }

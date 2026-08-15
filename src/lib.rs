@@ -149,6 +149,9 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::py::ttt::ttt_mcts_search, m)?)?;
     m.add_function(wrap_pyfunction!(crate::py::ttt::run_ttt_self_play_with_predictor, m)?)?;
 
+    // --- 暗棋环境绑定（视角反转验证） ---
+    m.add_class::<crate::py::darkchess_env::PyDarkChess>()?;
+
     m.add("BOARD_ROWS", BOARD_ROWS)?;
     m.add("BOARD_COLS", BOARD_COLS)?;
     m.add("BOARD_CHANNELS", BOARD_CHANNELS)?;
