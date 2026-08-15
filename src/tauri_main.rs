@@ -26,7 +26,7 @@ struct GameState {
     bitboards: HashMap<String, Vec<bool>>,
     hp_red: i32,   // 红方血量
     hp_black: i32, // 黑方血量
-    variant: String, // "dark" = 4x8 暗棋, "mini" = 4x2 迷你暗棋
+    variant: String, // "dark" = 4x8 暗棋, "mini" = 4x2 迷你暗棋, "4x4" = 4x4 暗棋
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,9 +79,11 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
     };
 
     // 按变体重建环境：mini = 4x2 迷你暗棋（8 格 / 40 动作空间），
+    // 4x4 = 4x4 暗棋（16 格 / 112 动作空间），
     // 其余 = 4x8 标准暗棋（32 格 / 192 动作空间）。构造器内部已 reset。
     *game = match variant.as_deref() {
         Some("mini") => DarkChessEnv::new_mini(),
+        Some("4x4") => DarkChessEnv::new_4x4(),
         _ => DarkChessEnv::new(),
     };
 
@@ -278,6 +280,8 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
     let hp_black = env.get_hp(Player::Black);
     let variant = if env.config.cols == 2 {
         "mini".to_string()
+    } else if env.config.cols == 4 && env.config.rows == 4 {
+        "4x4".to_string()
     } else {
         "dark".to_string()
     };

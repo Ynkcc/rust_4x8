@@ -11,7 +11,7 @@ if (window.__TAURI__) {
   invoke = async () => { throw new Error("Tauri API not available"); };
 }
 
-let selectedSquare = null; // 记录当前选中的格子索引 (0-31 for 4x8)
+let selectedSquare = null; // 记录当前选中的格子索引（按变体：4x8=32 格 / 4x4=16 格 / mini=8 格）
 let gameState = null;
 
 const pieceTypeOrder = [
@@ -220,9 +220,10 @@ async function updateUI(state) {
     console.error("Invalid state received:", state);
     return;
   }
-  // 变体判断：mini = 4x2 迷你暗棋（8 格），dark = 4x8 暗棋（32 格）
+  // 变体判断：mini = 4x2 迷你暗棋（8 格），4x4 = 4x4 暗棋（16 格），dark = 4x8 暗棋（32 格）
   const isMini = state.variant === 'mini' || state.board.length === 8;
-  const maxHp = isMini ? 47 : 60;
+  const is4x4 = state.variant === '4x4' || state.board.length === 16;
+  const maxHp = isMini ? 47 : 60; // 4x4 与 4x8 血量上限均为 60
   if (selectedSquare !== null && !isSelectablePiece(state, selectedSquare)) {
     selectedSquare = null;
   }
@@ -287,9 +288,18 @@ async function updateUI(state) {
   }
   
   boardEl.innerHTML = '';
-  // 确保样式正确（mini = 4x2 迷你棋盘，dark = 4x8 标准棋盘）
-  const boardCols = isMini ? 2 : 8;
-  const boardRows = isMini ? 4 : 4;
+  // 确保样式正确（mini = 4x2 迷你棋盘，4x4 = 4x4 暗棋棋盘，dark = 4x8 标准棋盘）
+  let boardCols, boardRows;
+  if (isMini) {
+    boardCols = 2;
+    boardRows = 4;
+  } else if (is4x4) {
+    boardCols = 4;
+    boardRows = 4;
+  } else {
+    boardCols = 8;
+    boardRows = 4;
+  }
   boardEl.style.display = 'grid';
   boardEl.style.gridTemplateColumns = `repeat(${boardCols}, 1fr)`;
   boardEl.style.gridTemplateRows = `repeat(${boardRows}, 1fr)`;
@@ -297,6 +307,9 @@ async function updateUI(state) {
   if (isMini) {
     boardEl.style.width = 'min(260px, 60vw)';
     boardEl.style.aspectRatio = '2 / 4';
+  } else if (is4x4) {
+    boardEl.style.width = 'min(440px, 80vw)';
+    boardEl.style.aspectRatio = '4 / 4';
   } else {
     boardEl.style.width = 'min(700px, 90vw)';
     boardEl.style.aspectRatio = '8 / 4';
@@ -591,6 +604,16 @@ function renderBitboards(bitboards) {
 
     const grid = document.createElement('div');
     grid.className = 'bb-grid';
+
+    // 根据棋盘尺寸动态调整位板网格列数（mini=4x2，4x4=4x4，4x8=8x4）
+    const bbLen = bitboards[key].length;
+    let bbCols = 8, bbRows = 4;
+    if (bbLen === 8) { bbCols = 2; bbRows = 4; }
+    else if (bbLen === 16) { bbCols = 4; bbRows = 4; }
+    else if (bbLen === 32) { bbCols = 8; bbRows = 4; }
+    else if (bbLen % 4 === 0) { bbCols = bbLen / 4; bbRows = 4; }
+    grid.style.gridTemplateColumns = `repeat(${bbCols}, 1fr)`;
+    grid.style.gridTemplateRows = `repeat(${bbRows}, 1fr)`;
 
     bitboards[key].forEach(isActive => {
       const cell = document.createElement('div');

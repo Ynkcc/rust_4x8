@@ -7,7 +7,7 @@ use super::actions::{action_lookup_tables, pack_coords};
 use super::bitboard::{board_mask, ray_attacks, ull};
 use super::config::{
     GameConfig, MAX_PIECES_PER_PLAYER, MAX_POSITIONS, MAX_REVEAL_PROBABILITY_SIZE,
-    NUM_PIECE_TYPES_MAX, darkchess_config, mini_config,
+    NUM_PIECE_TYPES_MAX, darkchess_config, game_4x4_config, mini_config,
 };
 use super::traits::get_outcome_id;
 use super::types::*;
@@ -80,6 +80,11 @@ impl DarkChessEnv {
     /// 创建 4x2 迷你暗棋环境（仅兵/将/士/炮，血量上限=47）。
     pub fn new_mini() -> Self {
         Self::with_config(mini_config())
+    }
+
+    /// 创建 4x4 暗棋环境（7 类棋子全激活，每方 8 子，血量上限=60）。
+    pub fn new_4x4() -> Self {
+        Self::with_config(game_4x4_config())
     }
 
     /// 以指定配置创建环境（初始化并复位）。

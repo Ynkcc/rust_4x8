@@ -15,3 +15,5 @@ training_data
 runs
 .codebuddy
 *.log
+*.pyc
+refs/
