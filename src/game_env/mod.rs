@@ -8,6 +8,7 @@ pub mod board;
 pub mod config;
 pub mod constants;
 pub mod features;
+pub mod game4x4;
 pub mod mini_darkchess;
 pub mod rules;
 pub mod tic_tac_toe;
@@ -24,7 +25,7 @@ pub use constants::*;
 // 从 config.rs 导出配置与预设
 pub use config::{
     GameConfig, MAX_PIECES_PER_PLAYER, MAX_POSITIONS, MAX_REVEAL_PROBABILITY_SIZE,
-    NUM_PIECE_TYPES_MAX, compute_action_counts, darkchess_config, mini_config,
+    NUM_PIECE_TYPES_MAX, compute_action_counts, darkchess_config, game_4x4_config, mini_config,
 };
 
 // 从 types.rs 导出所有数据类型
@@ -35,6 +36,9 @@ pub use board::DarkChessEnv;
 
 // 从 mini_darkchess.rs 导出 4x2 迷你环境与常量
 pub use mini_darkchess::{MINI_ACTION_SPACE_SIZE, MiniDarkChessEnv};
+
+// 从 game4x4.rs 导出 4x4 暗棋环境
+pub use game4x4::{GAME4X4_ACTION_SPACE_SIZE, Game4x4Env};
 
 // 从 tic_tac_toe.rs 导出井字棋环境与常量
 pub use tic_tac_toe::{

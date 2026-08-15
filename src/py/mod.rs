@@ -15,12 +15,14 @@ pub mod ttt;
 #[cfg(feature = "pyo3")]
 pub mod darkchess_env;
 #[cfg(feature = "pyo3")]
+pub mod game4x4_env;
+#[cfg(feature = "pyo3")]
 pub mod mini_darkchess_env;
 
 #[cfg(feature = "pyo3")]
 use crate::game_env::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, GameEnv,
-    MiniDarkChessEnv, SCALAR_FEATURE_COUNT,
+    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, Game4x4Env,
+    GameEnv, MiniDarkChessEnv, SCALAR_FEATURE_COUNT,
 };
 #[cfg(feature = "pyo3")]
 use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig};
@@ -30,8 +32,9 @@ use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig};
 #[derive(Clone)]
 pub struct PyGameEpisode {
     pub inner: GameEpisode,
-    /// 是否为 4x2 迷你变体（决定 episode dict 中的 shape 字段）。
-    pub mini: bool,
+    /// 变体标识：0=4x8 暗棋，1=4x2 迷你，2=4x4。
+    /// 决定 episode dict 中的 shape 字段。
+    pub variant: u8,
 }
 
 #[cfg(feature = "pyo3")]
@@ -91,20 +94,20 @@ impl PyGameEpisode {
     }
 
     fn to_dict<'py>(slf: PyRef<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        episode_to_dict(py, &slf.inner, slf.mini)
+        episode_to_dict_with_shapes(py, &slf.inner, slf.variant)
     }
 }
 
 /// 将 GameEpisode 序列化为 PyDict（供 `PyGameEpisode::to_dict` 和
 /// `py_data_collector.rs` 共用，消除重复逻辑）。
-/// `mini` 为 true 时输出 4x2 迷你变体的 shape 字段，否则输出 4x8 暗棋 shape。
+/// `variant`：0=4x8 暗棋，1=4x2 迷你，2=4x4。
 #[cfg(feature = "pyo3")]
 pub fn episode_to_dict<'py>(
     py: Python<'py>,
     episode: &GameEpisode,
     mini: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    episode_to_dict_with_shapes(py, episode, mini)
+    episode_to_dict_with_shapes(py, episode, if mini { 1 } else { 0 })
 }
 
 /// 4x8 暗棋变体的 episode dict（供 py_data_collector.rs 兼容调用）。
@@ -113,25 +116,31 @@ pub fn episode_to_dict_darkchess<'py>(
     py: Python<'py>,
     episode: &GameEpisode,
 ) -> PyResult<Bound<'py, PyDict>> {
-    episode_to_dict_with_shapes(py, episode, false)
+    episode_to_dict_with_shapes(py, episode, 0)
 }
 
 #[cfg(feature = "pyo3")]
 fn episode_to_dict_with_shapes<'py>(
     py: Python<'py>,
     episode: &GameEpisode,
-    mini: bool,
+    variant: u8,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let (bc, br, bcol, sc, ac): (usize, usize, usize, usize, usize) = if mini {
-        (
+    let (bc, br, bcol, sc, ac): (usize, usize, usize, usize, usize) = match variant {
+        1 => (
             crate::MINI_BOARD_CHANNELS,
             crate::MINI_BOARD_ROWS,
             crate::MINI_BOARD_COLS,
             crate::MINI_SCALAR_FEATURE_COUNT,
             crate::MINI_ACTION_SPACE_SIZE,
-        )
-    } else {
-        (BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, ACTION_SPACE_SIZE)
+        ),
+        2 => (
+            crate::GAME4X4_BOARD_CHANNELS,
+            crate::GAME4X4_BOARD_ROWS,
+            crate::GAME4X4_BOARD_COLS,
+            crate::GAME4X4_SCALAR_FEATURE_COUNT,
+            crate::GAME4X4_ACTION_SPACE_SIZE,
+        ),
+        _ => (BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, ACTION_SPACE_SIZE),
     };
     let n = episode.samples.len();
     let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);
@@ -239,7 +248,7 @@ pub fn run_self_play_with_predictor_impl(
     worker_id: usize,
 ) -> Vec<PyGameEpisode> {
     let evaluator = PyEvaluator::new(predict_fn);
-    run_self_play_serial_core(&evaluator, &cfg, num_games, worker_id, false, DarkChessEnv::new)
+    run_self_play_serial_core(&evaluator, &cfg, num_games, worker_id, 0, DarkChessEnv::new)
 }
 
 /// 4x2 迷你暗棋版串行自对弈。
@@ -256,8 +265,27 @@ pub fn run_mini_self_play_with_predictor_impl(
         &cfg,
         num_games,
         worker_id,
-        true,
+        1,
         MiniDarkChessEnv::new,
+    )
+}
+
+/// 4x4 暗棋版串行自对弈。
+#[cfg(feature = "pyo3")]
+pub fn run_game4x4_self_play_with_predictor_impl(
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_games: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    let evaluator = PyEvaluator::new(predict_fn);
+    run_self_play_serial_core(
+        &evaluator,
+        &cfg,
+        num_games,
+        worker_id,
+        2,
+        Game4x4Env::new,
     )
 }
 
@@ -267,7 +295,7 @@ fn run_self_play_serial_core<G: GameEnv>(
     cfg: &SelfPlayConfig,
     num_games: usize,
     worker_id: usize,
-    mini: bool,
+    variant: u8,
     make_env: fn() -> G,
 ) -> Vec<PyGameEpisode> {
     let mut episodes = Vec::with_capacity(num_games);
@@ -301,7 +329,7 @@ fn run_self_play_serial_core<G: GameEnv>(
 
         episodes.push(PyGameEpisode {
             inner: episode,
-            mini,
+            variant,
         });
 
         game_count += 1;
@@ -328,7 +356,7 @@ pub fn run_parallel_self_play_with_predictor_impl(
     worker_id: usize,
 ) -> Vec<PyGameEpisode> {
     run_parallel_core(
-        predict_fn, cfg, num_workers, games_per_worker, worker_id, false, DarkChessEnv::new,
+        predict_fn, cfg, num_workers, games_per_worker, worker_id, 0, DarkChessEnv::new,
     )
 }
 
@@ -342,7 +370,21 @@ pub fn run_mini_parallel_self_play_with_predictor_impl(
     worker_id: usize,
 ) -> Vec<PyGameEpisode> {
     run_parallel_core(
-        predict_fn, cfg, num_workers, games_per_worker, worker_id, true, MiniDarkChessEnv::new,
+        predict_fn, cfg, num_workers, games_per_worker, worker_id, 1, MiniDarkChessEnv::new,
+    )
+}
+
+/// 4x4 暗棋版并行自对弈。
+#[cfg(feature = "pyo3")]
+pub fn run_game4x4_parallel_self_play_with_predictor_impl(
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_workers: usize,
+    games_per_worker: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    run_parallel_core(
+        predict_fn, cfg, num_workers, games_per_worker, worker_id, 2, Game4x4Env::new,
     )
 }
 
@@ -353,7 +395,7 @@ fn run_parallel_core<G: GameEnv>(
     num_workers: usize,
     games_per_worker: usize,
     worker_id: usize,
-    mini: bool,
+    variant: u8,
     _make_env: fn() -> G,
 ) -> Vec<PyGameEpisode> {
     use rayon::prelude::*;
@@ -417,7 +459,7 @@ fn run_parallel_core<G: GameEnv>(
                             );
                             local.push(PyGameEpisode {
                                 inner: episode,
-                                mini,
+                                variant,
                             });
                         }
                         local
@@ -450,7 +492,7 @@ pub fn run_batched_self_play_with_predictor_impl<'py>(
 ) -> Vec<PyGameEpisode> {
     let evaluator = PyEvaluator::new(predict_fn);
     run_batched_core(
-        py, &evaluator, &cfg, num_games, concurrency, worker_id, false, DarkChessEnv::new,
+        py, &evaluator, &cfg, num_games, concurrency, worker_id, 0, DarkChessEnv::new,
     )
 }
 
@@ -472,8 +514,31 @@ pub fn run_mini_batched_self_play_with_predictor_impl<'py>(
         num_games,
         concurrency,
         worker_id,
-        true,
+        1,
         MiniDarkChessEnv::new,
+    )
+}
+
+/// 4x4 暗棋版批量自对弈。
+#[cfg(feature = "pyo3")]
+pub fn run_game4x4_batched_self_play_with_predictor_impl<'py>(
+    py: Python<'py>,
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    let evaluator = PyEvaluator::new(predict_fn);
+    run_batched_core(
+        py,
+        &evaluator,
+        &cfg,
+        num_games,
+        concurrency,
+        worker_id,
+        2,
+        Game4x4Env::new,
     )
 }
 
@@ -485,7 +550,7 @@ fn run_batched_core<G: GameEnv + Sync>(
     num_games: usize,
     concurrency: usize,
     worker_id: usize,
-    mini: bool,
+    variant: u8,
     make_env: fn() -> G,
 ) -> Vec<PyGameEpisode> {
     let mut episodes: Vec<PyGameEpisode> = Vec::with_capacity(num_games);
@@ -505,7 +570,7 @@ fn run_batched_core<G: GameEnv + Sync>(
                 eprintln!("[Worker-{}] ⚠️ 生成了空游戏数据，跳过", worker_id);
                 continue;
             }
-            episodes.push(PyGameEpisode { inner: ep, mini });
+            episodes.push(PyGameEpisode { inner: ep, variant });
             game_count += 1;
             if game_count >= num_games {
                 break;
