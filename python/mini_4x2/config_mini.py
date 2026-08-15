@@ -8,6 +8,9 @@
 #   - 归档降级 JSONL（无需 mongod）
 import os
 
+# 本文件所在目录（模型文件与脚本同目录存放，便于从任意 cwd 运行）
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 
 class ConfigMini:
     # =========================================================================
@@ -53,9 +56,9 @@ class ConfigMini:
     DATA_AUGMENT_KEEP_ORIGINAL = True
     DATA_AUGMENT_TRANSFORMS = "hflip"
 
-    # 模型文件
-    MODEL_PATH = "banqi_mini_model_latest.pt"
-    STATE_DICT_PATH = "banqi_mini_model_latest.pth"
+    # 模型文件（与脚本同目录，支持环境变量覆盖）
+    MODEL_PATH = os.getenv("MINI_MODEL_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pt"))
+    STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pth"))
 
     # =========================================================================
     # 设备（CPU）

@@ -40,14 +40,15 @@ from self_play_mini import SelfPlayWorkerMini, build_predictor_mini, build_self_
 from training_service_mini import TrainWorker
 from nn_model_mini import MiniBanqiNet, load_model_weights
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
 MINIMAX_DEPTH = int(os.getenv("MINI_MM_DEPTH", "4"))
 EVAL_GAMES = int(os.getenv("MINI_EVAL_GAMES", "20"))
 TARGET_WINRATE = float(os.getenv("MINI_TARGET_WR", "0.80"))
 EVAL_SIMS = int(os.getenv("MINI_EVAL_SIMS", "128"))
 EVAL_EVERY_ROUNDS = int(os.getenv("MINI_EVAL_EVERY", "5"))
 MAX_RUNTIME = int(os.getenv("MINI_MAX_RUNTIME", str(180 * 60)))
-MODEL_PATH = os.getenv("MINI_MODEL_PATH", "banqi_mini_model_latest.pt")
-STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", "banqi_mini_model_latest.pth")
+MODEL_PATH = os.getenv("MINI_MODEL_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pt"))
+STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pth"))
 
 
 class EvalPredictor:

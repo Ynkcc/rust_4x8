@@ -33,13 +33,14 @@ if hasattr(sys.stdout, "reconfigure"):
 import banqi_4x8
 from nn_model_mini import MiniBanqiNet, load_model_weights
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
 NUM_GAMES = int(os.getenv("MINI_VM_GAMES", "30"))
 MM_DEPTH = int(os.getenv("MINI_VM_DEPTH", "6"))
 MCTS_SIMS = int(os.getenv("MINI_VM_SIMS", "32"))
 GREEDY = os.getenv("MINI_VM_GREEDY", "0") == "1"
 MAX_ACTIONS = 12
-MODEL_PATH = os.getenv("MINI_MODEL_PATH", "banqi_mini_model_latest.pt")
-STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", "banqi_mini_model_latest.pth")
+MODEL_PATH = os.getenv("MINI_MODEL_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pt"))
+STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pth"))
 
 
 class ModelPredictor:

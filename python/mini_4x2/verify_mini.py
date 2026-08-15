@@ -30,11 +30,12 @@ import banqi_4x8
 from constant_mini import ACTION_SPACE_SIZE
 from nn_model_mini import MiniBanqiNet, load_model_weights
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
 NUM_GAMES = int(os.getenv("MINI_VERIFY_GAMES", "60"))
 MCTS_SIMS = int(os.getenv("MINI_MCTS_SIMS", "32"))
 MAX_ACTIONS = int(os.getenv("MINI_MAX_ACTIONS", "12"))
-MODEL_PATH = os.getenv("MINI_MODEL_PATH", "banqi_mini_model_latest.pt")
-STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", "banqi_mini_model_latest.pth")
+MODEL_PATH = os.getenv("MINI_MODEL_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pt"))
+STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pth"))
 
 
 class ModelPredictor:

@@ -3,7 +3,7 @@ validate_view_inversion_mini.py — 4x2 迷你暗棋模型 视角与标签反转
 
 与 validate_view_inversion.py（4x8 暗棋）完全同构，但针对迷你环境/网络：
   - 环境：Rust `banqi_4x8.MiniDarkChess`（board 10 通道 / 4x2 / scalars 11）
-  - 网络：`MiniBanqiNet`，直接加载已训练权重 `../banqi_mini_model_latest.pt`
+  - 网络：`MiniBanqiNet`，直接加载已训练权重 `banqi_mini_model_latest.pt`
     （不重新训练）
 
 Part A：Rust 环境 `switch_player()` 视角切换编码正确性（确定性断言）。
@@ -17,33 +17,40 @@ Part B：真实网络 value 视角对称性（标签反转）`v(视角B) ≈ -v(
   属不同绝对事件）。网络级唯一的视角对称性（标签反转）是 value 标量：
   同一绝对局面的胜率期望从两视角互为相反数。
 
-运行：python3 python/validate/validate_view_inversion_mini.py
+运行：python3 python/mini_4x2/validate_view_inversion_mini.py
 """
 
 from __future__ import annotations
 
 import os
+import sys
 
 import numpy as np
 import torch
 
 import banqi_4x8 as b  # pyo3 绑定（Rust 迷你暗棋环境）
 
-import validate_common  # noqa: F401
-from validate_common import Reporter, run_part, require
+# 本脚本位于 mini_4x2/ 目录，导入共享的 validate_common（位于 python/validate/）。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_VALIDATE_DIR = os.path.abspath(os.path.join(_HERE, "..", "validate"))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+if _VALIDATE_DIR not in sys.path:
+    sys.path.insert(0, _VALIDATE_DIR)
 
-from constant_mini import (
+import validate_common  # noqa: F401, E402
+from validate_common import Reporter, run_part, require  # noqa: E402
+
+from constant_mini import (  # noqa: E402
     BOARD_ROWS,
     BOARD_COLS,
     SCALAR_FEATURE_COUNT,
     TOTAL_INPUT_CHANNELS,
 )
-from nn_model_mini import MiniBanqiNet, load_model_weights
+from nn_model_mini import MiniBanqiNet, load_model_weights  # noqa: E402
 
 DEVICE = "cpu"
-MODEL_PATH = os.path.abspath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "banqi_mini_model_latest.pt"
-))
+MODEL_PATH = os.path.join(_HERE, "banqi_mini_model_latest.pt")
 
 # 随机走步数（生成评估局面）与局面数量
 WALK_STEPS = 20
