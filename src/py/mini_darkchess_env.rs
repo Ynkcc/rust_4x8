@@ -121,6 +121,14 @@ impl PyMiniDarkChess {
         Ok(mcts.run().map(|r| r.action))
     }
 
+    /// 用 expectiminimax + alpha-beta 搜索选动作（不依赖网络，纯规则搜索）。
+    ///
+    /// `max_depth` 为搜索深度；返回 None 表示无合法动作（终局）。
+    fn minimax_action(&self, max_depth: usize) -> PyResult<Option<usize>> {
+        let result = crate::ai::minimax::minimax_best_action(&self.inner.inner, max_depth);
+        Ok(result.map(|r| r.action))
+    }
+
     /// 纯网络贪婪动作：对当前局面一次前向，取合法动作中 logit 最大者（无搜索）。
     fn greedy_action(&self, predict_fn: PyObject) -> PyResult<Option<usize>> {
         let evaluator = PyEvaluator::<MiniDarkChessEnv>::new(predict_fn);

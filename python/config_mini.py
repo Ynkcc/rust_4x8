@@ -18,8 +18,10 @@ class ConfigMini:
     # =========================================================================
     # 自对弈
     # =========================================================================
-    MCTS_SIMS = 32            # 极小状态空间，32 模拟已足够
-    MAX_CONSIDERED_ACTIONS = 12
+    # 提高搜索强度：MCTS sims 32→128，使自对弈数据的 policy/value 标签质量
+    # 接近 minimax(depth=4) 的水平，突破「数据上限 < minimax」的结构性瓶颈。
+    MCTS_SIMS = 128           # 强搜索：数据质量是网络策略上限的决定因素
+    MAX_CONSIDERED_ACTIONS = 16
     TEMPERATURE_STEPS = 6
     GAMES_PER_ITER = 60       # 每轮生成的对局数
     NUM_WORKERS = 4           # CPU 12 核，用多 worker 并行自对弈摊薄推理开销
@@ -35,11 +37,13 @@ class ConfigMini:
     TRAIN_BATCH = 32
     LEARNING_RATE = 2e-3
     MIN_LR = 1e-5
-    # 每轮约 (buffer/32)*TRAIN_EPOCHS_PER_ROUND 个 batch；20 分钟约几十轮
-    LR_DECAY_STEPS = 3000
-    TRAIN_EPOCHS_PER_ROUND = 4
-    MAX_SAMPLE_BUFFER_SIZE = 20000
-    MIN_SAMPLES_TO_START = 200
+    # 提高训练强度：每轮更多 epochs + 更小更新鲜的 buffer。
+    # 关键修复：旧 buffer(20000) 中早期弱模型数据长期占据，导致训练被拖累、
+    # loss 回升；缩小到 4000 让训练更偏重新（强）数据。
+    LR_DECAY_STEPS = 12000
+    TRAIN_EPOCHS_PER_ROUND = 8
+    MAX_SAMPLE_BUFFER_SIZE = 4000
+    MIN_SAMPLES_TO_START = 256
     QUEUE_FETCH_BATCH = 8
 
     # =========================================================================

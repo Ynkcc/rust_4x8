@@ -8,8 +8,13 @@ use crate::DarkChessEnv;
 
 #[cfg(feature = "torch")]
 mod mcts_dl;
+pub mod minimax;
 mod random;
 mod reveal_first;
+
+pub use minimax::{
+    MinimaxResult, heuristic_value, minimax_best_action, minimax_choose_action,
+};
 
 #[cfg(feature = "torch")]
 pub use mcts_dl::{MctsDlPolicy, ModelWrapper};
