@@ -25,6 +25,7 @@ import banqi_4x8
 from config import config
 from constant import ACTION_SPACE_SIZE
 from nn_model import Banqi4x4Net, load_model_weights
+from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 
 
 class Predictor4x4:
@@ -89,13 +90,14 @@ def _episode_to_dict(ep, iteration: int, worker_id: int) -> Dict:
 
 
 class SelfPlayWorker4x4(threading.Thread):
-    """生产者线程：调用 run_game4x4_* 生成 episode，压入数据队列。"""
+    """生产者线程：调用 run_game4x4_* 生成 episode，压入数据队列与归档队列。"""
 
     def __init__(
         self,
         predictor: Predictor4x4,
         sp_cfg,
         data_q: "queue.Queue",
+        archive_q: "queue.Queue",
         stop_flag: "List[bool]",
         worker_id: int = 0,
     ) -> None:
@@ -103,6 +105,7 @@ class SelfPlayWorker4x4(threading.Thread):
         self.predictor = predictor
         self.sp_cfg = sp_cfg
         self.data_q = data_q
+        self.archive_q = archive_q
         self.stop_flag = stop_flag
         self.worker_id = worker_id
         self.total_games = 0
@@ -150,21 +153,35 @@ class SelfPlayWorker4x4(threading.Thread):
                     break
                 with self._lock:
                     ep_dict = _episode_to_dict(ep, self.iteration, self.worker_id)
-                    self.game_records.append({
-                        "game_length": int(ep_dict["game_length"]),
-                        "winner": int(ep_dict["winner"]),
-                        "duration": float(batch_duration / max(len(episodes), 1)),
-                    })
+                    self._log_game(ep_dict, batch_duration / max(len(episodes), 1))
                     self.total_games += 1
-                    self.total_samples += ep_dict.get("num_samples", 0)
+                    self.total_samples += len(ep_dict["samples"]) if "samples" in ep_dict else ep_dict["num_samples"]
                     self._advance_iteration()
+                # 同时压入训练消费队列与冷存储归档队列
                 self._put(self.data_q, ep_dict)
+                self._put(self.archive_q, ep_dict)
 
     def _advance_iteration(self) -> None:
         self._game_count += 1
         if self._game_count >= config.GAMES_PER_ITER:
             self._game_count -= config.GAMES_PER_ITER
             self.iteration += 1
+
+    def _log_game(self, ep: Dict, duration: float) -> None:
+        """逐局统计记录（在 _lock 临界区内调用）+ TensorBoard 打点。
+
+        每局文本日志由 Rust 侧（[PW-x]）打印，此处不重复输出。
+        """
+        self.game_records.append({
+            "game_length": int(ep["game_length"]),
+            "winner": int(ep["winner"]),
+            "duration": float(duration),
+        })
+        # TensorBoard 记录（x 轴为累计对局数）
+        if config.TENSORBOARD_ENABLED:
+            game_idx = self.total_games + 1
+            add_scalar("selfplay/game_length", int(ep["game_length"]), game_idx)
+            add_scalar("selfplay/steps_per_sec", ep["game_length"] / max(duration, 1e-9), game_idx)
 
     def stats(self) -> Dict[str, int]:
         with self._lock:

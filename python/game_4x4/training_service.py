@@ -27,6 +27,14 @@ from constant import (
     ACTION_SPACE_SIZE,
 )
 from nn_model import Banqi4x4Net
+from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
+
+# 训练数据对称增强（仅训练侧；冷存储归档不应用，见 run_training.py 队列拆分）
+try:
+    from data_augmentation import augment_samples
+    HAS_AUGMENT = True
+except ImportError:  # pragma: no cover
+    HAS_AUGMENT = False
 
 
 def _resolve_device(spec: str) -> "torch.device":
@@ -240,6 +248,8 @@ class TrainWorker(threading.Thread):
         self.round_num = 0
         self.total_batches_trained = 0
         self.total_loss_sum = 0.0
+        self.total_policy_loss_sum = 0.0
+        self.total_value_loss_sum = 0.0
         self.round_history: List[Dict] = []
         self._stats_lock = threading.Lock()
 
@@ -269,13 +279,31 @@ class TrainWorker(threading.Thread):
                 continue
             train_samples: List[Dict] = []
             for ep in episodes:
-                if ep.get("num_samples", 0) <= 0:
+                has_data = ep.get("num_samples", 0) > 0 or (
+                    ep.get("samples") or ep.get("boards"))
+                if not has_data:
                     continue
                 train_samples.extend(episode_to_samples(ep))
+
+            # 对称增强（仅训练侧）：冷存储 archive_q 保存的仍是原始 episode，
+            # 此处增强只作用于训练 replay buffer 的数据源。
+            aug_count = 0
+            if HAS_AUGMENT and config.DATA_AUGMENT_ENABLED and train_samples:
+                transforms = [t.strip() for t in config.DATA_AUGMENT_TRANSFORMS.split(",") if t.strip()]
+                raw_count = len(train_samples)
+                train_samples = augment_samples(
+                    train_samples,
+                    transforms=transforms,
+                    keep_original=config.DATA_AUGMENT_KEEP_ORIGINAL,
+                )
+                aug_count = len(train_samples) - raw_count
+
             if train_samples:
                 self.buffer.add_samples(train_samples)
-            print(f"[Training4x4] 📥 消费 {len(episodes)} 局 → train: {len(train_samples)} "
-                  f"→ Buffer={len(self.buffer)}")
+
+            aug_note = f"（增强 +{aug_count}）" if aug_count else ""
+            print(f"[Training4x4] 📥 消费 {len(episodes)} 局 → train: {len(train_samples)}"
+                  f"{aug_note} → Buffer={len(self.buffer)}")
 
             min_required = max(config.TRAIN_BATCH, config.MIN_SAMPLES_TO_START)
             if len(self.buffer) < min_required:
@@ -290,7 +318,12 @@ class TrainWorker(threading.Thread):
         with self._stats_lock:
             self.total_batches_trained += batches_in_round
             if epoch_results:
-                self.total_loss_sum += sum(r[0] for r in epoch_results)
+                round_total = sum(r[0] for r in epoch_results)
+                round_pol = sum(r[1] for r in epoch_results)
+                round_val = sum(r[2] for r in epoch_results)
+                self.total_loss_sum += round_total
+                self.total_policy_loss_sum += round_pol
+                self.total_value_loss_sum += round_val
             if epoch_results:
                 last_avg_l, last_avg_p, last_avg_v = epoch_results[-1]
             else:
@@ -314,12 +347,22 @@ class TrainWorker(threading.Thread):
         if self.round_num % config.CHECKPOINT_EVERY_N_ROUNDS == 0:
             save_checkpoint(self.model, self.optimizer, self.scheduler)
 
+        # ---- TensorBoard 训练日志（x 轴为累计训练 batch 数）----
+        if config.TENSORBOARD_ENABLED:
+            step = self.total_batches_trained
+            add_scalar("train/loss", entry["train_loss"], step)
+            add_scalar("train/policy_loss", entry["train_policy_loss"], step)
+            add_scalar("train/value_loss", entry["train_value_loss"], step)
+            add_scalar("train/lr", entry["lr"], step)
+
     def stats(self) -> Dict[str, float]:
         with self._stats_lock:
             return {
                 "round_num": self.round_num,
                 "total_batches": self.total_batches_trained,
                 "avg_loss": self.total_loss_sum / max(1, self.total_batches_trained),
+                "avg_policy_loss": self.total_policy_loss_sum / max(1, self.total_batches_trained),
+                "avg_value_loss": self.total_value_loss_sum / max(1, self.total_batches_trained),
             }
 
     def round_history_snapshot(self) -> List[Dict]:
