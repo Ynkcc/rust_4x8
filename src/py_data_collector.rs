@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use banqi_4x8::py::PyEvaluator;
 use banqi_4x8::self_play::{run_self_play, ScenarioType, SelfPlayConfig};
+use banqi_4x8::DarkChessEnv;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -665,7 +666,7 @@ fn main() -> Result<()> {
             }
 
             let start_time = Instant::now();
-            let episode = run_self_play(&evaluator, &config);
+            let episode = run_self_play(&evaluator, &config, DarkChessEnv::new);
             let duration = start_time.elapsed();
 
             // 再次检查信号（run_self_play 可能耗时较长）

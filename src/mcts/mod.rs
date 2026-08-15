@@ -19,10 +19,13 @@ pub mod evaluator;
 pub mod node;
 pub mod search;
 
+#[cfg(test)]
+mod search_tests;
+
 // 统一导出所有公共接口
 pub use batched::BatchedTree;
 pub use budget::SequentialHalvingBudget;
 pub use config::{GumbelConfig, MctsSearchResult};
 pub use evaluator::Evaluator;
-pub use node::{MctsArena, MctsNode, get_outcome_id, value_from_perspective};
+pub use node::{MctsArena, MctsNode, value_from_perspective};
 pub use search::{GumbelMCTS, PathStep, PendingEval};

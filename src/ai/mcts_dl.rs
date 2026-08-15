@@ -60,7 +60,7 @@ impl TchEvaluator {
     }
 }
 
-impl Evaluator for TchEvaluator {
+impl Evaluator<DarkChessEnv> for TchEvaluator {
     fn evaluate(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
         if envs.is_empty() {
             return (Vec::new(), Vec::new());

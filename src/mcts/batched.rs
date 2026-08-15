@@ -1,5 +1,5 @@
 // src/mcts/batched.rs
-// 批量自对弈搜索协调器
+// 批量自对弈搜索协调器（泛型化：G = 游戏环境）
 //
 // 目标：显著提升自对弈吞吐。
 //
@@ -19,12 +19,12 @@
 //   - 机会节点展开、终局回传等逻辑完全复用 self_play 的既有实现。
 //   - 根节点价值（每步决策的开头评估）同样走同一 batch 通道，不产生额外 batch=1 推理。
 
-use crate::game_env::DarkChessEnv;
+use crate::game_env::GameEnv;
 use crate::mcts::budget::SequentialHalvingBudget;
 use crate::mcts::config::{GumbelConfig, MctsSearchResult};
 use crate::mcts::evaluator::Evaluator;
 use crate::mcts::search::{GumbelMCTS, PendingEval};
-use crate::ACTION_SPACE_SIZE;
+use crate::Player;
 
 /// 本棵树的推进阶段（决定下一次 `collect` 应产生何种待评估项）
 #[derive(PartialEq)]
@@ -40,9 +40,9 @@ enum Stage {
 }
 
 /// 一棵正在进行批量搜索的游戏树及其推进状态。
-pub struct BatchedTree<'a, E: Evaluator> {
+pub struct BatchedTree<'a, G: GameEnv, E: Evaluator<G>> {
     /// 底层搜索树（持有 evaluator 借用）
-    pub tree: GumbelMCTS<'a, E>,
+    pub tree: GumbelMCTS<'a, G, E>,
     /// 当前阶段仍在考虑的候选动作
     candidates: Vec<usize>,
     /// Sequential Halving 预算分配器
@@ -58,16 +58,16 @@ pub struct BatchedTree<'a, E: Evaluator> {
     /// 本步决策的已执行动作（供外部记录）
     pub action: Option<usize>,
     /// 本次决策选中的根玩家
-    pub player: crate::Player,
+    pub player: Player,
     /// 游戏是否已结束
     pub game_over: bool,
     /// 本步的 (terminated, truncated, winner)
     pub step_outcome: (bool, bool, Option<i32>),
 }
 
-impl<'a, E: Evaluator> BatchedTree<'a, E> {
+impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
     /// 创建一棵新树，尚未扩展根节点。
-    pub fn new(env: &DarkChessEnv, evaluator: &'a E, cfg: &GumbelConfig) -> Self {
+    pub fn new(env: &G, evaluator: &'a E, cfg: &GumbelConfig) -> Self {
         let tree = GumbelMCTS::new(env, evaluator, cfg.clone());
         Self {
             tree,
@@ -87,7 +87,7 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
     /// 收集本棵树本轮需要的待评估项（根评估 或 叶子评估）到 `out`。
     /// 返回 false 表示本棵树本轮没有需要评估的项目。
     /// 每棵树至多产生 0 或 1 批待评估项；外部把所有树的合并成大 batch 后统一评估。
-    pub fn collect(&mut self, out: &mut Vec<PendingEval>) -> bool {
+    pub fn collect(&mut self, out: &mut Vec<PendingEval<G>>) -> bool {
         match self.stage {
             Stage::Root => {
                 let root_idx = self.tree.root_idx;
@@ -104,8 +104,7 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
                         .get(root_idx)
                         .env
                         .as_ref()
-                        .expect("Root must have env")
-                        .as_ref();
+                        .expect("Root must have env");
                     let leaf_player = self.tree.arena.get(root_idx).player();
                     out.push(PendingEval {
                         path: Vec::new(),
@@ -121,9 +120,9 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
     }
 
     /// 处于搜索阶段时的叶子收集。
-    fn collect_searching(&mut self, out: &mut Vec<PendingEval>) -> bool {
+    fn collect_searching(&mut self, out: &mut Vec<PendingEval<G>>) -> bool {
         // 先执行一轮 select（对每个候选一次），收集叶子
-        let mut batch: Vec<PendingEval> = Vec::new();
+        let mut batch: Vec<PendingEval<G>> = Vec::new();
         for &action in &self.candidates {
             self.tree.select_path_collect(action, &mut batch);
         }
@@ -140,7 +139,7 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
     /// 应用一批评估结果。`evals` 必须与最近一次 `collect` 产生顺序一致。
     pub fn apply(
         &mut self,
-        evals: &[(&PendingEval, &[f32], f32)],
+        evals: &[(&PendingEval<G>, &[f32], f32)],
     ) {
         match self.stage {
             Stage::Root => {
@@ -154,10 +153,10 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
             }
             Stage::Searching => {
                 for (pending, logits, value) in evals {
-                    let mut masks = vec![0; ACTION_SPACE_SIZE];
+                    let mut masks = vec![0; G::action_space_size()];
                     pending.env.action_masks_into(&mut masks);
                     let probs = self.tree.compute_probs_from_logits(logits, &masks);
-                    let leaf_idx = GumbelMCTS::<E>::get_node_idx_by_path(
+                    let leaf_idx = GumbelMCTS::<G, E>::get_node_idx_by_path(
                         &self.tree.arena,
                         self.tree.root_idx,
                         &pending.path,
@@ -166,14 +165,14 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
                         let leaf = self.tree.arena.get_mut(leaf_idx);
                         leaf.initial_value = *value;
                     }
-                    GumbelMCTS::<E>::build_children_from_eval(
+                    GumbelMCTS::<G, E>::build_children_from_eval(
                         &mut self.tree.arena,
                         leaf_idx,
                         &pending.env,
                         &probs,
                         logits,
                     );
-                    GumbelMCTS::<E>::backprop_from_path(
+                    GumbelMCTS::<G, E>::backprop_from_path(
                         &mut self.tree.arena,
                         self.tree.root_idx,
                         &pending.path,
@@ -228,14 +227,13 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
             .get(root_idx)
             .env
             .as_ref()
-            .expect("Root must have env")
-            .as_ref();
+            .expect("Root must have env");
         env.action_masks_into(&mut self.tree.root_action_mask);
         if self.tree.root_action_mask.iter().all(|&x| x == 0) {
             self.stage = Stage::Ready;
             return false;
         }
-        let logits: Vec<f32> = (0..ACTION_SPACE_SIZE)
+        let logits: Vec<f32> = (0..G::action_space_size())
             .map(|i| {
                 let root = self.tree.arena.get(root_idx);
                 root.children
@@ -282,12 +280,11 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
             .get(root_idx)
             .env
             .as_ref()
-            .expect("Root must have env")
-            .as_ref();
-        let mut masks = vec![0; ACTION_SPACE_SIZE];
+            .expect("Root must have env");
+        let mut masks = vec![0; G::action_space_size()];
         env.action_masks_into(&mut masks);
         let probs = self.tree.compute_probs_from_logits(logits, &masks);
-        GumbelMCTS::<E>::build_children_from_eval(&mut self.tree.arena, root_idx, &env, &probs, logits);
+        GumbelMCTS::<G, E>::build_children_from_eval(&mut self.tree.arena, root_idx, &env, &probs, logits);
         let root = self.tree.arena.get_mut(root_idx);
         root.initial_value = value;
         root.visit_count += 1;
@@ -343,10 +340,9 @@ impl<'a, E: Evaluator> BatchedTree<'a, E> {
             .get(self.tree.root_idx)
             .env
             .as_ref()
-            .expect("Root must have env")
-            .as_ref();
+            .expect("Root must have env");
         let mut env = *env_root;
-        let step_res = env.step(action, None);
+        let step_res = env.step(action);
         let (terminated, truncated, winner) = match step_res {
             Ok((_, _, terminated, truncated, winner)) => (terminated, truncated, winner),
             Err(e) => {

@@ -111,7 +111,7 @@ fn main() -> Result<()> {
         let start_time = Instant::now();
 
         // 执行一局游戏
-        let episode = run_self_play(&evaluator, &config);
+        let episode = run_self_play(&evaluator, &config, DarkChessEnv::new);
 
         let duration = start_time.elapsed();
 

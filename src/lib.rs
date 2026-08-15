@@ -36,6 +36,15 @@ pub mod local_evaluator;
 // 重新导出核心类型，方便外部使用
 pub use game_env::{DarkChessEnv, Observation, Piece, PieceType, Player, Slot};
 
+// 井字棋环境（用于验证逻辑复用）
+pub use game_env::{
+    TTT_ACTION_SPACE_SIZE, TTT_BOARD_CHANNELS, TTT_BOARD_COLS, TTT_BOARD_ROWS,
+    TTT_SCALAR_FEATURE_COUNT, TicTacToeEnv,
+};
+
+// 泛型游戏环境抽象
+pub use game_env::GameEnv;
+
 // 导出常量
 pub use game_env::{
     ACTION_SPACE_SIZE, BOARD_COLS, BOARD_ROWS, NUM_PIECE_TYPES, REGULAR_MOVE_ACTIONS_COUNT,
@@ -135,11 +144,22 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_batched_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(crate::py::describe_record, m)?)?;
 
+    // --- 井字棋绑定（验证逻辑复用） ---
+    m.add_class::<crate::py::ttt::PyTicTacToe>()?;
+    m.add_function(wrap_pyfunction!(crate::py::ttt::ttt_mcts_search, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::py::ttt::run_ttt_self_play_with_predictor, m)?)?;
+
     m.add("BOARD_ROWS", BOARD_ROWS)?;
     m.add("BOARD_COLS", BOARD_COLS)?;
     m.add("BOARD_CHANNELS", BOARD_CHANNELS)?;
     m.add("SCALAR_FEATURE_COUNT", SCALAR_FEATURE_COUNT)?;
     m.add("ACTION_SPACE_SIZE", ACTION_SPACE_SIZE)?;
+
+    m.add("TTT_ACTION_SPACE_SIZE", crate::TTT_ACTION_SPACE_SIZE)?;
+    m.add("TTT_BOARD_ROWS", crate::TTT_BOARD_ROWS)?;
+    m.add("TTT_BOARD_COLS", crate::TTT_BOARD_COLS)?;
+    m.add("TTT_BOARD_CHANNELS", crate::TTT_BOARD_CHANNELS)?;
+    m.add("TTT_SCALAR_FEATURE_COUNT", crate::TTT_SCALAR_FEATURE_COUNT)?;
 
     Ok(())
 }

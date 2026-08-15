@@ -1,7 +1,8 @@
 // src/mcts/node.rs
-// MCTS 树节点定义与内存池管理
+// MCTS 树节点定义与内存池管理（泛型化：G = 游戏环境，如 DarkChessEnv / TicTacToeEnv）
 
-use crate::{DarkChessEnv, Observation, Piece, PieceType, Player};
+use crate::game_env::GameEnv;
+use crate::{Observation, Player};
 use slab::Slab;
 
 // ============================================================================
@@ -10,14 +11,14 @@ use slab::Slab;
 
 /// MCTS 树节点的内存池
 ///
-/// 使用 Slab<MctsNode> 存储所有节点，通过 usize 索引引用。
+/// 使用 Slab<MctsNode<G>> 存储所有节点，通过 usize 索引引用。
 /// Slab 提供了高效的内存池管理，大幅减少堆碎片化和改善缓存局部性。
-pub struct MctsArena {
+pub struct MctsArena<G: GameEnv> {
     /// 所有节点的紧凑存储 (基于 Slab)
-    nodes: Slab<MctsNode>,
+    nodes: Slab<MctsNode<G>>,
 }
 
-impl MctsArena {
+impl<G: GameEnv> MctsArena<G> {
     /// 创建一个新的内存池
     pub fn new() -> Self {
         Self {
@@ -27,24 +28,24 @@ impl MctsArena {
 
     /// 为节点分配内存并返回索引
     #[inline]
-    pub fn allocate(&mut self, node: MctsNode) -> usize {
+    pub fn allocate(&mut self, node: MctsNode<G>) -> usize {
         self.nodes.insert(node)
     }
 
     /// 直接访问节点（不可变）
     #[inline]
-    pub fn get(&self, idx: usize) -> &MctsNode {
+    pub fn get(&self, idx: usize) -> &MctsNode<G> {
         &self.nodes[idx]
     }
 
     /// 直接访问节点（可变）
     #[inline]
-    pub fn get_mut(&mut self, idx: usize) -> &mut MctsNode {
+    pub fn get_mut(&mut self, idx: usize) -> &mut MctsNode<G> {
         &mut self.nodes[idx]
     }
 }
 
-impl Default for MctsArena {
+impl<G: GameEnv> Default for MctsArena<G> {
     fn default() -> Self {
         Self::new()
     }
@@ -59,7 +60,7 @@ impl Default for MctsArena {
 /// 该结构体表示蒙特卡洛树搜索中的一个节点。
 /// 使用 usize 索引而非 Box 来引用子节点，以减少堆碎片化。
 #[derive(Debug, Clone)]
-pub struct MctsNode {
+pub struct MctsNode<G: GameEnv> {
     /// 访问次数 (N)
     /// 表示该节点被访问的次数。
     pub visit_count: u32,
@@ -90,8 +91,8 @@ pub struct MctsNode {
     /// Vec 元组: (outcome_id, probability, node_arena_index)
     pub possible_states: Vec<(usize, f32, usize)>,
     /// 游戏环境
-    /// 该节点对应的游戏状态环境。
-    pub env: Option<Box<DarkChessEnv>>,
+    /// 该节点对应的游戏状态环境（G: Copy，直接以值保存）。
+    pub env: Option<G>,
     /// 当前玩家
     pub player: Player,
     /// 节点对应的观测状态
@@ -103,7 +104,7 @@ pub struct MctsNode {
     pub is_terminal: bool,
 }
 
-impl MctsNode {
+impl<G: GameEnv> MctsNode<G> {
     /// 创建一个新的 MctsNode 实例
     ///
     /// # 参数
@@ -118,7 +119,7 @@ impl MctsNode {
         prior: f32,
         logit: f32,
         is_chance_node: bool,
-        env: Option<DarkChessEnv>,
+        env: Option<G>,
         state: Option<Observation>,
         is_root_node: bool,
     ) -> Self {
@@ -139,7 +140,7 @@ impl MctsNode {
             is_chance_node,
             is_root_node,
             possible_states: Vec::new(),
-            env: env.map(Box::new),
+            env,
             player,
             state,
             initial_value: 0.0,
@@ -168,28 +169,6 @@ impl MctsNode {
 // ============================================================================
 // 助手函数
 // ============================================================================
-
-/// 获取棋子的唯一结果 ID
-///
-/// 用于机会节点中区分不同的可能结果。
-/// ID 计算方式: 棋子类型索引 + 玩家偏移量 (红方: 0, 黑方: 7)。
-/// 范围: 0-13 (7种棋子 * 2个玩家)
-pub fn get_outcome_id(piece: &Piece) -> usize {
-    let type_idx = match piece.piece_type {
-        PieceType::Soldier => 0,
-        PieceType::Cannon => 1,
-        PieceType::Horse => 2,
-        PieceType::Chariot => 3,
-        PieceType::Elephant => 4,
-        PieceType::Advisor => 5,
-        PieceType::General => 6,
-    };
-    let player_offset = match piece.player {
-        Player::Red => 0,
-        Player::Black => 7,
-    };
-    type_idx + player_offset
-}
 
 /// 从父节点视角转换价值
 ///

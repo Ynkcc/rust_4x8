@@ -6,6 +6,7 @@ use rand::SeedableRng;
 use super::actions::{action_lookup_tables, pack_coords};
 use super::bitboard::{BOARD_MASK, ray_attacks, ull};
 use super::constants::*;
+use super::traits::get_outcome_id;
 use super::types::*;
 
 // ==============================================================================
@@ -58,6 +59,10 @@ pub struct DarkChessEnv {
     pub seed: Option<u64>,
     /// 真实棋子布局 (如果配置了seed，初始化时固定布局)
     pub true_board: Option<[Piece; TOTAL_POSITIONS]>,
+
+    /// 最近一次翻出的棋子（供机会节点子树复用匹配 outcome_id）。
+    /// 翻棋动作与吃暗子动作都会更新；普通动作保持旧值（此时 step_outcome_id 不会被调用）。
+    last_revealed_piece: Option<Piece>,
 }
 
 impl DarkChessEnv {
@@ -88,6 +93,7 @@ impl DarkChessEnv {
             reveal_probabilities: [0.0; REVEAL_PROBABILITY_SIZE],
             seed: None,
             true_board: None,
+            last_revealed_piece: None,
         };
 
         action_lookup_tables();
@@ -121,6 +127,7 @@ impl DarkChessEnv {
             reveal_probabilities: [0.0; REVEAL_PROBABILITY_SIZE],
             seed: None,
             true_board: None,
+            last_revealed_piece: None,
         };
         for (sq, slot) in board.iter().enumerate() {
             match slot {
@@ -161,6 +168,7 @@ impl DarkChessEnv {
 
         self.hidden_pieces_count = 0;
         self.reveal_probabilities = [0.0; REVEAL_PROBABILITY_SIZE];
+        self.last_revealed_piece = None;
     }
 
     /// 初始化棋盘布局 (Shuffle Bag Model)
@@ -295,6 +303,7 @@ impl DarkChessEnv {
         *pt_bb |= mask;
 
         self.board[sq] = Slot::Revealed(piece);
+        self.last_revealed_piece = Some(piece);
         self.update_reveal_probabilities();
     }
 
@@ -449,6 +458,58 @@ impl DarkChessEnv {
             let to_sq = coords[1];
             self.board[to_sq]
         }
+    }
+
+    // --- 机会节点扩展（GameEnv trait 的实现下沉点） ---
+
+    /// 该动作是否会产生机会节点（翻棋动作或吃暗子动作，目标格为 Hidden 即随机翻出）。
+    pub fn is_chance_action(&self, action: usize) -> bool {
+        matches!(self.get_target_slot(action), Slot::Hidden)
+    }
+
+    /// 枚举机会动作的所有可能结果：`(outcome_id, 概率, 结果环境)`。
+    ///
+    /// 在「执行该动作之前」的环境上调用。按隐藏棋子池逐类统计概率，
+    /// 并为每类棋子构造一个「翻出该棋子的后继环境」。
+    ///
+    /// 注意：不要修改此处的全量展开逻辑（等价于既有 mcts::expand_chance_node）。
+    pub fn chance_outcomes(&self, action: usize) -> Vec<(usize, f32, Self)> {
+        let mut counts = [0usize; 14];
+        for p in self.get_hidden_pieces_raw() {
+            counts[get_outcome_id(p)] += 1;
+        }
+        let total_hidden = self.get_hidden_pieces_raw().len() as f32;
+        if total_hidden == 0.0 {
+            return Vec::new();
+        }
+        let mut outcomes = Vec::new();
+        for outcome_id in 0..14 {
+            if counts[outcome_id] > 0 {
+                let prob = counts[outcome_id] as f32 / total_hidden;
+                let mut next_env = *self;
+                let specific_piece = *self
+                    .get_hidden_pieces_raw()
+                    .iter()
+                    .find(|p| get_outcome_id(p) == outcome_id)
+                    .expect("Piece not found");
+                let _ = next_env.step(action, Some(specific_piece));
+                outcomes.push((outcome_id, prob, next_env));
+            }
+        }
+        outcomes
+    }
+
+    /// 执行动作后，若该动作产生了机会结果，返回其 `outcome_id`
+    /// （用于 MCTS 子树复用匹配）。普通动作返回 `None`。
+    ///
+    /// 优先读取「最近一次翻出的棋子」：吃暗子动作（移动/炮击翻开 Hidden 目标格）
+    /// 中，被翻开的守方棋子会立即被移除、目标格被攻击方占用，无法再从棋盘读出，
+    /// 只有 `last_revealed_piece` 能还原其身份；普通翻棋动作两种方式结果一致。
+    pub fn step_outcome_id(&self, action: usize) -> Option<usize> {
+        if let Some(piece) = self.last_revealed_piece {
+            return Some(get_outcome_id(&piece));
+        }
+        None
     }
 
     pub fn print_board(&self) {

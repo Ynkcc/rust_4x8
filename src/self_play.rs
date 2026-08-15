@@ -1,15 +1,16 @@
-// src/self_play.rs - 自对弈与数据生成模块 (同步版)
+// src/self_play.rs - 自对弈与数据生成模块 (同步版, 泛型化 G = 游戏环境)
 //
 // 本模块实现了自对弈（Self-Play）逻辑，用于生成强化学习所需的训练数据。
 // 重构说明：
 // - 移除异步依赖，改为同步执行
 // - 直接持有模型引用，无需 Channel 通信
 // - 使用 Gumbel AlphaZero MCTS
+// - 泛型化：`G: GameEnv` 可为暗棋（DarkChessEnv）或井字棋（TicTacToeEnv），
+//   环境由调用方以 `fn() -> G` 工厂注入。
 
-use crate::game_env::{DarkChessEnv, Observation, Player};
+use crate::game_env::{GameEnv, Observation, Player};
 use crate::mcts::batched::BatchedTree;
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
-use crate::game_env::constants::MAX_STEPS_PER_EPISODE;
 use crate::mcts::PendingEval;
 use std::time::Instant;
 
@@ -28,6 +29,9 @@ pub struct GameStats {
 ///
 /// 包含该局游戏中每一步的观测状态、MCTS 搜索产生的策略概率、
 /// MCTS 估算的根节点价值、实际选择的动作以及最终的游戏结果。
+///
+/// 样本中的观测统一使用 `Observation`（各游戏按自身通道/尺寸编码），
+/// 因此 `GameEpisode` 本身不携带游戏泛型参数。
 #[derive(Debug, Clone)]
 pub struct GameEpisode {
     /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码, 实际动作)
@@ -40,7 +44,7 @@ pub struct GameEpisode {
 
 // ================ 场景定义 ================
 
-/// 训练场景类型枚举
+/// 训练场景类型枚举（暗棋专用）
 ///
 /// 预留扩展点：未来可实现特定残局/开局场景 (如 TwoAdvisors, HiddenThreats)。
 /// 目前所有场景均退化为标准开局。
@@ -56,8 +60,8 @@ pub enum ScenarioType {
 
 impl ScenarioType {
     /// 根据枚举值创建对应的游戏环境（当前所有场景均创建标准环境）
-    pub fn create_env(&self) -> DarkChessEnv {
-        DarkChessEnv::new()
+    pub fn create_env(&self) -> crate::game_env::DarkChessEnv {
+        crate::game_env::DarkChessEnv::new()
     }
 
     /// 获取场景的描述名称
@@ -111,25 +115,35 @@ impl Default for SelfPlayConfig {
 
 /// 自对弈运行器
 ///
-/// 直接持有评估器引用，同步执行
-pub struct SelfPlayRunner<'a, E: Evaluator> {
+/// 直接持有评估器引用，同步执行。
+/// `G` 为游戏环境类型，环境由 `make_env` 工厂创建。
+pub struct SelfPlayRunner<'a, G: GameEnv, E: Evaluator<G>> {
     evaluator: &'a E,
     config: SelfPlayConfig,
+    make_env: fn() -> G,
 }
 
-impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
+impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
     /// 创建新的自对弈运行器
-    pub fn new(evaluator: &'a E, config: SelfPlayConfig) -> Self {
-        Self { evaluator, config }
+    pub fn new(evaluator: &'a E, config: SelfPlayConfig, make_env: fn() -> G) -> Self {
+        Self {
+            evaluator,
+            config,
+            make_env,
+        }
     }
 
     /// 使用默认配置创建
-    pub fn with_defaults(evaluator: &'a E, mcts_sims: usize) -> Self {
+    pub fn with_defaults(evaluator: &'a E, mcts_sims: usize, make_env: fn() -> G) -> Self {
         let config = SelfPlayConfig {
             mcts_sims,
             ..Default::default()
         };
-        Self { evaluator, config }
+        Self {
+            evaluator,
+            config,
+            make_env,
+        }
     }
 
     /// 执行一局完整的自对弈 (同步)
@@ -137,7 +151,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
         let _start_time = Instant::now();
 
         // 1. 初始化环境
-        let mut env = self.config.scenario.create_env();
+        let mut env = (self.make_env)();
 
         // 2. 配置 MCTS
         let mcts_config = GumbelConfig {
@@ -173,7 +187,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
             let sampled_action = {
                 // Gumbel AlphaZero 标准动作选择：基于 completed Q 的温度 softmax（π ∝ exp(Q/τ)）
                 let q_policy = mcts.get_root_completed_q_policy(temperature);
-                GumbelMCTS::<E>::sample_action_from_policy(&q_policy, &search_result.action_mask)
+                GumbelMCTS::<G, E>::sample_action_from_policy(&q_policy, &search_result.action_mask)
             };
             let action = sampled_action;
             let completed_q = mcts.get_root_completed_q(action);
@@ -193,7 +207,7 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
             ));
 
             // --- 执行动作 ---
-            match env.step(action, None) {
+            match env.step(action) {
                 Ok((_, _, terminated, truncated, winner)) => {
                     // 推进 MCTS 树
                     mcts.step_next(&env, action);
@@ -213,9 +227,9 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
                 }
             }
 
-            // --- 步数限制检查：使用统一常量 MAX_STEPS_PER_EPISODE ---
+            // --- 步数限制检查：使用环境给定的步数上限 ---
             step += 1;
-            if step >= MAX_STEPS_PER_EPISODE {
+            if step >= G::max_steps() {
                 // 步数上限截断：环境视其为 truncated 平局 (winner=Some(0))，
                 // 与终局分支语义对齐，game_result 回填 0.0。
                 return finalize_episode(episode_data, Some(0));
@@ -227,20 +241,27 @@ impl<'a, E: Evaluator> SelfPlayRunner<'a, E> {
 // ================ 高级 API ================
 
 /// 运行单局自对弈
-pub fn run_self_play<E: Evaluator>(evaluator: &E, config: &SelfPlayConfig) -> GameEpisode {
-    let runner = SelfPlayRunner::new(evaluator, config.clone());
+///
+/// `make_env` 为环境工厂（如 `DarkChessEnv::new` 或 `TicTacToeEnv::new`）。
+pub fn run_self_play<G: GameEnv, E: Evaluator<G>>(
+    evaluator: &E,
+    config: &SelfPlayConfig,
+    make_env: fn() -> G,
+) -> GameEpisode {
+    let runner = SelfPlayRunner::new(evaluator, config.clone(), make_env);
     runner.play_episode(0)
 }
 
 /// 批量运行多局自对弈
-pub fn run_batch_self_play<E: Evaluator>(
+pub fn run_batch_self_play<G: GameEnv, E: Evaluator<G>>(
     evaluator: &E,
     config: &SelfPlayConfig,
     num_games: usize,
+    make_env: fn() -> G,
 ) -> Vec<GameEpisode> {
     (0..num_games)
         .map(|i| {
-            let runner = SelfPlayRunner::new(evaluator, config.clone());
+            let runner = SelfPlayRunner::new(evaluator, config.clone(), make_env);
             runner.play_episode(i)
         })
         .collect()
@@ -272,9 +293,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 /// 评估请求：一批待评估环境。
-struct EvalRequest {
+struct EvalRequest<G: GameEnv> {
     id: u64,
-    envs: Vec<DarkChessEnv>,
+    envs: Vec<G>,
 }
 
 /// 评估响应：按请求顺序返回 logits 与 values。
@@ -285,20 +306,28 @@ struct EvalResponse {
 }
 
 /// 共享请求队列（多消费者）：多个评估线程从这里取批。
-#[derive(Default)]
-struct EvalQueue {
-    reqs: Mutex<VecDeque<EvalRequest>>,
+struct EvalQueue<G: GameEnv> {
+    reqs: Mutex<VecDeque<EvalRequest<G>>>,
     cvar: Condvar,
 }
 
-impl EvalQueue {
-    fn push(&self, req: EvalRequest) {
+impl<G: GameEnv> Default for EvalQueue<G> {
+    fn default() -> Self {
+        Self {
+            reqs: Mutex::new(VecDeque::new()),
+            cvar: Condvar::new(),
+        }
+    }
+}
+
+impl<G: GameEnv> EvalQueue<G> {
+    fn push(&self, req: EvalRequest<G>) {
         let mut q = self.reqs.lock().unwrap();
         q.push_back(req);
         self.cvar.notify_one();
     }
 
-    fn pop(&self) -> Option<EvalRequest> {
+    fn pop(&self) -> Option<EvalRequest<G>> {
         let mut q = self.reqs.lock().unwrap();
         loop {
             if let Some(req) = q.pop_front() {
@@ -318,9 +347,9 @@ impl EvalQueue {
 /// 后台评估线程：循环从共享队列取批、评估、回传结果。
 ///
 /// 队列关闭（shutdown）后 `pop` 仍返回 Some 的话会空转，因此用 `stopped` 标志。
-fn eval_worker<E: Evaluator + Sync>(
+fn eval_worker<G: GameEnv, E: Evaluator<G> + Sync>(
     evaluator: &E,
-    queue: &EvalQueue,
+    queue: &EvalQueue<G>,
     tx: Sender<EvalResponse>,
     stopped: &Arc<Mutex<bool>>,
 ) {
@@ -357,16 +386,18 @@ fn eval_worker<E: Evaluator + Sync>(
 /// - `config`：自对弈配置（mcts_sims / max_considered_actions / temperature_steps）
 /// - `num_games`：目标对局总数
 /// - `concurrency`：同时推进的并发对局数（越大单批 batch 越大，流水线也越深）
+/// - `make_env`：环境工厂
 ///
 /// 返回的 episode 顺序即为完成顺序（先完成的先返回），与对局内部步序无关。
 ///
 /// 注意：调用方若在持有 Python GIL 时调用，应先 `py.allow_threads(...)` 释放 GIL，
 /// 否则后台线程的 `Python::with_gil` 会与主线程互等死锁。
-pub fn run_batched_self_play<E: Evaluator + Sync>(
+pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
     evaluator: &E,
     config: &SelfPlayConfig,
     num_games: usize,
     concurrency: usize,
+    make_env: fn() -> G,
 ) -> Vec<GameEpisode> {
     let concurrency = concurrency.max(1);
     let gumbel_cfg = GumbelConfig {
@@ -377,7 +408,7 @@ pub fn run_batched_self_play<E: Evaluator + Sync>(
     };
 
     // 共享请求队列 + 响应通道
-    let queue = Arc::new(EvalQueue::default());
+    let queue = Arc::new(EvalQueue::<G>::default());
     let stopped = Arc::new(Mutex::new(false));
     let (resp_tx, resp_rx) = channel::<EvalResponse>();
 
@@ -403,12 +434,12 @@ pub fn run_batched_self_play<E: Evaluator + Sync>(
             let wave = concurrency.min(num_games - done);
 
             // 初始化本波的游戏树 + 每局的样本收集
-            let mut trees: Vec<BatchedTree<'_, E>> = Vec::with_capacity(wave);
+            let mut trees: Vec<BatchedTree<'_, G, E>> = Vec::with_capacity(wave);
             let mut episode_data: Vec<
                 Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize)>,
             > = Vec::with_capacity(wave);
             for _ in 0..wave {
-                let env = config.scenario.create_env();
+                let env = make_env();
                 trees.push(BatchedTree::new(&env, evaluator, &gumbel_cfg));
                 episode_data.push(Vec::new());
             }
@@ -416,7 +447,7 @@ pub fn run_batched_self_play<E: Evaluator + Sync>(
             // 每棵树是否正等待一个在途批（Some(batch_id)），等待期间不得继续选择
             let mut blocked: Vec<Option<u64>> = vec![None; wave];
             // 在途批：batch_id -> (每个 eval 属于哪棵树, 待评估项)
-            let mut in_flight: HashMap<u64, (Vec<usize>, Vec<PendingEval>)> = HashMap::new();
+            let mut in_flight: HashMap<u64, (Vec<usize>, Vec<PendingEval<G>>)> = HashMap::new();
             let mut next_batch_id: u64 = 0;
 
             // 辅助：把一棵树的叶子收集进当前批
@@ -449,14 +480,14 @@ pub fn run_batched_self_play<E: Evaluator + Sync>(
                 }
 
                 // 2) 从所有未被阻塞的活跃树上收集待评估项，合并成一批
-                let mut pool: Vec<PendingEval> = Vec::new();
+                let mut pool: Vec<PendingEval<G>> = Vec::new();
                 let mut pool_targets: Vec<usize> = Vec::new();
                 let mut touched: Vec<usize> = Vec::new();
                 for i in 0..wave {
                     if !active[i] || blocked[i].is_some() {
                         continue;
                     }
-                    let mut local: Vec<PendingEval> = Vec::new();
+                    let mut local: Vec<PendingEval<G>> = Vec::new();
                     if trees[i].collect(&mut local) {
                         for p in local {
                             pool.push(p);
@@ -470,7 +501,7 @@ pub fn run_batched_self_play<E: Evaluator + Sync>(
                 if !pool.is_empty() {
                     let batch_id = next_batch_id;
                     next_batch_id += 1;
-                    let envs: Vec<DarkChessEnv> = pool.iter().map(|p| p.env).collect();
+                    let envs: Vec<G> = pool.iter().map(|p| p.env).collect();
                     queue.push(EvalRequest { id: batch_id, envs });
                     for &t in &touched {
                         blocked[t] = Some(batch_id);
@@ -502,7 +533,7 @@ pub fn run_batched_self_play<E: Evaluator + Sync>(
                             if !active[t] {
                                 continue;
                             }
-                            let mut applied: Vec<(&PendingEval, &[f32], f32)> =
+                            let mut applied: Vec<(&PendingEval<G>, &[f32], f32)> =
                                 Vec::with_capacity(idxs.len());
                             for &k in &idxs {
                                 applied.push((&evals[k], &resp.logits[k], resp.values[k]));
@@ -530,7 +561,7 @@ pub fn run_batched_self_play<E: Evaluator + Sync>(
                                     }
                                     for (t, idxs) in by_tree {
                                         if active[t] {
-                                            let mut applied: Vec<(&PendingEval, &[f32], f32)> =
+                                            let mut applied: Vec<(&PendingEval<G>, &[f32], f32)> =
                                                 Vec::with_capacity(idxs.len());
                                             for &k in &idxs {
                                                 applied.push(
@@ -627,8 +658,8 @@ fn finalize_episode(
 }
 
 /// 选择 completed_Q 最大的动作（确定性）
-pub fn select_completed_q_action<E: Evaluator>(
-    mcts: &GumbelMCTS<E>,
+pub fn select_completed_q_action<G: GameEnv, E: Evaluator<G>>(
+    mcts: &GumbelMCTS<G, E>,
     masks: &[i32],
 ) -> (usize, f32) {
     let mut best_action: Option<usize> = None;

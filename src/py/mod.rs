@@ -10,8 +10,11 @@ mod py_evaluator;
 pub use py_evaluator::PyEvaluator;
 
 #[cfg(feature = "pyo3")]
+pub mod ttt;
+
+#[cfg(feature = "pyo3")]
 use crate::game_env::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, SCALAR_FEATURE_COUNT,
+    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
 };
 #[cfg(feature = "pyo3")]
 use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig};
@@ -200,7 +203,7 @@ pub fn run_self_play_with_predictor_impl(
 
     loop {
         let start_time = std::time::Instant::now();
-        let episode = self_play::run_self_play(&evaluator, &cfg);
+        let episode = self_play::run_self_play(&evaluator, &cfg, DarkChessEnv::new);
         let duration = start_time.elapsed();
 
         if episode.samples.is_empty() {
@@ -284,7 +287,7 @@ pub fn run_parallel_self_play_with_predictor_impl(
                         let mut local = Vec::with_capacity(games_per_worker);
                         for g in 0..games_per_worker {
                             let start = std::time::Instant::now();
-                            let episode = self_play::run_self_play(&evaluator, &cfg);
+                            let episode = self_play::run_self_play(&evaluator, &cfg, DarkChessEnv::new);
                             if episode.samples.is_empty() {
                                 eprintln!(
                                     "[ParallelWorker-{}/game{}] ⚠️ 空游戏数据，跳过",
@@ -354,6 +357,7 @@ pub fn run_batched_self_play_with_predictor_impl<'py>(
                 &cfg,
                 num_games - game_count,
                 concurrency,
+                DarkChessEnv::new,
             )
         });
         for ep in batch {

@@ -1,37 +1,48 @@
+// src/py/py_evaluator.rs
+// 基于 Python 回调的通用评估器（泛型化：G = 游戏环境）
+
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::game_env::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
-};
+use crate::game_env::GameEnv;
 use crate::mcts::Evaluator;
 
 /// 连续失败阈值：超过此值时 panic，避免用垃圾数据持续搜索
 const MAX_CONSECUTIVE_FAILURES: u32 = 10;
 
-pub struct PyEvaluator {
+/// 通用 Python 评估器：把 `Vec<G>` 编码为 numpy 批量特征后调用 Python 预测函数。
+///
+/// 预测函数约定：`predict_fn(boards_np, scalars_np) -> (policy_logits, values)`
+/// - `boards_np` shape `[batch, G::BOARD_CHANNELS, G::BOARD_ROWS, G::BOARD_COLS]`
+/// - `scalars_np` shape `[batch, G::SCALAR_FEATURE_COUNT]`
+/// - `policy_logits` shape `[batch, G::action_space_size()]`
+pub struct PyEvaluator<G: GameEnv> {
     predict_fn: PyObject,
     /// 缓存的 numpy 模块引用，避免每次 call_python 都重新 import
     numpy_module: std::sync::OnceLock<Py<PyModule>>,
     /// 连续失败计数器（AtomicU32 允许在多线程下安全递增）
     consecutive_failures: AtomicU32,
+    /// 游戏环境类型标记
+    _marker: PhantomData<G>,
 }
 
 // Safety: PyEvaluator 只持有 PyObject (=Py<PyAny>) 和 Py<PyModule>。
 // Py<T> 实现了 Send + Sync (只要 T: Send + Sync；PyAny/PyModule 就是 Send+Sync)。
 // OnceLock<Py<PyModule>> 和 AtomicU32 都是 Sync。
 // 访问 Python 侧对象时必须先通过 Python::with_gil 获取 GIL，因此没有数据竞争。
-unsafe impl Send for PyEvaluator {}
-unsafe impl Sync for PyEvaluator {}
+unsafe impl<G: GameEnv> Send for PyEvaluator<G> {}
+unsafe impl<G: GameEnv> Sync for PyEvaluator<G> {}
 
-impl PyEvaluator {
+impl<G: GameEnv> PyEvaluator<G> {
     pub fn new(predict_fn: PyObject) -> Self {
         Self {
             predict_fn,
             numpy_module: std::sync::OnceLock::new(),
             consecutive_failures: AtomicU32::new(0),
+            _marker: PhantomData,
         }
     }
 
@@ -67,10 +78,10 @@ impl PyEvaluator {
             let boards_np = Self::to_numpy(
                 &np,
                 boards_flat,
-                &[batch_size, BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS],
+                &[batch_size, G::BOARD_CHANNELS, G::BOARD_ROWS, G::BOARD_COLS],
             )?;
             let scalars_np =
-                Self::to_numpy(&np, scalars_flat, &[batch_size, SCALAR_FEATURE_COUNT])?;
+                Self::to_numpy(&np, scalars_flat, &[batch_size, G::SCALAR_FEATURE_COUNT])?;
 
             let result = self
                 .predict_fn
@@ -93,10 +104,10 @@ impl PyEvaluator {
                 PyRuntimeError::new_err(format!("policy logits extraction failed: {}", e))
             })?;
 
-            let values_vec_flat: Vec<f32> = values_py.extract(py).map_err(|e| {
-                eprintln!("Failed to extract values: {}", e);
-                PyRuntimeError::new_err(format!("values extraction failed: {}", e))
-            })?;
+            // values 兼容两种形状：
+            // - 扁平 (batch,)：numpy 默认（当前暗棋 predictor 约定）
+            // - 嵌套 (batch, 1)：PyTorch 网络输出的默认形状
+            let values_vec_flat = Self::extract_values_flat(py, &values_py, batch_size)?;
 
             // 与 policy 的 normalize_policy_shape 一致：先截断到 batch_size，
             // 不足部分补 0.0，保证任何返回形状下都不会触发 chunks(0) panic。
@@ -110,8 +121,31 @@ impl PyEvaluator {
         })
     }
 
+    /// 提取 values 并统一为扁平 `Vec<f32>`。
+    ///
+    /// 支持：
+    /// - 扁平 `[batch]`：直接提取
+    /// - 嵌套 `[[v0],[v1],...]`（shape `(batch, 1)`，PyTorch 默认）：取每行首元素
+    fn extract_values_flat(py: Python<'_>, obj: &PyObject, batch_size: usize) -> PyResult<Vec<f32>> {
+        let bound = obj.bind(py);
+        if let Ok(flat) = bound.extract::<Vec<f32>>() {
+            return Ok(flat);
+        }
+        let nested: Vec<Vec<f32>> = bound.extract().map_err(|e| {
+            eprintln!(
+                "Failed to extract values (neither flat [batch] nor nested [batch,1]): {}",
+                e
+            );
+            PyRuntimeError::new_err(format!("values extraction failed: {}", e))
+        })?;
+        let mut out = Vec::with_capacity(nested.len());
+        for row in nested.into_iter().take(batch_size) {
+            out.push(row.first().copied().unwrap_or(0.0));
+        }
+        Ok(out)
+    }
+
     /// 将 flat Vec<f32> 转换为指定 shape 的 float32 numpy 数组。
-    /// 合并了原 to_numpy_4d / to_numpy_2d 的逻辑。
     fn to_numpy(np: &Bound<'_, PyModule>, data: Vec<f32>, shape: &[usize]) -> PyResult<PyObject> {
         let array = np
             .call_method1("array", (data,))
@@ -134,13 +168,13 @@ impl PyEvaluator {
                 policy.truncate(batch_size);
             } else {
                 while policy.len() < batch_size {
-                    policy.push(vec![0.0; ACTION_SPACE_SIZE]);
+                    policy.push(vec![0.0; G::action_space_size()]);
                 }
             }
         }
         for row in policy.iter_mut() {
-            if row.len() != ACTION_SPACE_SIZE {
-                row.resize(ACTION_SPACE_SIZE, 0.0);
+            if row.len() != G::action_space_size() {
+                row.resize(G::action_space_size(), 0.0);
             }
         }
         policy
@@ -163,22 +197,22 @@ impl PyEvaluator {
     }
 }
 
-impl Evaluator for PyEvaluator {
-    fn evaluate(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
+    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
         if envs.is_empty() {
             return (Vec::new(), Vec::new());
         }
 
         let batch_size = envs.len();
         let mut boards_flat: Vec<f32> =
-            Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
-        let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * SCALAR_FEATURE_COUNT);
+            Vec::with_capacity(batch_size * G::BOARD_CHANNELS * G::BOARD_ROWS * G::BOARD_COLS);
+        let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * G::SCALAR_FEATURE_COUNT);
 
         // 直接写入 flat buffer，避免创建 Observation（ndarray 分配 + clone）的开销
         let mut board_buf = Vec::new();
         let mut scalar_buf = Vec::new();
         for env in envs {
-            env.get_state_flat_into(&mut board_buf, &mut scalar_buf);
+            env.encode_features_flat_into(&mut board_buf, &mut scalar_buf);
             boards_flat.extend_from_slice(&board_buf);
             scalars_flat.extend_from_slice(&scalar_buf);
         }
@@ -196,14 +230,14 @@ impl Evaluator for PyEvaluator {
                 );
                 self.record_failure();
                 (
-                    vec![vec![0.0; ACTION_SPACE_SIZE]; batch_size],
+                    vec![vec![0.0; G::action_space_size()]; batch_size],
                     vec![0.0; batch_size],
                 )
             }
         }
     }
 
-    fn evaluate_logits(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate_logits(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
         self.evaluate(envs)
     }
 }
