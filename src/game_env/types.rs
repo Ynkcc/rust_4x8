@@ -24,6 +24,21 @@ impl Default for PieceType {
 }
 
 impl PieceType {
+    /// 根据类型索引（0..7，对应 enum 顺序）构造棋子类型。
+    /// 用于从配置的 active_types 索引还原具体棋子。
+    pub fn from_index(idx: usize) -> Self {
+        match idx {
+            0 => PieceType::Soldier,
+            1 => PieceType::Cannon,
+            2 => PieceType::Horse,
+            3 => PieceType::Chariot,
+            4 => PieceType::Elephant,
+            5 => PieceType::Advisor,
+            6 => PieceType::General,
+            _ => panic!("非法棋子类型索引: {}", idx),
+        }
+    }
+
     pub fn value(&self) -> i32 {
         match self {
             PieceType::Soldier => 2,

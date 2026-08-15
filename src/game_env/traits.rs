@@ -4,20 +4,23 @@
 // 背景：
 // - 本项目最初只支持暗棋（DarkChessEnv），MCTS（mcts/）被硬编码绑定到
 //   具体的 DarkChessEnv / Slot / Piece 类型上。
-// - 为了复用同一套搜索核心做井字棋（Tic-Tac-Toe）验证，这里抽出 `GameEnv` trait。
+// - 为了复用同一套搜索核心做井字棋（Tic-Tac-Toe）与 4x2 迷你暗棋验证，
+//   这里抽出 `GameEnv` trait。
 // - 机会节点（翻牌随机性）是暗棋特有语义：trait 提供 `is_chance_action` /
 //   `chance_outcomes` / `step_outcome_id` 三个扩展点，默认实现为「无机会节点」，
-//   DarkChessEnv 覆盖实现、TicTacToeEnv 保持默认（所有节点均为常规节点）。
+//   DarkChessEnv 与 MiniDarkChessEnv 覆盖实现、TicTacToeEnv 保持默认。
 
 use super::board::DarkChessEnv;
+use super::config::GameConfig;
 use super::constants::MAX_STEPS_PER_EPISODE;
-use super::types::{Observation, Piece, PieceType, Player};
+use super::mini_darkchess::MiniDarkChessEnv;
+use super::types::{Observation, Piece, Player};
 
 /// 泛型游戏环境：Gumbel MCTS 对其施加的全部约束。
 ///
 /// 要求 `Copy`：MCTS 节点以值语义保存环境快照（与既有 DarkChessEnv 的 Copy 设计一致）。
 pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
-    /// 动作空间大小（暗棋 352，井字棋 9）
+    /// 动作空间大小
     fn action_space_size() -> usize;
 
     /// 当前玩家
@@ -42,7 +45,7 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     /// 终局检测：`(terminated, truncated, winner)`
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>);
 
-    /// 每局最大步数（步数上限截断）。暗棋使用 100；井字棋 9 步内必结束，用 9。
+    /// 每局最大步数（步数上限截断）。
     fn max_steps() -> usize {
         MAX_STEPS_PER_EPISODE
     }
@@ -51,39 +54,30 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     // 神经网络特征形状（供批量推理 / Python 绑定使用）
     // ------------------------------------------------------------------------
 
-    /// 棋盘特征通道数（暗棋 16，井字棋 2）
+    /// 棋盘特征通道数
     const BOARD_CHANNELS: usize;
     /// 棋盘行数
     const BOARD_ROWS: usize;
     /// 棋盘列数
     const BOARD_COLS: usize;
-    /// 标量特征数（暗棋 35，井字棋 0）
+    /// 标量特征数
     const SCALAR_FEATURE_COUNT: usize;
 
-    /// 将环境编码为扁平特征写入外部缓冲区（避免每次推理重复分配）。
-    ///
-    /// `board_data` 长度 = `BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS`，
-    /// `scalars_data` 长度 = `SCALAR_FEATURE_COUNT`。调用方须在写前 `clear()`。
+    /// 将环境编码为扁平特征写入外部缓冲区。
     fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>);
 
     // ------------------------------------------------------------------------
-    // 机会节点扩展点（暗棋特有；井字棋「所有节点均为常规节点」，保持默认实现）
+    // 机会节点扩展点
     // ------------------------------------------------------------------------
 
-    /// 该动作是否会产生机会节点（暗棋：翻牌且目标格为 Hidden；井字棋：恒为 false）
     fn is_chance_action(&self, _action: usize) -> bool {
         false
     }
 
-    /// 枚举机会动作的所有可能结果：`(outcome_id, 概率, 结果环境)`。
-    ///
-    /// 在「执行该动作之前」的环境上调用。默认实现返回空（无机会节点）。
     fn chance_outcomes(&self, _action: usize) -> Vec<(usize, f32, Self)> {
         Vec::new()
     }
 
-    /// 执行动作后，若该动作产生了机会结果，返回其 `outcome_id`
-    /// （用于 MCTS 子树复用匹配）。普通动作返回 `None`。
     fn step_outcome_id(&self, _action: usize) -> Option<usize> {
         None
     }
@@ -95,22 +89,9 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
 
 /// 获取棋子的唯一结果 ID（暗棋机会节点的可能结果标识）。
 ///
-/// ID 计算方式：棋子类型索引 + 玩家偏移量（红方 0，黑方 7），范围 0-13。
-pub fn get_outcome_id(piece: &Piece) -> usize {
-    let type_idx = match piece.piece_type {
-        PieceType::Soldier => 0,
-        PieceType::Cannon => 1,
-        PieceType::Horse => 2,
-        PieceType::Chariot => 3,
-        PieceType::Elephant => 4,
-        PieceType::Advisor => 5,
-        PieceType::General => 6,
-    };
-    let player_offset = match piece.player {
-        Player::Red => 0,
-        Player::Black => 7,
-    };
-    type_idx + player_offset
+/// ID 计算方式：按 config 的激活类型紧凑索引 + 玩家偏移（红方 0，黑方 num_active）。
+pub fn get_outcome_id(cfg: &GameConfig, piece: &Piece) -> usize {
+    cfg.outcome_id_for(piece.piece_type, piece.player == Player::Black)
 }
 
 impl GameEnv for DarkChessEnv {
@@ -142,7 +123,7 @@ impl GameEnv for DarkChessEnv {
     }
 
     fn max_steps() -> usize {
-        MAX_STEPS_PER_EPISODE
+        super::constants::MAX_STEPS_PER_EPISODE
     }
 
     const BOARD_CHANNELS: usize = super::constants::BOARD_CHANNELS;
@@ -154,7 +135,7 @@ impl GameEnv for DarkChessEnv {
         DarkChessEnv::get_state_flat_into(self, board_data, scalars_data);
     }
 
-    // --- 机会节点（实现已下沉到 DarkChessEnv，见 board.rs） ---
+    // --- 机会节点 ---
 
     fn is_chance_action(&self, action: usize) -> bool {
         DarkChessEnv::is_chance_action(self, action)
@@ -166,5 +147,63 @@ impl GameEnv for DarkChessEnv {
 
     fn step_outcome_id(&self, action: usize) -> Option<usize> {
         DarkChessEnv::step_outcome_id(self, action)
+    }
+}
+
+// ============================================================================
+// 4x2 迷你暗棋实现
+// ============================================================================
+
+impl GameEnv for MiniDarkChessEnv {
+    fn action_space_size() -> usize {
+        MiniDarkChessEnv::action_space_size()
+    }
+
+    fn get_current_player(&self) -> Player {
+        MiniDarkChessEnv::get_current_player(self)
+    }
+
+    fn action_masks_into(&self, masks: &mut [i32]) {
+        MiniDarkChessEnv::action_masks_into(self, masks);
+    }
+
+    fn step(
+        &mut self,
+        action: usize,
+    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+        MiniDarkChessEnv::step(self, action)
+    }
+
+    fn get_state(&self) -> Observation {
+        MiniDarkChessEnv::get_state(self)
+    }
+
+    fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
+        MiniDarkChessEnv::check_game_over_conditions(self)
+    }
+
+    fn max_steps() -> usize {
+        MiniDarkChessEnv::max_steps()
+    }
+
+    const BOARD_CHANNELS: usize = 10;
+    const BOARD_ROWS: usize = 4;
+    const BOARD_COLS: usize = 2;
+    const SCALAR_FEATURE_COUNT: usize = 11;
+
+    fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        MiniDarkChessEnv::encode_features_flat_into(self, board_data, scalars_data);
+    }
+
+    fn is_chance_action(&self, action: usize) -> bool {
+        MiniDarkChessEnv::is_chance_action(self, action)
+    }
+
+    fn chance_outcomes(&self, action: usize) -> Vec<(usize, f32, Self)> {
+        MiniDarkChessEnv::chance_outcomes(self, action)
+    }
+
+    fn step_outcome_id(&self, action: usize) -> Option<usize> {
+        MiniDarkChessEnv::step_outcome_id(self, action)
     }
 }

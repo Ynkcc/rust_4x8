@@ -1,9 +1,7 @@
 use super::actions::{action_lookup_tables, pack_coords};
-use super::bitboard::{
-    BOARD_MASK, NOT_FILE_A, NOT_FILE_H, msb_index, pop_lsb, ray_attacks, trailing_zeros, ull,
-};
+use super::bitboard::{board_mask, msb_index, not_file_a, not_file_h, pop_lsb, ray_attacks, trailing_zeros, ull};
 use super::board::DarkChessEnv;
-use super::constants::*;
+use super::config::NUM_PIECE_TYPES_MAX;
 use super::types::*;
 
 // ==============================================================================
@@ -13,6 +11,7 @@ use super::types::*;
 impl DarkChessEnv {
     /// 游戏终止条件检查
     pub fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
+        let cfg = &self.config;
         if self.get_score(Player::Red) <= 0 {
             return (true, false, Some(Player::Black.val()));
         }
@@ -21,15 +20,15 @@ impl DarkChessEnv {
         }
 
         // 全灭判定 (使用 count 判断)
-        if self.get_dead_pieces(Player::Red).len() == TOTAL_PIECES_PER_PLAYER {
+        if self.get_dead_pieces(Player::Red).len() == cfg.total_pieces_per_player {
             return (true, false, Some(Player::Black.val()));
         }
-        if self.get_dead_pieces(Player::Black).len() == TOTAL_PIECES_PER_PLAYER {
+        if self.get_dead_pieces(Player::Black).len() == cfg.total_pieces_per_player {
             return (true, false, Some(Player::Red.val()));
         }
 
-        // 栈数组避免堆分配（step 每次都会调用本函数）
-        let mut masks = [0i32; ACTION_SPACE_SIZE];
+        // 无合法走法
+        let mut masks = vec![0i32; cfg.action_space_size];
         self.get_action_masks_for_player_into(self.get_current_player(), &mut masks);
         if masks.iter().all(|&x| x == 0) {
             return (
@@ -39,11 +38,11 @@ impl DarkChessEnv {
             );
         }
 
-        if self.get_move_counter() >= MAX_CONSECUTIVE_MOVES_FOR_DRAW {
+        if self.get_move_counter() >= cfg.max_consecutive_moves_for_draw {
             return (true, false, Some(0));
         }
 
-        if self.get_total_steps() >= MAX_STEPS_PER_EPISODE {
+        if self.get_total_steps() >= cfg.max_steps_per_episode {
             return (false, true, Some(0));
         }
 
@@ -53,7 +52,7 @@ impl DarkChessEnv {
     // --- 动作掩码计算 ---
 
     pub fn action_masks(&self) -> Vec<i32> {
-        let mut mask = vec![0; ACTION_SPACE_SIZE];
+        let mut mask = vec![0; self.config.action_space_size];
         self.action_masks_into(&mut mask);
         mask
     }
@@ -63,10 +62,11 @@ impl DarkChessEnv {
     }
 
     pub(super) fn get_action_masks_for_player_into(&self, player: Player, mask: &mut [i32]) {
+        let cfg = &self.config;
         for m in mask.iter_mut() {
             *m = 0;
         }
-        let lookup = action_lookup_tables();
+        let lookup = action_lookup_tables(cfg);
 
         // 1. 翻棋动作
         let mut temp_hidden = self.get_hidden_bitboard();
@@ -85,22 +85,28 @@ impl DarkChessEnv {
         let my_piece_bb = self.get_piece_bitboards()[my.idx()];
         let opp_piece_bb = self.get_piece_bitboards()[opp.idx()];
 
-        // 2. 常规移动
-        let mut target_bbs: [u64; NUM_PIECE_TYPES] = [0; NUM_PIECE_TYPES];
+        // 2. 常规移动（仅遍历激活的棋子类型；未激活类型位棋盘为空，自然跳过）
+        let mut target_bbs: [u64; NUM_PIECE_TYPES_MAX] = [0; NUM_PIECE_TYPES_MAX];
         let mut cumulative_targets: u64 = empty_bb;
 
-        for pt in 0..NUM_PIECE_TYPES {
+        for &pt in cfg.active_types.iter().take(cfg.num_active) {
             cumulative_targets |= opp_piece_bb[pt];
             target_bbs[pt] = cumulative_targets;
         }
 
-        target_bbs[PieceType::Soldier as usize] |= opp_piece_bb[PieceType::General as usize];
-        target_bbs[PieceType::General as usize] &= !opp_piece_bb[PieceType::Soldier as usize];
+        // 兵克将 / 将怕兵 特例（类型索引固定：兵=0，将=6）
+        let soldier = PieceType::Soldier as usize;
+        let general = PieceType::General as usize;
+        target_bbs[soldier] |= opp_piece_bb[general];
+        target_bbs[general] &= !opp_piece_bb[soldier];
 
-        let shifts = [-(BOARD_COLS as isize) as i32, (BOARD_COLS as i32), -1, 1];
-        let wrap_checks = [BOARD_MASK, BOARD_MASK, NOT_FILE_A, NOT_FILE_H];
+        let bmask = board_mask(cfg);
+        let nfa = not_file_a(cfg);
+        let nfh = not_file_h(cfg);
+        let shifts = [-(cfg.cols as isize) as i32, (cfg.cols as i32), -1, 1];
+        let wrap_checks = [bmask, bmask, nfa, nfh];
 
-        for pt in 0..NUM_PIECE_TYPES {
+        for &pt in cfg.active_types.iter().take(cfg.num_active) {
             if pt == PieceType::Cannon as usize {
                 continue;
             }
@@ -119,9 +125,9 @@ impl DarkChessEnv {
                 }
 
                 let potential_to_bb = if shift > 0 {
-                    (temp_from_bb << (shift as u32)) & BOARD_MASK
+                    (temp_from_bb << (shift as u32)) & bmask
                 } else {
-                    (temp_from_bb >> ((-shift) as u32)) & BOARD_MASK
+                    (temp_from_bb >> ((-shift) as u32)) & bmask
                 };
 
                 let mut actual_to_bb = potential_to_bb & target_bbs[pt];
@@ -147,17 +153,17 @@ impl DarkChessEnv {
         // 3. 炮击
         let my_cannons_bb = my_piece_bb[PieceType::Cannon as usize];
         if my_cannons_bb != 0 {
-            let all_pieces_bb = BOARD_MASK & !empty_bb;
+            let all_pieces_bb = bmask & !empty_bb;
 
-            let valid_cannon_targets = BOARD_MASK & (!my_revealed_bb);
+            let valid_cannon_targets = bmask & (!my_revealed_bb);
 
             let mut temp_cannons = my_cannons_bb;
-            let ray_attacks = ray_attacks();
+            let rays = ray_attacks(cfg);
             while temp_cannons != 0 {
                 let from_sq = pop_lsb(&mut temp_cannons);
 
-                for dir in 0..NUM_DIRECTIONS {
-                    let ray_bb = ray_attacks[dir][from_sq];
+                for dir in 0..4 {
+                    let ray_bb = rays[dir][from_sq];
                     let blockers = ray_bb & all_pieces_bb;
 
                     if blockers == 0 {
@@ -165,7 +171,7 @@ impl DarkChessEnv {
                     }
 
                     let screen_sq = match dir {
-                        DIRECTION_UP | DIRECTION_LEFT => msb_index(blockers),
+                        0 | 2 => msb_index(blockers), // UP | LEFT
                         _ => Some(trailing_zeros(blockers)),
                     };
 
@@ -174,7 +180,7 @@ impl DarkChessEnv {
                     }
                     let screen_sq = screen_sq.unwrap();
 
-                    let after_screen_ray = ray_attacks[dir][screen_sq];
+                    let after_screen_ray = rays[dir][screen_sq];
                     let targets = after_screen_ray & all_pieces_bb;
 
                     if targets == 0 {
@@ -182,7 +188,7 @@ impl DarkChessEnv {
                     }
 
                     let target_sq = match dir {
-                        DIRECTION_UP | DIRECTION_LEFT => msb_index(targets),
+                        0 | 2 => msb_index(targets),
                         _ => Some(trailing_zeros(targets)),
                     };
 

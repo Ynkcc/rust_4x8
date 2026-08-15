@@ -2,32 +2,35 @@ use ndarray::{Array1, Array3};
 
 use super::bitboard::ull;
 use super::board::DarkChessEnv;
-use super::constants::*;
 use super::types::*;
 
 // ==============================================================================
 // --- 特征提取扩展块 (Neural Network Input) ---
+// 全部维度由 self.config 决定，支持 4x8 与 4x2 两个变体。
 // ==============================================================================
 
 impl DarkChessEnv {
     /// 把棋盘特征张量直接写入传入的缓冲区，避免在调用链上重复分配 Vec。
     fn get_board_state_tensor_into(&self, tensor: &mut Vec<f32>) {
+        let cfg = &self.config;
         tensor.clear();
-        tensor.reserve(BOARD_CHANNELS * TOTAL_POSITIONS);
+        tensor.reserve(cfg.board_channels * cfg.total_positions);
         let my = self.get_current_player();
         let opp = my.opposite();
 
         let mut push_bitboard = |bb: u64| {
-            for sq in 0..TOTAL_POSITIONS {
+            for sq in 0..cfg.total_positions {
                 tensor.push(if (bb & ull(sq)) != 0 { 1.0 } else { 0.0 });
             }
         };
 
         let piece_bbs = self.get_piece_bitboards();
-        for pt in 0..NUM_PIECE_TYPES {
+        // 己方激活棋子类型
+        for &pt in cfg.active_types.iter().take(cfg.num_active) {
             push_bitboard(piece_bbs[my.idx()][pt]);
         }
-        for pt in 0..NUM_PIECE_TYPES {
+        // 敌方激活棋子类型
+        for &pt in cfg.active_types.iter().take(cfg.num_active) {
             push_bitboard(piece_bbs[opp.idx()][pt]);
         }
         push_bitboard(self.get_hidden_bitboard());
@@ -35,45 +38,48 @@ impl DarkChessEnv {
     }
 
     fn get_board_state_tensor(&self) -> Vec<f32> {
-        let mut tensor = Vec::with_capacity(BOARD_CHANNELS * TOTAL_POSITIONS);
+        let mut tensor = Vec::with_capacity(self.config.board_channels * self.config.total_positions);
         self.get_board_state_tensor_into(&mut tensor);
         tensor
     }
 
     fn get_scalar_state_vector(&self) -> Vec<f32> {
-        let mut vec = Vec::with_capacity(SCALAR_FEATURE_COUNT);
+        let mut vec = Vec::with_capacity(self.config.scalar_feature_count);
         self.get_scalar_state_vector_into(&mut vec);
         vec
     }
 
     fn get_scalar_state_vector_into(&self, vec: &mut Vec<f32>) {
+        let cfg = &self.config;
         vec.clear();
-        vec.reserve(SCALAR_FEATURE_COUNT);
+        vec.reserve(cfg.scalar_feature_count);
 
         let my = self.get_current_player();
         let opp = my.opposite();
 
-        vec.push(self.get_move_counter() as f32 / MAX_CONSECUTIVE_MOVES_FOR_DRAW as f32);
-        vec.push(self.get_hp(my) as f32 / INITIAL_HEALTH_POINTS as f32);
-        vec.push(self.get_hp(opp) as f32 / INITIAL_HEALTH_POINTS as f32);
+        vec.push(self.get_move_counter() as f32 / cfg.max_consecutive_moves_for_draw as f32);
+        vec.push(self.get_hp(my) as f32 / cfg.initial_health as f32);
+        vec.push(self.get_hp(opp) as f32 / cfg.initial_health as f32);
 
         let dead_counts = self.get_dead_piece_counts_by_type();
         for &player in &[my, opp] {
-            for pt in 0..NUM_PIECE_TYPES {
+            for &pt in cfg.active_types.iter().take(cfg.num_active) {
                 // 存活数 = 该类总数 - 该类阵亡数
-                // （阵亡计数在 apply_move_action 吃子时维护，天然覆盖吃暗子/炮吃己方暗子）
                 let dead = dead_counts[player.idx()][pt] as usize;
-                let count = PIECE_MAX_COUNTS[pt].saturating_sub(dead);
+                let count = cfg.piece_counts[pt].saturating_sub(dead);
                 vec.extend(std::iter::repeat(1.0).take(count));
-                vec.extend(std::iter::repeat(0.0).take(PIECE_MAX_COUNTS[pt] - count));
+                vec.extend(std::iter::repeat(0.0).take(cfg.piece_counts[pt] - count));
             }
         }
     }
 
     pub fn get_state(&self) -> Observation {
         let board_data = self.get_board_state_tensor();
-        let board = Array3::from_shape_vec((BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS), board_data)
-            .expect("Failed to reshape board array");
+        let board = Array3::from_shape_vec(
+            (self.config.board_channels, self.config.rows, self.config.cols),
+            board_data,
+        )
+        .expect("Failed to reshape board array");
 
         let scalars_data = self.get_scalar_state_vector();
         let scalars = Array1::from_vec(scalars_data);
@@ -82,9 +88,6 @@ impl DarkChessEnv {
     }
 
     /// 把特征写入外部缓冲区（避免每次分配临时 Vec）。
-    ///
-    /// 注意：`Array3`/`Array1` 需要持有自己的底层 Vec，因此这里仍需 clone 一次数据；
-    /// 但缓冲区复用后可以避免在内部再分配临时 Vec，减少总分配次数。
     pub fn get_state_into(
         &self,
         board_data: &mut Vec<f32>,
@@ -92,7 +95,7 @@ impl DarkChessEnv {
     ) -> Observation {
         self.get_board_state_tensor_into(board_data);
         let board = Array3::from_shape_vec(
-            (BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS),
+            (self.config.board_channels, self.config.rows, self.config.cols),
             board_data.clone(),
         )
         .expect("Failed to reshape board array");
@@ -103,10 +106,7 @@ impl DarkChessEnv {
         Observation { board, scalars }
     }
 
-    /// 仅将扁平特征写入外部缓冲区，不创建 Observation（避免 ndarray 分配 + clone）。
-    ///
-    /// 适用于只需要 flat `Vec<f32>` 的场景（如 PyEvaluator 批量推理），
-    /// 跳过 `get_state_into` 中 `Array3::from_shape_vec` / `Array1::from_vec` 的额外开销。
+    /// 仅将扁平特征写入外部缓冲区，不创建 Observation。
     pub fn get_state_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
         self.get_board_state_tensor_into(board_data);
         self.get_scalar_state_vector_into(scalars_data);

@@ -10,6 +10,7 @@
 
 use crate::game_env::actions::action_lookup_tables;
 use crate::game_env::board::DarkChessEnv;
+use crate::game_env::config::darkchess_config;
 use crate::game_env::constants::*;
 use crate::game_env::types::*;
 
@@ -125,7 +126,8 @@ fn describe_action(slots: &[Slot], action: usize) -> String {
         action,
         ACTION_SPACE_SIZE
     );
-    let tables = action_lookup_tables();
+    let cfg = darkchess_config();
+    let tables = action_lookup_tables(&cfg);
     let coords = &tables.action_to_coords[action];
     if coords.len() == 1 {
         format!("翻开{}", coord_str(coords[0]))
