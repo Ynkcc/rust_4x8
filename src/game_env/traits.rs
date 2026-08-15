@@ -13,6 +13,7 @@
 use super::board::DarkChessEnv;
 use super::config::GameConfig;
 use super::constants::MAX_STEPS_PER_EPISODE;
+use super::game4x4::Game4x4Env;
 use super::mini_darkchess::MiniDarkChessEnv;
 use super::types::{Observation, Piece, Player};
 
@@ -147,6 +148,64 @@ impl GameEnv for DarkChessEnv {
 
     fn step_outcome_id(&self, action: usize) -> Option<usize> {
         DarkChessEnv::step_outcome_id(self, action)
+    }
+}
+
+// ============================================================================
+// 4x4 暗棋实现
+// ============================================================================
+
+impl GameEnv for Game4x4Env {
+    fn action_space_size() -> usize {
+        Game4x4Env::action_space_size()
+    }
+
+    fn get_current_player(&self) -> Player {
+        Game4x4Env::get_current_player(self)
+    }
+
+    fn action_masks_into(&self, masks: &mut [i32]) {
+        Game4x4Env::action_masks_into(self, masks);
+    }
+
+    fn step(
+        &mut self,
+        action: usize,
+    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+        Game4x4Env::step(self, action)
+    }
+
+    fn get_state(&self) -> Observation {
+        Game4x4Env::get_state(self)
+    }
+
+    fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
+        Game4x4Env::check_game_over_conditions(self)
+    }
+
+    fn max_steps() -> usize {
+        Game4x4Env::max_steps()
+    }
+
+    const BOARD_CHANNELS: usize = 16; // 2*7(全激活) + 2
+    const BOARD_ROWS: usize = 4;
+    const BOARD_COLS: usize = 4;
+    const SCALAR_FEATURE_COUNT: usize = 19; // 3 + 2*8
+
+    fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        Game4x4Env::encode_features_flat_into(self, board_data, scalars_data);
+    }
+
+    fn is_chance_action(&self, action: usize) -> bool {
+        Game4x4Env::is_chance_action(self, action)
+    }
+
+    fn chance_outcomes(&self, action: usize) -> Vec<(usize, f32, Self)> {
+        Game4x4Env::chance_outcomes(self, action)
+    }
+
+    fn step_outcome_id(&self, action: usize) -> Option<usize> {
+        Game4x4Env::step_outcome_id(self, action)
     }
 }
 
