@@ -9,7 +9,9 @@ banqi_pb2.py
 .venv/
 *.ot
 *.pt
+*.pth
 .idea
 training_data
 runs
 .codebuddy
+*.log
