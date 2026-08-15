@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "banqi_4x8"
+version = "0.1.0"
+description = "4x8 / 4x2 Dark Chess game environment for reinforcement learning"
+requires-python = ">=3.8"
+
+[tool.maturin]
+bindings = "pyo3"
+features = ["pyo3"]

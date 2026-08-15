@@ -68,6 +68,11 @@ impl PyMiniDarkChess {
         self.inner.get_current_player().val()
     }
 
+    /// 切换当前玩家（flip_player：不改变棋盘/棋子归属，仅改变编码视角）。
+    fn switch_player(&mut self) {
+        self.inner.flip_player();
+    }
+
     /// 当前玩家合法动作索引列表
     fn legal_moves(&self) -> Vec<usize> {
         let mut masks = vec![0i32; MINI_ACTION_SPACE_SIZE];

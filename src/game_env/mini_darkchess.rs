@@ -42,6 +42,11 @@ impl MiniDarkChessEnv {
         self.inner.get_current_player()
     }
 
+    /// 切换当前玩家（flip_player：不改变棋盘/棋子归属，仅改变编码视角）。
+    pub fn flip_player(&mut self) {
+        self.inner.flip_player();
+    }
+
     pub fn action_masks_into(&self, masks: &mut [i32]) {
         self.inner.action_masks_into(masks);
     }
