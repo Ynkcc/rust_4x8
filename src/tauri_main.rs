@@ -26,6 +26,7 @@ struct GameState {
     bitboards: HashMap<String, Vec<bool>>,
     hp_red: i32,   // 红方血量
     hp_black: i32, // 黑方血量
+    variant: String, // "dark" = 4x8 暗棋, "mini" = 4x2 迷你暗棋
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +43,7 @@ pub enum OpponentType {
     PvP,         // 本地双人
     Random,      // 随机对手
     RevealFirst, // 优先翻棋
+    Minimax,     // 纯规则 Minimax(expectiminimax+alpha-beta)，与 python/verify_mini_vs_minimax.py 同引擎
     MctsDL,      // MCTS + 深度学习
 }
 
@@ -49,6 +51,8 @@ pub enum OpponentType {
 struct AppState {
     game: Mutex<DarkChessEnv>,
     opponent_type: Mutex<OpponentType>,
+    // Minimax 搜索深度（与 verify_mini_vs_minimax.py 的 minimax(depth=4) 对应）
+    minimax_depth: Mutex<usize>,
     // MCTS 配置
     mcts_num_simulations: Mutex<usize>,
     // 已加载的模型（可在选择 MctsDL 时构建策略）
@@ -61,7 +65,7 @@ struct AppState {
 
 // Tauri 命令：重置游戏
 #[tauri::command]
-fn reset_game(opponent: Option<String>, state: State<AppState>) -> GameState {
+fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<AppState>) -> GameState {
     let mut game = state.game.lock().unwrap();
     let mut opp_type_lock = state.opponent_type.lock().unwrap();
 
@@ -69,11 +73,17 @@ fn reset_game(opponent: Option<String>, state: State<AppState>) -> GameState {
     *opp_type_lock = match opponent.as_deref() {
         Some("Random") => OpponentType::Random,
         Some("RevealFirst") => OpponentType::RevealFirst,
+        Some("Minimax") => OpponentType::Minimax,
         Some("MctsDL") => OpponentType::MctsDL,
         _ => OpponentType::PvP,
     };
 
-    game.reset();
+    // 按变体重建环境：mini = 4x2 迷你暗棋（8 格 / 40 动作空间），
+    // 其余 = 4x8 标准暗棋（32 格 / 192 动作空间）。构造器内部已 reset。
+    *game = match variant.as_deref() {
+        Some("mini") => DarkChessEnv::new_mini(),
+        _ => DarkChessEnv::new(),
+    };
 
     // 若选择 MctsDL 且已有模型，创建策略实例
     #[cfg(feature = "torch")]
@@ -119,8 +129,7 @@ fn step_game(action: usize, state: State<AppState>) -> Result<StepResult, String
 
 // Tauri 命令：执行 AI 动作
 #[tauri::command]
-fn bot_move(state: State<AppState>) -> Result<StepResult, String> {
-    let mut game = state.game.lock().unwrap();
+async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
     let opp_type = *state.opponent_type.lock().unwrap();
 
     // 如果处于 PvP，提示前端无需调用 AI
@@ -128,35 +137,47 @@ fn bot_move(state: State<AppState>) -> Result<StepResult, String> {
         return Err("当前为本地双人模式，无需 AI 行动".to_string());
     }
 
-    #[allow(unused_variables)]
-    let opp_type_ref = opp_type; // 用于后续可能的扩展
-
-    // 调用策略模块选择动作
-    let chosen_action = match opp_type {
-        OpponentType::RevealFirst => RevealFirstPolicy::choose_action(&*game),
-        OpponentType::Random => RandomPolicy::choose_action(&*game),
-        #[cfg(feature = "torch")]
-        OpponentType::MctsDL => {
-            let mut policy_lock = state.mcts_policy.lock().unwrap();
-            if policy_lock.is_none() {
-                // 尝试基于已加载模型创建
-                let model_opt = state.model.lock().unwrap().clone();
-                if let Some(model) = model_opt {
-                    let sims = *state.mcts_num_simulations.lock().unwrap();
-                    *policy_lock = Some(MctsDlPolicy::new(model, &*game, sims));
-                } else {
-                    return Err("未加载模型，无法执行 MCTS+DL 策略".into());
+    // 调用策略模块选择动作。
+    // Minimax 为纯规则搜索，depth=4 在 4x8 上需展开大量节点（机会节点枚举翻棋结果），
+    // 放后台线程执行避免阻塞 UI；其余策略廉价，直接同步执行。
+    let chosen_action = if opp_type == OpponentType::Minimax {
+        let depth = *state.minimax_depth.lock().unwrap();
+        let snapshot = state.game.lock().unwrap().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            banqi_4x8::ai::minimax::minimax_choose_action(&snapshot, depth)
+        })
+        .await
+        .map_err(|e| format!("Minimax 搜索线程错误: {e}"))?
+    } else {
+        let game = state.game.lock().unwrap();
+        match opp_type {
+            OpponentType::RevealFirst => RevealFirstPolicy::choose_action(&*game),
+            OpponentType::Random => RandomPolicy::choose_action(&*game),
+            #[cfg(feature = "torch")]
+            OpponentType::MctsDL => {
+                let mut policy_lock = state.mcts_policy.lock().unwrap();
+                if policy_lock.is_none() {
+                    // 尝试基于已加载模型创建
+                    let model_opt = state.model.lock().unwrap().clone();
+                    if let Some(model) = model_opt {
+                        let sims = *state.mcts_num_simulations.lock().unwrap();
+                        *policy_lock = Some(MctsDlPolicy::new(model, &*game, sims));
+                    } else {
+                        return Err("未加载模型，无法执行 MCTS+DL 策略".into());
+                    }
                 }
+                let policy = policy_lock.as_ref().unwrap();
+                policy.choose_action(&*game)
             }
-            let policy = policy_lock.as_ref().unwrap();
-            policy.choose_action(&*game)
+            #[cfg(not(feature = "torch"))]
+            OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
+            OpponentType::PvP => None,  // 已在上面返回 Err，这里兜底
+            OpponentType::Minimax => unreachable!(), // 已在上面单独处理
         }
-        #[cfg(not(feature = "torch"))]
-        OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
-        OpponentType::PvP => None, // 已在上面返回 Err，这里兜底
     }
     .ok_or_else(|| "AI 无棋可走".to_string())?;
 
+    let mut game = state.game.lock().unwrap();
     match game.step(chosen_action, None) {
         Ok((_obs, _reward, terminated, truncated, winner)) => {
             let state_data = extract_game_state(&*game);
@@ -255,6 +276,11 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
     let bitboards = env.get_bitboards();
     let hp_red = env.get_hp(Player::Red);
     let hp_black = env.get_hp(Player::Black);
+    let variant = if env.config.cols == 2 {
+        "mini".to_string()
+    } else {
+        "dark".to_string()
+    };
 
     GameState {
         board,
@@ -270,6 +296,7 @@ fn extract_game_state(env: &DarkChessEnv) -> GameState {
         bitboards,
         hp_red,
         hp_black,
+        variant,
     }
 }
 
@@ -344,6 +371,20 @@ fn load_model(_path: String, _state: State<AppState>) -> Result<String, String> 
     Err("需要启用 torch 特性才能加载模型".into())
 }
 
+/// 设置 Minimax 搜索深度（默认 4，与 verify_mini_vs_minimax.py 的 minimax(depth=4) 对应）
+#[tauri::command]
+fn set_minimax_depth(depth: usize, state: State<AppState>) -> Result<usize, String> {
+    if depth == 0 {
+        return Err("搜索深度必须大于 0".into());
+    }
+    if depth > 10 {
+        return Err("搜索深度过大（>10），可能导致搜索极慢或内存爆炸".into());
+    }
+    let mut d = state.minimax_depth.lock().unwrap();
+    *d = depth;
+    Ok(*d)
+}
+
 /// 设置 MCTS 每步搜索次数
 #[tauri::command]
 fn set_mcts_iterations(iters: usize, state: State<AppState>) -> Result<usize, String> {
@@ -369,6 +410,7 @@ pub fn run() {
             app.manage(AppState {
                 game: Mutex::new(env),
                 opponent_type: Mutex::new(OpponentType::PvP),
+                minimax_depth: Mutex::new(4),
                 mcts_num_simulations: Mutex::new(200),
                 #[cfg(feature = "torch")]
                 model: Mutex::new(None),
@@ -387,6 +429,7 @@ pub fn run() {
             get_move_action,
             list_models,
             load_model,
+            set_minimax_depth,
             set_mcts_iterations
         ])
         .run(tauri::generate_context!())

@@ -12,15 +12,34 @@
       <div class="group-box">
         <h3>游戏控制</h3>
         <div class="status-row">
+            <label>游戏变体:</label>
+            <select id="variant-select" style="width: 60%; padding: 4px;">
+                <option value="dark">暗棋 (4x8)</option>
+                <option value="mini">迷你暗棋 (4x2)</option>
+            </select>
+        </div>
+        <div class="status-row">
             <label>对手设置:</label>
             <select id="opponent-select" style="width: 60%; padding: 4px;">
                 <option value="PvP">本地双人 (PvP)</option>
                 <option value="Random">电脑 (随机)</option>
                 <option value="RevealFirst">电脑 (优先翻棋)</option>
+                <option value="Minimax">电脑 (Minimax)</option>
                 <option value="MctsDL">电脑 (MCTS+DL)</option>
             </select>
         </div>
         <button id="btn-new-game">开始新游戏</button>
+        <div class="group-box" style="margin-top:10px;">
+          <h3>Minimax 设置</h3>
+          <div class="status-row">
+            <label>搜索深度:</label>
+            <input id="minimax-depth" type="number" min="1" max="10" value="4" style="width:60%;" />
+          </div>
+          <div style="display:flex; gap:8px; margin:6px 0;">
+            <button id="btn-apply-depth">应用搜索深度</button>
+          </div>
+          <small>纯规则搜索（expectiminimax + alpha-beta），与 python/verify_mini_vs_minimax.py 中 minimax(depth=4) 为同一引擎。</small>
+        </div>
         <div class="group-box" style="margin-top:10px;">
           <h3>MCTS+DL 设置</h3>
           <div class="status-row">

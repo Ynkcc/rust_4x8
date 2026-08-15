@@ -220,6 +220,9 @@ async function updateUI(state) {
     console.error("Invalid state received:", state);
     return;
   }
+  // 变体判断：mini = 4x2 迷你暗棋（8 格），dark = 4x8 暗棋（32 格）
+  const isMini = state.variant === 'mini' || state.board.length === 8;
+  const maxHp = isMini ? 47 : 60;
   if (selectedSquare !== null && !isSelectablePiece(state, selectedSquare)) {
     selectedSquare = null;
   }
@@ -245,14 +248,14 @@ async function updateUI(state) {
     if (hpRedEl && typeof state.hp_red !== 'undefined') {
       hpRedEl.value = String(state.hp_red);
       if (hpRedFill) {
-        const pct = Math.max(0, Math.min(100, Math.round((state.hp_red / 60) * 100)));
+        const pct = Math.max(0, Math.min(100, Math.round((state.hp_red / maxHp) * 100)));
         hpRedFill.style.width = pct + "%";
       }
     }
     if (hpBlackEl && typeof state.hp_black !== 'undefined') {
       hpBlackEl.value = String(state.hp_black);
       if (hpBlackFill) {
-        const pct = Math.max(0, Math.min(100, Math.round((state.hp_black / 60) * 100)));
+        const pct = Math.max(0, Math.min(100, Math.round((state.hp_black / maxHp) * 100)));
         hpBlackFill.style.width = pct + "%";
       }
     }
@@ -284,11 +287,20 @@ async function updateUI(state) {
   }
   
   boardEl.innerHTML = '';
-  // 确保样式正确
+  // 确保样式正确（mini = 4x2 迷你棋盘，dark = 4x8 标准棋盘）
+  const boardCols = isMini ? 2 : 8;
+  const boardRows = isMini ? 4 : 4;
   boardEl.style.display = 'grid';
-  boardEl.style.gridTemplateColumns = 'repeat(8, 1fr)';
-  boardEl.style.gridTemplateRows = 'repeat(4, 1fr)';
+  boardEl.style.gridTemplateColumns = `repeat(${boardCols}, 1fr)`;
+  boardEl.style.gridTemplateRows = `repeat(${boardRows}, 1fr)`;
   boardEl.style.gap = '5px';
+  if (isMini) {
+    boardEl.style.width = 'min(260px, 60vw)';
+    boardEl.style.aspectRatio = '2 / 4';
+  } else {
+    boardEl.style.width = 'min(700px, 90vw)';
+    boardEl.style.aspectRatio = '8 / 4';
+  }
 
   console.log("Rendering board with", state.board.length, "cells");
 
@@ -419,10 +431,12 @@ window.addEventListener('DOMContentLoaded', async () => {
       console.log("Starting new game...");
       selectedSquare = null;
       try {
-        // 读取对手设置并传递给后端
+        // 读取对手与变体设置并传递给后端
         const oppSel = document.getElementById('opponent-select');
         const opponent = oppSel ? oppSel.value : 'PvP';
-        const state = await invoke("reset_game", { opponent });
+        const variantSel = document.getElementById('variant-select');
+        const variant = variantSel ? variantSel.value : 'dark';
+        const state = await invoke("reset_game", { opponent, variant });
         await updateUI(state);
       } catch (e) {
         console.error("Reset game failed:", e);
@@ -452,6 +466,25 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
   if (applyItersBtn) applyItersBtn.onclick = async () => {
     alert('模型功能暂时禁用');
+  };
+
+  // 绑定 Minimax 深度设置
+  const applyDepthBtn = document.getElementById('btn-apply-depth');
+  const depthInput = document.getElementById('minimax-depth');
+  if (applyDepthBtn) applyDepthBtn.onclick = async () => {
+    if (!depthInput) return;
+    const depth = parseInt(depthInput.value, 10);
+    if (!Number.isFinite(depth) || depth < 1) {
+      alert('搜索深度必须是大于 0 的整数');
+      return;
+    }
+    try {
+      const result = await invoke('set_minimax_depth', { depth });
+      depthInput.value = String(result);
+      alert(`Minimax 搜索深度已设置为 ${result}`);
+    } catch (e) {
+      alert('设置失败: ' + e);
+    }
   };
 
   // 加载初始状态
