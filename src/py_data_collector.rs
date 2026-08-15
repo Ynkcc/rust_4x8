@@ -589,7 +589,7 @@ fn build_episode_dict<'py>(
     worker_id: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
     // 复用 py::episode_to_dict，消除重复的样本序列化逻辑
-    let d = banqi_4x8::py::episode_to_dict(py, episode)?;
+    let d = banqi_4x8::py::episode_to_dict_darkchess(py, episode)?;
     // episode_to_dict 不包含 iteration / worker_id，这里补充
     d.set_item("iteration", iteration)?;
     d.set_item("worker_id", worker_id)?;

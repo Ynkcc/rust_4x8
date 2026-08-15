@@ -42,6 +42,18 @@ pub use game_env::{
     TTT_SCALAR_FEATURE_COUNT, TicTacToeEnv,
 };
 
+// 4x2 迷你暗棋环境（快速验证训练逻辑，仅 兵/将/士/炮，血量上限=47）
+pub use game_env::{MINI_ACTION_SPACE_SIZE, MiniDarkChessEnv};
+
+/// 4x2 迷你暗棋：棋盘通道数 = 2*4(激活类型) + 2 = 10
+pub const MINI_BOARD_CHANNELS: usize = 10;
+/// 4x2 迷你暗棋：棋盘行数
+pub const MINI_BOARD_ROWS: usize = 4;
+/// 4x2 迷你暗棋：棋盘列数
+pub const MINI_BOARD_COLS: usize = 2;
+/// 4x2 迷你暗棋：标量特征数 = 3 + 2*4 = 11
+pub const MINI_SCALAR_FEATURE_COUNT: usize = 11;
+
 // 泛型游戏环境抽象
 pub use game_env::GameEnv;
 
@@ -63,7 +75,9 @@ use crate::game_env::{BOARD_CHANNELS, SCALAR_FEATURE_COUNT};
 #[cfg(feature = "pyo3")]
 use crate::py::{
     PyGameEpisode, PySelfPlayConfig, run_batched_self_play_with_predictor_impl,
-    run_parallel_self_play_with_predictor_impl, run_self_play_with_predictor_impl,
+    run_mini_batched_self_play_with_predictor_impl, run_mini_parallel_self_play_with_predictor_impl,
+    run_mini_self_play_with_predictor_impl, run_parallel_self_play_with_predictor_impl,
+    run_self_play_with_predictor_impl,
 };
 #[cfg(feature = "pyo3")]
 use crate::self_play::SelfPlayConfig;
@@ -85,6 +99,24 @@ fn run_self_play_with_predictor(
     Ok(run_self_play_with_predictor_impl(predict_fn, cfg, num_games, worker_id))
 }
 
+/// 4x2 迷你暗棋版串行自对弈。
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
+fn run_mini_self_play_with_predictor(
+    _py: Python<'_>,
+    predict_fn: PyObject,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_games: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(run_mini_self_play_with_predictor_impl(predict_fn, cfg, num_games, worker_id))
+}
+
 #[cfg(feature = "pyo3")]
 #[pyfunction]
 #[pyo3(signature = (predict_fn, config=None, num_games=1, concurrency=4, worker_id=0))]
@@ -101,6 +133,32 @@ fn run_batched_self_play_with_predictor(
         None => SelfPlayConfig::default(),
     };
     Ok(run_batched_self_play_with_predictor_impl(
+        py,
+        predict_fn,
+        cfg,
+        num_games,
+        concurrency,
+        worker_id,
+    ))
+}
+
+/// 4x2 迷你暗棋版批量自对弈。
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (predict_fn, config=None, num_games=1, concurrency=4, worker_id=0))]
+fn run_mini_batched_self_play_with_predictor(
+    py: Python<'_>,
+    predict_fn: PyObject,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(run_mini_batched_self_play_with_predictor_impl(
         py,
         predict_fn,
         cfg,
@@ -134,6 +192,31 @@ fn run_parallel_self_play_with_predictor(
     ))
 }
 
+/// 4x2 迷你暗棋版并行自对弈。
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
+fn run_mini_parallel_self_play_with_predictor(
+    _py: Python<'_>,
+    predict_fn: PyObject,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_workers: usize,
+    games_per_worker: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(run_mini_parallel_self_play_with_predictor_impl(
+        predict_fn,
+        cfg,
+        num_workers,
+        games_per_worker,
+        worker_id,
+    ))
+}
+
 #[cfg(feature = "pyo3")]
 #[pymodule]
 fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -142,6 +225,12 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_parallel_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_batched_self_play_with_predictor, m)?)?;
+
+    // --- 4x2 迷你暗棋自对弈绑定 ---
+    m.add_function(wrap_pyfunction!(run_mini_self_play_with_predictor, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mini_parallel_self_play_with_predictor, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mini_batched_self_play_with_predictor, m)?)?;
+
     m.add_function(wrap_pyfunction!(crate::py::describe_record, m)?)?;
 
     // --- 井字棋绑定（验证逻辑复用） ---
@@ -152,11 +241,20 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // --- 暗棋环境绑定（视角反转验证） ---
     m.add_class::<crate::py::darkchess_env::PyDarkChess>()?;
 
+    // --- 4x2 迷你暗棋环境绑定（训练验证） ---
+    m.add_class::<crate::py::mini_darkchess_env::PyMiniDarkChess>()?;
+
     m.add("BOARD_ROWS", BOARD_ROWS)?;
     m.add("BOARD_COLS", BOARD_COLS)?;
     m.add("BOARD_CHANNELS", BOARD_CHANNELS)?;
     m.add("SCALAR_FEATURE_COUNT", SCALAR_FEATURE_COUNT)?;
     m.add("ACTION_SPACE_SIZE", ACTION_SPACE_SIZE)?;
+
+    m.add("MINI_BOARD_ROWS", MINI_BOARD_ROWS)?;
+    m.add("MINI_BOARD_COLS", MINI_BOARD_COLS)?;
+    m.add("MINI_BOARD_CHANNELS", MINI_BOARD_CHANNELS)?;
+    m.add("MINI_SCALAR_FEATURE_COUNT", MINI_SCALAR_FEATURE_COUNT)?;
+    m.add("MINI_ACTION_SPACE_SIZE", MINI_ACTION_SPACE_SIZE)?;
 
     m.add("TTT_ACTION_SPACE_SIZE", crate::TTT_ACTION_SPACE_SIZE)?;
     m.add("TTT_BOARD_ROWS", crate::TTT_BOARD_ROWS)?;

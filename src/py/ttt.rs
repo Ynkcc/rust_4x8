@@ -238,7 +238,7 @@ pub fn run_ttt_self_play_with_predictor(
     Python::with_gil(|py| {
         let mut out = Vec::with_capacity(episodes.len());
         for ep in episodes {
-            let dict = super::episode_to_dict(py, &ep)?;
+            let dict = super::episode_to_dict_darkchess(py, &ep)?;
             out.push(dict.unbind());
         }
         Ok(out)

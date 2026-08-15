@@ -14,10 +14,13 @@ pub mod ttt;
 
 #[cfg(feature = "pyo3")]
 pub mod darkchess_env;
+#[cfg(feature = "pyo3")]
+pub mod mini_darkchess_env;
 
 #[cfg(feature = "pyo3")]
 use crate::game_env::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
+    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, GameEnv,
+    MiniDarkChessEnv, SCALAR_FEATURE_COUNT,
 };
 #[cfg(feature = "pyo3")]
 use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig};
@@ -27,6 +30,8 @@ use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig};
 #[derive(Clone)]
 pub struct PyGameEpisode {
     pub inner: GameEpisode,
+    /// 是否为 4x2 迷你变体（决定 episode dict 中的 shape 字段）。
+    pub mini: bool,
 }
 
 #[cfg(feature = "pyo3")]
@@ -86,17 +91,48 @@ impl PyGameEpisode {
     }
 
     fn to_dict<'py>(slf: PyRef<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        episode_to_dict(py, &slf.inner)
+        episode_to_dict(py, &slf.inner, slf.mini)
     }
 }
 
 /// 将 GameEpisode 序列化为 PyDict（供 `PyGameEpisode::to_dict` 和
 /// `py_data_collector.rs` 共用，消除重复逻辑）。
+/// `mini` 为 true 时输出 4x2 迷你变体的 shape 字段，否则输出 4x8 暗棋 shape。
 #[cfg(feature = "pyo3")]
 pub fn episode_to_dict<'py>(
     py: Python<'py>,
     episode: &GameEpisode,
+    mini: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
+    episode_to_dict_with_shapes(py, episode, mini)
+}
+
+/// 4x8 暗棋变体的 episode dict（供 py_data_collector.rs 兼容调用）。
+#[cfg(feature = "pyo3")]
+pub fn episode_to_dict_darkchess<'py>(
+    py: Python<'py>,
+    episode: &GameEpisode,
+) -> PyResult<Bound<'py, PyDict>> {
+    episode_to_dict_with_shapes(py, episode, false)
+}
+
+#[cfg(feature = "pyo3")]
+fn episode_to_dict_with_shapes<'py>(
+    py: Python<'py>,
+    episode: &GameEpisode,
+    mini: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let (bc, br, bcol, sc, ac): (usize, usize, usize, usize, usize) = if mini {
+        (
+            crate::MINI_BOARD_CHANNELS,
+            crate::MINI_BOARD_ROWS,
+            crate::MINI_BOARD_COLS,
+            crate::MINI_SCALAR_FEATURE_COUNT,
+            crate::MINI_ACTION_SPACE_SIZE,
+        )
+    } else {
+        (BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, ACTION_SPACE_SIZE)
+    };
     let n = episode.samples.len();
     let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);
     let mut scalars: Vec<Vec<f32>> = Vec::with_capacity(n);
@@ -133,9 +169,9 @@ pub fn episode_to_dict<'py>(
     dict.set_item("game_results", game_results)?;
     dict.set_item("action_masks", action_masks)?;
     dict.set_item("actions", actions)?;
-    dict.set_item("board_shape", vec![BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS])?;
-    dict.set_item("scalar_shape", vec![SCALAR_FEATURE_COUNT])?;
-    dict.set_item("action_space", ACTION_SPACE_SIZE)?;
+    dict.set_item("board_shape", vec![bc, br, bcol])?;
+    dict.set_item("scalar_shape", vec![sc])?;
+    dict.set_item("action_space", ac)?;
 
     Ok(dict)
 }
@@ -203,13 +239,43 @@ pub fn run_self_play_with_predictor_impl(
     worker_id: usize,
 ) -> Vec<PyGameEpisode> {
     let evaluator = PyEvaluator::new(predict_fn);
+    run_self_play_serial_core(&evaluator, &cfg, num_games, worker_id, false, DarkChessEnv::new)
+}
 
+/// 4x2 迷你暗棋版串行自对弈。
+#[cfg(feature = "pyo3")]
+pub fn run_mini_self_play_with_predictor_impl(
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_games: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    let evaluator = PyEvaluator::new(predict_fn);
+    run_self_play_serial_core(
+        &evaluator,
+        &cfg,
+        num_games,
+        worker_id,
+        true,
+        MiniDarkChessEnv::new,
+    )
+}
+
+#[cfg(feature = "pyo3")]
+fn run_self_play_serial_core<G: GameEnv>(
+    evaluator: &PyEvaluator<G>,
+    cfg: &SelfPlayConfig,
+    num_games: usize,
+    worker_id: usize,
+    mini: bool,
+    make_env: fn() -> G,
+) -> Vec<PyGameEpisode> {
     let mut episodes = Vec::with_capacity(num_games);
     let mut game_count = 0;
 
     loop {
         let start_time = std::time::Instant::now();
-        let episode = self_play::run_self_play(&evaluator, &cfg, DarkChessEnv::new);
+        let episode = self_play::run_self_play(evaluator, cfg, make_env);
         let duration = start_time.elapsed();
 
         if episode.samples.is_empty() {
@@ -233,7 +299,10 @@ pub fn run_self_play_with_predictor_impl(
             episode.game_length as f64 / duration.as_secs_f64()
         );
 
-        episodes.push(PyGameEpisode { inner: episode });
+        episodes.push(PyGameEpisode {
+            inner: episode,
+            mini,
+        });
 
         game_count += 1;
         if game_count >= num_games {
@@ -257,6 +326,35 @@ pub fn run_parallel_self_play_with_predictor_impl(
     num_workers: usize,
     games_per_worker: usize,
     worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    run_parallel_core(
+        predict_fn, cfg, num_workers, games_per_worker, worker_id, false, DarkChessEnv::new,
+    )
+}
+
+/// 4x2 迷你暗棋版并行自对弈。
+#[cfg(feature = "pyo3")]
+pub fn run_mini_parallel_self_play_with_predictor_impl(
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_workers: usize,
+    games_per_worker: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    run_parallel_core(
+        predict_fn, cfg, num_workers, games_per_worker, worker_id, true, MiniDarkChessEnv::new,
+    )
+}
+
+#[cfg(feature = "pyo3")]
+fn run_parallel_core<G: GameEnv>(
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_workers: usize,
+    games_per_worker: usize,
+    worker_id: usize,
+    mini: bool,
+    _make_env: fn() -> G,
 ) -> Vec<PyGameEpisode> {
     use rayon::prelude::*;
 
@@ -293,7 +391,7 @@ pub fn run_parallel_self_play_with_predictor_impl(
                         let mut local = Vec::with_capacity(games_per_worker);
                         for g in 0..games_per_worker {
                             let start = std::time::Instant::now();
-                            let episode = self_play::run_self_play(&evaluator, &cfg, DarkChessEnv::new);
+                            let episode = self_play::run_self_play(&evaluator, &cfg, _make_env);
                             if episode.samples.is_empty() {
                                 eprintln!(
                                     "[ParallelWorker-{}/game{}] ⚠️ 空游戏数据，跳过",
@@ -317,7 +415,10 @@ pub fn run_parallel_self_play_with_predictor_impl(
                                 dur,
                                 episode.game_length as f64 / dur.max(1e-9)
                             );
-                            local.push(PyGameEpisode { inner: episode });
+                            local.push(PyGameEpisode {
+                                inner: episode,
+                                mini,
+                            });
                         }
                         local
                     })
@@ -348,7 +449,45 @@ pub fn run_batched_self_play_with_predictor_impl<'py>(
     worker_id: usize,
 ) -> Vec<PyGameEpisode> {
     let evaluator = PyEvaluator::new(predict_fn);
+    run_batched_core(
+        py, &evaluator, &cfg, num_games, concurrency, worker_id, false, DarkChessEnv::new,
+    )
+}
 
+/// 4x2 迷你暗棋版批量自对弈。
+#[cfg(feature = "pyo3")]
+pub fn run_mini_batched_self_play_with_predictor_impl<'py>(
+    py: Python<'py>,
+    predict_fn: PyObject,
+    cfg: SelfPlayConfig,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    let evaluator = PyEvaluator::new(predict_fn);
+    run_batched_core(
+        py,
+        &evaluator,
+        &cfg,
+        num_games,
+        concurrency,
+        worker_id,
+        true,
+        MiniDarkChessEnv::new,
+    )
+}
+
+#[cfg(feature = "pyo3")]
+fn run_batched_core<G: GameEnv + Sync>(
+    py: Python<'_>,
+    evaluator: &PyEvaluator<G>,
+    cfg: &SelfPlayConfig,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+    mini: bool,
+    make_env: fn() -> G,
+) -> Vec<PyGameEpisode> {
     let mut episodes: Vec<PyGameEpisode> = Vec::with_capacity(num_games);
     let mut game_count = 0;
 
@@ -357,21 +496,16 @@ pub fn run_batched_self_play_with_predictor_impl<'py>(
     // `Python::with_gil`；此处必须 `py.allow_threads` 释放 GIL，否则后台线程
     // 拿不到 GIL、主线程又等它返回，会形成互等死锁。
     while game_count < num_games {
-        let batch: Vec<GameEpisode> = py.allow_threads(|| {
-            self_play::run_batched_self_play(
-                &evaluator,
-                &cfg,
-                num_games - game_count,
-                concurrency,
-                DarkChessEnv::new,
-            )
-        });
+        let batch: Vec<GameEpisode> =
+            py.allow_threads(|| self_play::run_batched_self_play(
+                evaluator, cfg, num_games - game_count, concurrency, make_env,
+            ));
         for ep in batch {
             if ep.samples.is_empty() {
                 eprintln!("[Worker-{}] ⚠️ 生成了空游戏数据，跳过", worker_id);
                 continue;
             }
-            episodes.push(PyGameEpisode { inner: ep });
+            episodes.push(PyGameEpisode { inner: ep, mini });
             game_count += 1;
             if game_count >= num_games {
                 break;
