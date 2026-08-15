@@ -40,19 +40,25 @@ struct StepResult {
 // 对手类型枚举
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum OpponentType {
-    PvP,         // 本地双人
-    Random,      // 随机对手
-    RevealFirst, // 优先翻棋
-    Minimax,     // 纯规则 Minimax(expectiminimax+alpha-beta)，与 python/verify_mini_vs_minimax.py 同引擎
-    MctsDL,      // MCTS + 深度学习
+    PvP,           // 本地双人
+    Random,        // 随机对手
+    RevealFirst,   // 优先翻棋
+    Minimax,       // 纯规则 Minimax（expectiminimax+alpha-beta，已升级：多特征评估/置换表/走子排序/静态搜索）
+    Engine,        // 纯计算强引擎（αβ + Star1 + 置换表 + 迭代加深，节点预算可控）
+    MctsHeuristic, // Gumbel MCTS + 纯计算启发式评估（无需 torch）
+    MctsDL,        // MCTS + 深度学习
 }
 
 // 应用状态：包含游戏环境和当前对手设置
 struct AppState {
     game: Mutex<DarkChessEnv>,
     opponent_type: Mutex<OpponentType>,
-    // Minimax 搜索深度（与 verify_mini_vs_minimax.py 的 minimax(depth=4) 对应）
+    // Minimax 搜索深度（对应 verify_mini_vs_minimax.py 的 minimax(depth=4) 档位）
     minimax_depth: Mutex<usize>,
+    // 强引擎节点预算
+    engine_budget: Mutex<u64>,
+    // 启发式 MCTS 模拟次数
+    heuristic_sims: Mutex<usize>,
     // MCTS 配置
     mcts_num_simulations: Mutex<usize>,
     // 已加载的模型（可在选择 MctsDL 时构建策略）
@@ -74,6 +80,8 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
         Some("Random") => OpponentType::Random,
         Some("RevealFirst") => OpponentType::RevealFirst,
         Some("Minimax") => OpponentType::Minimax,
+        Some("Engine") => OpponentType::Engine,
+        Some("MctsHeuristic") => OpponentType::MctsHeuristic,
         Some("MctsDL") => OpponentType::MctsDL,
         _ => OpponentType::PvP,
     };
@@ -140,41 +148,67 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
     }
 
     // 调用策略模块选择动作。
-    // Minimax 为纯规则搜索，depth=4 在 4x8 上需展开大量节点（机会节点枚举翻棋结果），
-    // 放后台线程执行避免阻塞 UI；其余策略廉价，直接同步执行。
-    let chosen_action = if opp_type == OpponentType::Minimax {
-        let depth = *state.minimax_depth.lock().unwrap();
-        let snapshot = state.game.lock().unwrap().clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            banqi_4x8::ai::minimax::minimax_choose_action(&snapshot, depth)
-        })
-        .await
-        .map_err(|e| format!("Minimax 搜索线程错误: {e}"))?
-    } else {
-        let game = state.game.lock().unwrap();
-        match opp_type {
-            OpponentType::RevealFirst => RevealFirstPolicy::choose_action(&*game),
-            OpponentType::Random => RandomPolicy::choose_action(&*game),
-            #[cfg(feature = "torch")]
-            OpponentType::MctsDL => {
-                let mut policy_lock = state.mcts_policy.lock().unwrap();
-                if policy_lock.is_none() {
-                    // 尝试基于已加载模型创建
-                    let model_opt = state.model.lock().unwrap().clone();
-                    if let Some(model) = model_opt {
-                        let sims = *state.mcts_num_simulations.lock().unwrap();
-                        *policy_lock = Some(MctsDlPolicy::new(model, &*game, sims));
-                    } else {
-                        return Err("未加载模型，无法执行 MCTS+DL 策略".into());
+    // Minimax / Engine / MctsHeuristic 为计算密集搜索，放后台线程执行避免阻塞 UI；
+    // 其余策略廉价，直接同步执行。
+    let snapshot = state.game.lock().unwrap().clone();
+    let chosen_action = match opp_type {
+        OpponentType::Minimax => {
+            let depth = *state.minimax_depth.lock().unwrap();
+            tauri::async_runtime::spawn_blocking(move || {
+                banqi_4x8::ai::minimax::minimax_choose_action(&snapshot, depth)
+            })
+            .await
+            .map_err(|e| format!("Minimax 搜索线程错误: {e}"))?
+        }
+        OpponentType::Engine => {
+            let budget = *state.engine_budget.lock().unwrap();
+            let cfg = banqi_4x8::ai::EngineConfig {
+                node_budget: budget,
+                ..Default::default()
+            };
+            tauri::async_runtime::spawn_blocking(move || {
+                banqi_4x8::ai::engine::best_move(&snapshot, &cfg).map(|r| r.action)
+            })
+            .await
+            .map_err(|e| format!("引擎搜索线程错误: {e}"))?
+        }
+        OpponentType::MctsHeuristic => {
+            let sims = *state.heuristic_sims.lock().unwrap();
+            tauri::async_runtime::spawn_blocking(move || {
+                let policy = banqi_4x8::ai::HeuristicMctsPolicy::new(sims);
+                policy.choose_action(&snapshot)
+            })
+            .await
+            .map_err(|e| format!("启发式 MCTS 线程错误: {e}"))?
+        }
+        _ => {
+            let game = state.game.lock().unwrap();
+            match opp_type {
+                OpponentType::RevealFirst => RevealFirstPolicy::choose_action(&*game),
+                OpponentType::Random => RandomPolicy::choose_action(&*game),
+                #[cfg(feature = "torch")]
+                OpponentType::MctsDL => {
+                    let mut policy_lock = state.mcts_policy.lock().unwrap();
+                    if policy_lock.is_none() {
+                        // 尝试基于已加载模型创建
+                        let model_opt = state.model.lock().unwrap().clone();
+                        if let Some(model) = model_opt {
+                            let sims = *state.mcts_num_simulations.lock().unwrap();
+                            *policy_lock = Some(MctsDlPolicy::new(model, &*game, sims));
+                        } else {
+                            return Err("未加载模型，无法执行 MCTS+DL 策略".into());
+                        }
                     }
+                    let policy = policy_lock.as_ref().unwrap();
+                    policy.choose_action(&*game)
                 }
-                let policy = policy_lock.as_ref().unwrap();
-                policy.choose_action(&*game)
+                #[cfg(not(feature = "torch"))]
+                OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
+                OpponentType::PvP => None,        // 已在上面返回 Err，这里兜底
+                OpponentType::Minimax => unreachable!(),
+                OpponentType::Engine => unreachable!(),
+                OpponentType::MctsHeuristic => unreachable!(),
             }
-            #[cfg(not(feature = "torch"))]
-            OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
-            OpponentType::PvP => None,  // 已在上面返回 Err，这里兜底
-            OpponentType::Minimax => unreachable!(), // 已在上面单独处理
         }
     }
     .ok_or_else(|| "AI 无棋可走".to_string())?;
@@ -406,6 +440,28 @@ fn set_mcts_iterations(iters: usize, state: State<AppState>) -> Result<usize, St
     Ok(*sims)
 }
 
+/// 设置纯计算强引擎（Engine）的节点预算
+#[tauri::command]
+fn set_engine_budget(budget: u64, state: State<AppState>) -> Result<u64, String> {
+    if budget == 0 {
+        return Err("节点预算必须大于 0".into());
+    }
+    let mut b = state.engine_budget.lock().unwrap();
+    *b = budget;
+    Ok(*b)
+}
+
+/// 设置启发式 MCTS（MctsHeuristic）的模拟次数
+#[tauri::command]
+fn set_heuristic_sims(sims: usize, state: State<AppState>) -> Result<usize, String> {
+    if sims == 0 {
+        return Err("模拟次数必须大于 0".into());
+    }
+    let mut s = state.heuristic_sims.lock().unwrap();
+    *s = sims;
+    Ok(*s)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -415,6 +471,8 @@ pub fn run() {
                 game: Mutex::new(env),
                 opponent_type: Mutex::new(OpponentType::PvP),
                 minimax_depth: Mutex::new(4),
+                engine_budget: Mutex::new(300_000),
+                heuristic_sims: Mutex::new(300),
                 mcts_num_simulations: Mutex::new(200),
                 #[cfg(feature = "torch")]
                 model: Mutex::new(None),
@@ -434,7 +492,9 @@ pub fn run() {
             list_models,
             load_model,
             set_minimax_depth,
-            set_mcts_iterations
+            set_mcts_iterations,
+            set_engine_budget,
+            set_heuristic_sims
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

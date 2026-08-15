@@ -26,6 +26,8 @@
                 <option value="Random">电脑 (随机)</option>
                 <option value="RevealFirst">电脑 (优先翻棋)</option>
                 <option value="Minimax">电脑 (Minimax)</option>
+                <option value="Engine">电脑 (强引擎)</option>
+                <option value="MctsHeuristic">电脑 (启发式MCTS)</option>
                 <option value="MctsDL">电脑 (MCTS+DL)</option>
             </select>
         </div>
@@ -39,7 +41,34 @@
           <div style="display:flex; gap:8px; margin:6px 0;">
             <button id="btn-apply-depth">应用搜索深度</button>
           </div>
-          <small>纯规则搜索（expectiminimax + alpha-beta），与 python/verify_mini_vs_minimax.py 中 minimax(depth=4) 为同一引擎。</small>
+          <small>纯规则搜索（expectiminimax + alpha-beta，已升级：多特征评估 / 置换表 / 走子排序 / 静态搜索）。</small>
+        </div>
+        <div class="group-box" style="margin-top:10px;">
+          <h3>强引擎设置</h3>
+          <div class="status-row">
+            <label>难度档位:</label>
+            <select id="engine-level" style="width: 60%; padding: 4px;">
+                <option value="50000">轻量（5万节点）</option>
+                <option value="300000" selected>标准（30万节点）</option>
+                <option value="1000000">深度（100万节点）</option>
+                <option value="3000000">极深（300万节点）</option>
+            </select>
+          </div>
+          <div style="display:flex; gap:8px; margin:6px 0;">
+            <button id="btn-apply-engine">应用难度</button>
+          </div>
+          <small>αβ + Star1 + 置换表 + 迭代加深的纯计算强引擎（移植 misty-banqi），节点预算越高越强、耗时越长。</small>
+        </div>
+        <div class="group-box" style="margin-top:10px;">
+          <h3>启发式 MCTS 设置</h3>
+          <div class="status-row">
+            <label>模拟次数:</label>
+            <input id="heuristic-sims" type="number" min="1" value="300" style="width:60%;" />
+          </div>
+          <div style="display:flex; gap:8px; margin:6px 0;">
+            <button id="btn-apply-heuristic">应用模拟次数</button>
+          </div>
+          <small>Gumbel MCTS + 纯计算多特征启发式评估（无需 torch/模型）。</small>
         </div>
         <div class="group-box" style="margin-top:10px;">
           <h3>MCTS+DL 设置</h3>

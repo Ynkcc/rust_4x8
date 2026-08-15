@@ -500,6 +500,43 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   };
 
+  // 绑定强引擎难度设置
+  const applyEngineBtn = document.getElementById('btn-apply-engine');
+  const engineLevelSel = document.getElementById('engine-level');
+  if (applyEngineBtn) applyEngineBtn.onclick = async () => {
+    if (!engineLevelSel) return;
+    const budget = parseInt(engineLevelSel.value, 10);
+    if (!Number.isFinite(budget) || budget < 1) {
+      alert('节点预算必须大于 0');
+      return;
+    }
+    try {
+      const result = await invoke('set_engine_budget', { budget });
+      alert(`强引擎节点预算已设置为 ${result}`);
+    } catch (e) {
+      alert('设置失败: ' + e);
+    }
+  };
+
+  // 绑定启发式 MCTS 模拟次数设置
+  const applyHeuristicBtn = document.getElementById('btn-apply-heuristic');
+  const heuristicSimsInput = document.getElementById('heuristic-sims');
+  if (applyHeuristicBtn) applyHeuristicBtn.onclick = async () => {
+    if (!heuristicSimsInput) return;
+    const sims = parseInt(heuristicSimsInput.value, 10);
+    if (!Number.isFinite(sims) || sims < 1) {
+      alert('模拟次数必须是大于 0 的整数');
+      return;
+    }
+    try {
+      const result = await invoke('set_heuristic_sims', { sims });
+      heuristicSimsInput.value = String(result);
+      alert(`启发式 MCTS 模拟次数已设置为 ${result}`);
+    } catch (e) {
+      alert('设置失败: ' + e);
+    }
+  };
+
   // 加载初始状态
   console.log("Loading initial state...");
   try {
