@@ -80,9 +80,12 @@ pub struct GameConfig {
     pub piece_counts: [usize; NUM_PIECE_TYPES_MAX],
     /// 每方棋子总数（= sum(piece_counts)）。
     pub total_pieces_per_player: usize,
+    /// 每种棋子的分值（按实际 PieceType 索引；吃子扣血 / 启发式评估使用）。
+    /// 由变体指定（如 4x8: 2/5/5/5/5/10/30；4x2: 2/5/0/0/0/10/30；4x4: 4/10/10/10/10/20/30）。
+    pub piece_values: [i32; NUM_PIECE_TYPES_MAX],
 
     // --- 血量与步数 ---
-    /// 初始血量上限（迷你 = 单方棋子价值总和，全灭即归零判负）。
+    /// 初始血量上限（可由变体指定，不要求等于棋子价值总和）。
     pub initial_health: i32,
     /// 初始预翻棋子数量。
     pub initial_revealed_pieces: usize,
@@ -135,6 +138,7 @@ pub fn darkchess_config() -> GameConfig {
 
     let active_types = [0, 1, 2, 3, 4, 5, 6]; // Soldier..General
     let piece_counts = [5, 2, 2, 2, 2, 2, 1]; // 兵/炮/马/车/象/士/将
+    let piece_values = [2, 5, 5, 5, 5, 10, 30]; // 与旧硬编码 value() 一致，回归安全
     let num_active = 7;
     let total_pieces: usize = piece_counts.iter().sum();
 
@@ -146,6 +150,52 @@ pub fn darkchess_config() -> GameConfig {
         active_types,
         piece_counts,
         total_pieces_per_player: total_pieces,
+        piece_values,
+        initial_health: 60,
+        initial_revealed_pieces: 4,
+        max_consecutive_moves_for_draw: 24,
+        max_steps_per_episode: 100,
+        reveal_actions_count: reveal,
+        regular_move_actions_count: regular,
+        cannon_attack_actions_count: cannon,
+        action_space_size: reveal + regular + cannon,
+        board_channels: 2 * num_active + 2,
+        scalar_feature_count: 3 + 2 * total_pieces,
+        reveal_probability_size: 2 * num_active,
+    }
+}
+
+/// 4x4 暗棋配置：7 类棋子全激活，每方 8 子，血量上限 = 60（由变体指定）。
+///
+/// | 类型 | 分值 | 数量/方 |
+/// |------|------|--------|
+/// | 兵   | 4    | 2      |
+/// | 炮   | 10   | 1      |
+/// | 马   | 10   | 1      |
+/// | 车   | 10   | 1      |
+/// | 象   | 10   | 1      |
+/// | 士   | 20   | 1      |
+/// | 将   | 30   | 1      |
+pub fn game_4x4_config() -> GameConfig {
+    let rows = 4usize;
+    let cols = 4usize;
+    let (reveal, regular, cannon) = compute_action_counts(rows, cols);
+
+    let active_types = [0, 1, 2, 3, 4, 5, 6]; // Soldier..General
+    let piece_counts = [2usize, 1, 1, 1, 1, 1, 1]; // 兵2 炮1 马1 车1 象1 士1 将1
+    let piece_values = [4, 10, 10, 10, 10, 20, 30]; // 变体自定义分值
+    let num_active = 7;
+    let total_pieces: usize = piece_counts.iter().sum();
+
+    GameConfig {
+        rows,
+        cols,
+        total_positions: rows * cols,
+        num_active,
+        active_types,
+        piece_counts,
+        total_pieces_per_player: total_pieces,
+        piece_values,
         initial_health: 60,
         initial_revealed_pieces: 4,
         max_consecutive_moves_for_draw: 24,
@@ -171,6 +221,7 @@ pub fn mini_config() -> GameConfig {
     let num_active = 4;
     // 每方：兵1 炮1 马0 车0 象0 士1 将1 = 4
     let piece_counts = [1usize, 1, 0, 0, 0, 1, 1];
+    let piece_values = [2, 5, 0, 0, 0, 10, 30]; // 与旧硬编码 value() 一致，回归安全
     let total_pieces: usize = piece_counts.iter().sum();
 
     GameConfig {
@@ -181,6 +232,7 @@ pub fn mini_config() -> GameConfig {
         active_types,
         piece_counts,
         total_pieces_per_player: total_pieces,
+        piece_values,
         initial_health: 47,
         initial_revealed_pieces: 2,
         max_consecutive_moves_for_draw: 24,

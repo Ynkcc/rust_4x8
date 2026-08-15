@@ -39,6 +39,8 @@ impl PieceType {
         }
     }
 
+    /// 默认分值（4x8 基准）。运行时吃子扣血应使用 `GameConfig::piece_values`
+    /// （变体可配置，如 4x4 兵4/炮10/马10/车10/象10/士20/将30）。
     pub fn value(&self) -> i32 {
         match self {
             PieceType::Soldier => 2,

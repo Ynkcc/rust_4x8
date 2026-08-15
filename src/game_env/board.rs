@@ -429,7 +429,8 @@ impl DarkChessEnv {
                     panic!("Dead pieces buffer overflow!");
                 }
                 let score = &mut self.scores[defender.player.idx()];
-                *score = score.saturating_sub(defender.piece_type.value());
+                // 吃子扣血：分值为变体可配置（config.piece_values），不再用硬编码 value()。
+                *score = score.saturating_sub(self.config.piece_values[defender.piece_type as usize]);
                 self.move_counter = 0;
             }
             Slot::Hidden => {
