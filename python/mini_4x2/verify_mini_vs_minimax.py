@@ -78,7 +78,7 @@ def model_action(env, predictor) -> int:
     if GREEDY:
         a = env.greedy_action(predictor)
     else:
-        a = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, c_visit=1.0, c_scale=0.25)
+        a = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, c_scale=0.25)
     return a
 
 

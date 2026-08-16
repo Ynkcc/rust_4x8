@@ -110,20 +110,22 @@ impl PyDarkChess {
     /// 用当前局面做 Gumbel MCTS 搜索（调用 Python 网络回调评估），返回选中的动作。
     ///
     /// 返回 `None` 表示无合法动作（终局）。
+    /// `c_scale`：PUCT 探索系数（必需）。`gumbel_scale`：Gumbel 噪声尺度（默认 1.0）。
+    #[pyo3(signature = (predict_fn, num_simulations, max_considered_actions, c_scale, gumbel_scale = 1.0))]
     fn mcts_search_action(
         &self,
         predict_fn: PyObject,
         num_simulations: usize,
         max_considered_actions: usize,
-        c_visit: f64,
         c_scale: f64,
+        gumbel_scale: f64,
     ) -> PyResult<Option<usize>> {
         let evaluator = PyEvaluator::<DarkChessEnv>::new(predict_fn);
         let config = GumbelConfig {
             num_simulations,
             max_considered_actions,
-            c_visit: c_visit as f32,
             c_scale: c_scale as f32,
+            gumbel_scale: gumbel_scale as f32,
         };
         let mut mcts = GumbelMCTS::new(&self.inner, &evaluator, config);
         Ok(mcts.run().map(|r| r.action))

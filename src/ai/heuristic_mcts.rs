@@ -107,8 +107,8 @@ impl HeuristicMctsPolicy {
         let config = GumbelConfig {
             num_simulations: self.sims,
             max_considered_actions: self.max_considered_actions,
-            c_visit: 50.0,
             c_scale: 1.0,
+            gumbel_scale: 1.0,
         };
         let mut mcts = GumbelMCTS::new(env, &evaluator, config);
         mcts.run().map(|r| r.action)

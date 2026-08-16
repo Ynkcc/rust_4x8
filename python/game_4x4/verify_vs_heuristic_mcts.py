@@ -28,6 +28,9 @@ if hasattr(sys.stdout, "reconfigure"):
 import numpy as np
 import torch
 
+# 与训练侧一致：限制 torch intra-op 线程数（小网络多线程反而更慢）
+torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
+
 import banqi_4x8
 
 from config import config
@@ -79,7 +82,7 @@ def play_one_game(predictor: ModelPredictor, model_is_red: bool, hm_sims: int) -
         is_red_turn = env.current_player() == 1
         model_turn = (is_red_turn == model_is_red)
         if model_turn:
-            action = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, 1.0, 0.25)
+            action = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, 0.25)
         else:
             action = env.heuristic_mcts_action(hm_sims)
         if action is None:

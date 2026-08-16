@@ -79,7 +79,7 @@ def play_one_game(predictor: ModelPredictor, model_is_red: bool) -> int:
         model_turn = (is_red_turn == model_is_red)
         if model_turn:
             action = env.mcts_search_action(
-                predictor, MCTS_SIMS, MAX_ACTIONS, c_visit=1.0, c_scale=0.25
+                predictor, MCTS_SIMS, MAX_ACTIONS, c_scale=0.25
             )
         else:
             legal = env.legal_moves()

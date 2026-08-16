@@ -218,4 +218,6 @@ def build_self_play_config() -> "banqi_4x8.SelfPlayConfig":
         mcts_sims=config.MCTS_SIMS,
         max_considered_actions=config.MAX_CONSIDERED_ACTIONS,
         temperature_steps=config.TEMPERATURE_STEPS,
+        c_scale=float(os.getenv("G4X4_C_SCALE", "1.0")),
+        gumbel_scale=float(os.getenv("G4X4_GUMBEL_SCALE", "1.0")),
     )

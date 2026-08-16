@@ -79,7 +79,7 @@ def play_vs_random(predictor: ModelPredictor, model_is_red: bool) -> int:
         is_red_turn = env.current_player() == 1
         model_turn = (is_red_turn == model_is_red)
         if model_turn:
-            action = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, 1.0, 0.25)
+            action = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, 0.25)
         else:
             legal = env.legal_moves()
             action = random.choice(legal) if legal else None
@@ -107,7 +107,7 @@ def play_vs_minimax(predictor: ModelPredictor, model_is_red: bool, depth: int) -
         is_red_turn = env.current_player() == 1
         model_turn = (is_red_turn == model_is_red)
         if model_turn:
-            action = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, 1.0, 0.25)
+            action = env.mcts_search_action(predictor, MCTS_SIMS, MAX_ACTIONS, 0.25)
         else:
             action = env.minimax_action(depth)
         if action is None:

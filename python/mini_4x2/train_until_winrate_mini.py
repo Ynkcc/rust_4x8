@@ -90,7 +90,7 @@ def play_one_game(predictor: EvalPredictor, model_is_red: bool, mm_depth: int) -
         model_turn = (is_red_turn == model_is_red)
         if model_turn:
             action = env.mcts_search_action(
-                predictor, EVAL_SIMS, 12, c_visit=1.0, c_scale=0.25
+                predictor, EVAL_SIMS, 12, c_scale=0.25
             )
         else:
             action = env.minimax_action(mm_depth)

@@ -119,8 +119,8 @@ fn play_ttt(mcts_is_red: bool, opponent: Opponent, sims: usize) -> i32 {
     let config = GumbelConfig {
         num_simulations: sims,
         max_considered_actions: 9,
-        c_visit: 50.0,
         c_scale: 1.0,
+        gumbel_scale: 1.0,
     };
     let mut env = TicTacToeEnv::new();
     let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
@@ -243,8 +243,8 @@ fn ttt_mcts_single_step_matches_minimax() {
                 let config = GumbelConfig {
                     num_simulations: 200,
                     max_considered_actions: 9,
-                    c_visit: 50.0,
                     c_scale: 1.0,
+                    gumbel_scale: 1.0,
                 };
                 let mut mcts = GumbelMCTS::new(&env, &eval, config);
                 if let Some(r) = mcts.run() {
@@ -314,8 +314,8 @@ fn ttt_mcts_initial_search_produces_valid_action() {
     let config = GumbelConfig {
         num_simulations: 32,
         max_considered_actions: 9,
-        c_visit: 50.0,
         c_scale: 1.0,
+        gumbel_scale: 1.0,
     };
     let env = TicTacToeEnv::new();
     let mut mcts = GumbelMCTS::new(&env, &evaluator, config);

@@ -81,7 +81,8 @@ fn main() -> Result<()> {
         max_considered_actions: 16,
         temperature_steps: 12,
         scenario: ScenarioType::Standard,
-        c_visit: 50.0,
+        c_scale: 1.0,
+        gumbel_scale: 1.0,
     };
 
     // 6. 循环收集

@@ -84,7 +84,6 @@ def rust_mcts_choose(env: TicTacToe, predict_fn, num_simulations: int) -> int:
         env.to_play,
         num_simulations=num_simulations,
         max_considered_actions=9,
-        c_visit=1.0,  # 井字棋用小探索系数（对齐验证镜像，削弱先验压制）
     )
     if res["game_over"]:
         legal = env.legal_actions()
@@ -107,7 +106,6 @@ def rust_self_play_generate(net, num_games: int, num_simulations: int,
         max_considered_actions=9,
         temperature_steps=6,
         num_games=num_games,
-        c_visit=1.0,  # 井字棋用小探索系数（对齐验证镜像，削弱先验压制）
     )
     for ep in episodes:
         boards = [np.asarray(x, dtype=np.float32).reshape(2, 3, 3) for x in ep["boards"]]

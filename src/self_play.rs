@@ -98,9 +98,10 @@ pub struct SelfPlayConfig {
     pub temperature_steps: usize,
     /// 训练场景
     pub scenario: ScenarioType,
-    /// PUCT/改进策略的探索系数（c_visit）。默认 50.0 为暗棋调优值；
-    /// 小状态空间游戏（如井字棋）可调低（如 1.0）以削弱先验对搜索的压制。
-    pub c_visit: f32,
+    /// PUCT 探索系数（c_puct）与训练目标 σ 的缩放因子。默认 1.0。
+    pub c_scale: f32,
+    /// Gumbel 噪声尺度（根节点 Top-K 采样探索强度）。默认 1.0（标准 Gumbel）。
+    pub gumbel_scale: f32,
 }
 
 impl Default for SelfPlayConfig {
@@ -110,7 +111,8 @@ impl Default for SelfPlayConfig {
             max_considered_actions: 16,
             temperature_steps: 10,
             scenario: ScenarioType::Standard,
-            c_visit: 50.0,
+            c_scale: 1.0,
+            gumbel_scale: 1.0,
         }
     }
 }
@@ -161,8 +163,8 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
         let mcts_config = GumbelConfig {
             num_simulations: self.config.mcts_sims,
             max_considered_actions: self.config.max_considered_actions,
-            c_visit: self.config.c_visit,
-            c_scale: 1.0,
+            c_scale: self.config.c_scale,
+            gumbel_scale: self.config.gumbel_scale,
         };
         let mut mcts = GumbelMCTS::new(&env, self.evaluator, mcts_config.clone());
 
@@ -407,8 +409,8 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
     let gumbel_cfg = GumbelConfig {
         num_simulations: config.mcts_sims,
         max_considered_actions: config.max_considered_actions,
-        c_visit: config.c_visit,
-        c_scale: 1.0,
+        c_scale: config.c_scale,
+        gumbel_scale: config.gumbel_scale,
     };
 
     // 共享请求队列 + 响应通道
@@ -624,7 +626,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
 ///
 /// 该函数同时被三条终止路径调用：MCTS None 分支（无合法走法判负）、
 /// 终局分支（terminated/truncated）、步数上限分支。
-fn finalize_episode(
+pub(crate) fn finalize_episode(
     episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize)>,
     winner: Option<i32>,
 ) -> GameEpisode {

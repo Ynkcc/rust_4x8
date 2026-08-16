@@ -200,13 +200,15 @@ impl PySelfPlayConfig {
         mcts_sims = 64,
         max_considered_actions = 16,
         temperature_steps = 12,
-        c_visit = 50.0,
+        c_scale = 1.0,
+        gumbel_scale = 1.0,
     ))]
     fn new(
         mcts_sims: usize,
         max_considered_actions: usize,
         temperature_steps: usize,
-        c_visit: f32,
+        c_scale: f32,
+        gumbel_scale: f32,
     ) -> Self {
         Self {
             inner: SelfPlayConfig {
@@ -216,7 +218,8 @@ impl PySelfPlayConfig {
                 // Gumbel 噪声 + Sequential Halving 提供），不再暴露对应参数。
                 temperature_steps,
                 scenario: ScenarioType::Standard,
-                c_visit,
+                c_scale,
+                gumbel_scale,
             },
         }
     }

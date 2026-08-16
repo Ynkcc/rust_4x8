@@ -167,7 +167,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// 这是 Gumbel AlphaZero 的核心机制，用于在不进行完全树搜索的情况下选择候选动作。
     /// 使用内部 scratch_gumbel 缓存以避免重复堆分配。
     pub(crate) fn sample_gumbel_top_k(&mut self, logits: &[f32], masks: &[i32], k: usize) -> Vec<usize> {
-        let gumbel_dist = Gumbel::new(0.0, 1.0).unwrap();
+        let gumbel_dist = Gumbel::new(0.0, self.config.gumbel_scale as f64).unwrap();
 
         // 清空并复用 scratch_gumbel
         self.scratch_gumbel.clear();

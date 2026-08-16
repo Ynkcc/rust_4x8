@@ -39,10 +39,9 @@ MODEL_PATH = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "banqi_model_latest.pt"
 ))
 
-# 对弈 / 搜索超参数（搜索侧对齐生产暗棋配置：c_visit=50, max_considered=16）
+# 对弈 / 搜索超参数（搜索侧对齐生产暗棋配置：max_considered=16）
 NUM_SIMULATIONS = 32
 MAX_CONSIDERED = 16
-C_VISIT = 50.0
 C_SCALE = 1.0
 N_GAMES = 25              # 每轮 2 局抵消先后手，共 2*N_GAMES 局
 MAX_STEPS_PER_GAME = 200  # 防死循环保护
@@ -81,7 +80,7 @@ def play_game(model, mcts_first: bool, num_simulations: int) -> int:
         use_mcts = is_red == mcts_first
         if use_mcts:
             action = env.mcts_search_action(
-                predict_fn, num_simulations, MAX_CONSIDERED, C_VISIT, C_SCALE)
+                predict_fn, num_simulations, MAX_CONSIDERED, C_SCALE)
         else:
             action = env.greedy_action(predict_fn)
         if action is None:  # 无合法动作（终局/异常）
@@ -99,8 +98,7 @@ def test_search_improvement() -> None:
                    f"(MCTS vs Raw, {2 * N_GAMES} games)")
     model = load_real_model()
     print(f"      加载真实模型: {MODEL_PATH}")
-    print(f"      MCTS: sims={NUM_SIMULATIONS}, max_considered={MAX_CONSIDERED}, "
-          f"c_visit={C_VISIT}")
+    print(f"      MCTS: sims={NUM_SIMULATIONS}, max_considered={MAX_CONSIDERED}")
 
     mcts_wins = 0
     raw_wins = 0
