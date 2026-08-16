@@ -15,7 +15,7 @@ use super::movegen::Move;
 /// 直觉：吃子（按被吃子价值排序）> 吃暗子（机会） > 翻棋 > 静走子，
 /// 使 Gumbel Top-K 采样优先考虑吃子与翻棋这类“信息量/收益高”的动作，
 /// 静走子仅在没有更好选择时进入候选。
-fn prior_logit(env: &DarkChessEnv, m: &Move, params: &EvalParams, scale: f32) -> f32 {
+pub(crate) fn prior_logit(env: &DarkChessEnv, m: &Move, params: &EvalParams, scale: f32) -> f32 {
     if m.is_capture {
         let victim = match &env.get_board_slots()[m.to] {
             crate::Slot::Revealed(p) => params.values[p.piece_type as usize],

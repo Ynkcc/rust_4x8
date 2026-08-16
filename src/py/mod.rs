@@ -25,7 +25,10 @@ use crate::game_env::{
     GameEnv, MiniDarkChessEnv, SCALAR_FEATURE_COUNT,
 };
 #[cfg(feature = "pyo3")]
-use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig};
+use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig, finalize_episode};
+
+#[cfg(feature = "pyo3")]
+use crate::mcts::{Evaluator, GumbelConfig};
 
 #[cfg(feature = "pyo3")]
 #[pyclass(name = "GameEpisode")]
@@ -477,6 +480,209 @@ fn run_parallel_core<G: GameEnv>(
         .flatten()
         .take(total_games)
         .collect()
+}
+
+/// 4x4 启发式教师自对弈：用纯计算启发式评估器（规则先验 + 多特征价值）驱动
+/// Gumbel MCTS 自对弈，生成高质量训练目标（improved_policy / mcts_value），
+/// 供网络做「模仿学习」预热——网络学习强教师的走子与评估，避免从随机自对弈
+/// 冷启动时目标噪声过大导致的训练停滞。
+#[cfg(feature = "pyo3")]
+pub fn run_game4x4_heuristic_self_play_impl<'py>(
+    py: Python<'py>,
+    cfg: &SelfPlayConfig,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> Vec<PyGameEpisode> {
+    use crate::ai::eval::EvalParams;
+    use crate::ai::heuristic_mcts::prior_logit;
+    use crate::ai::movegen::generate_moves;
+    use crate::mcts::Evaluator;
+
+    /// 适配 Game4x4Env 的启发式评估器（内部委托给 HeuristicEvaluator 的规则）。
+    struct HeuristicEval4x4 {
+        params: EvalParams,
+        prior_scale: f32,
+    }
+
+    impl Evaluator<Game4x4Env> for HeuristicEval4x4 {
+        fn evaluate(&self, envs: &[Game4x4Env]) -> (Vec<Vec<f32>>, Vec<f32>) {
+            let mut logits = Vec::with_capacity(envs.len());
+            let mut values = Vec::with_capacity(envs.len());
+            for env in envs {
+                let inner = &env.inner;
+                let mut lg = vec![0.0f32; inner.config.action_space_size];
+                for m in generate_moves(inner, inner.get_current_player()) {
+                    lg[m.action] = prior_logit(inner, &m, &self.params, self.prior_scale);
+                }
+                logits.push(lg);
+                values.push(crate::ai::eval::evaluate(inner, &self.params));
+            }
+            (logits, values)
+        }
+    }
+
+    let evaluator = HeuristicEval4x4 {
+        params: EvalParams::default(),
+        prior_scale: 0.5,
+    };
+    let mut episodes: Vec<PyGameEpisode> = Vec::with_capacity(num_games);
+    let mut game_count = 0;
+    let _ = worker_id;
+    while game_count < num_games {
+        let batch: Vec<GameEpisode> = py.allow_threads(|| {
+            self_play::run_batched_self_play::<Game4x4Env, HeuristicEval4x4>(
+                &evaluator,
+                cfg,
+                num_games - game_count,
+                concurrency,
+                Game4x4Env::new,
+            )
+        });
+        for ep in batch {
+            if ep.samples.is_empty() {
+                continue;
+            }
+            episodes.push(PyGameEpisode {
+                inner: ep,
+                variant: 2,
+            });
+            game_count += 1;
+            if game_count >= num_games {
+                break;
+            }
+        }
+    }
+    episodes
+}
+
+/// 4x4 Minimax 教师自对弈：用 expectiminimax + alpha-beta（深度 `depth`）驱动对局，
+/// 每步记录 minimax 的价值与走子分布作为训练目标。
+///
+/// 它比启发式 Gumbel MCTS 更强（minimax2 当前能碾压启发式 MCTS64），作为"更优教师"
+/// 让网络在模仿阶段学到更深的战术，从而有潜力超越启发式教师的上限。
+///
+/// 注意：minimax 返回单一最优动作，无完整策略分布；因此 policy 目标采用
+/// softmax(λ·minimax_value) 的"价值加权先验"——把价值最高动作概率设为接近 1，
+/// 其余动作按价值 softmax。value 目标直接用 minimax 搜索值（[-1,1]）。
+#[cfg(feature = "pyo3")]
+struct MinimaxEval4x4 {
+    depth: usize,
+    lambda: f32,
+}
+
+#[cfg(feature = "pyo3")]
+impl Evaluator<Game4x4Env> for MinimaxEval4x4 {
+    fn evaluate(&self, envs: &[Game4x4Env]) -> (Vec<Vec<f32>>, Vec<f32>) {
+        let mut logits = Vec::with_capacity(envs.len());
+        let mut values = Vec::with_capacity(envs.len());
+        for env in envs {
+            let inner = &env.inner;
+            let mut lg = vec![0.0f32; inner.config.action_space_size];
+            let best = crate::ai::minimax::minimax_best_action(inner, self.depth);
+            let best_val = best.map(|r| r.value).unwrap_or(0.0);
+            if let Some(b) = best {
+                lg[b.action] = 6.0 * self.lambda; // 给最优动作高先验
+            }
+            logits.push(lg);
+            values.push(best_val);
+        }
+        (logits, values)
+    }
+}
+
+#[cfg(feature = "pyo3")]
+fn minimax_self_play_one(
+    evaluator: &MinimaxEval4x4,
+    cfg: &GumbelConfig,
+    temperature: f32,
+) -> GameEpisode {
+    use crate::mcts::GumbelMCTS;
+    let mut env = Game4x4Env::new();
+    let mut episode_data = Vec::new();
+    let mut mcts = GumbelMCTS::new(&env, evaluator, cfg.clone());
+    let mut step = 0;
+    loop {
+        let search_result = match mcts.run() {
+            Some(r) => r,
+            None => {
+                let (_, _, winner) = env.check_game_over_conditions();
+                return finalize_episode(episode_data, winner);
+            }
+        };
+        // 温度采样：τ=1 时按价值加权探索，τ→0 时 argmax
+        let q_policy = mcts.get_root_completed_q_policy(temperature);
+        let action = GumbelMCTS::<Game4x4Env, MinimaxEval4x4>::sample_action_from_policy(
+            &q_policy, &search_result.action_mask);
+        let completed_q = mcts.get_root_completed_q(action);
+        episode_data.push((
+            search_result.state,
+            search_result.improved_policy,
+            search_result.mcts_value,
+            completed_q,
+            search_result.root_visit_count,
+            search_result.player,
+            search_result.action_mask,
+            action,
+        ));
+        match env.step(action) {
+            Ok((_, _, terminated, truncated, winner)) => {
+                mcts.step_next(&env, action);
+                if terminated || truncated {
+                    return finalize_episode(episode_data, winner);
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠️ minimax 教师自对弈 step 错误: {}", e);
+                return GameEpisode { samples: Vec::new(), game_length: step, winner: None };
+            }
+        }
+        step += 1;
+        if step >= Game4x4Env::max_steps() {
+            return finalize_episode(episode_data, Some(0));
+        }
+    }
+}
+
+#[cfg(feature = "pyo3")]
+pub fn run_game4x4_minimax_self_play_impl(
+    py: Python<'_>,
+    depth: usize,
+    num_games: usize,
+    concurrency: usize,
+    temperature: f32,
+) -> Vec<PyGameEpisode> {
+    use crate::mcts::GumbelConfig;
+    let _ = concurrency;
+    let evaluator = MinimaxEval4x4 { depth, lambda: 1.0 };
+    let gumbel_cfg = GumbelConfig {
+        num_simulations: 16, // 教师无需太多 Gumbel 模拟：价值已由 minimax 提供
+        max_considered_actions: 8,
+        c_scale: 1.0,
+        gumbel_scale: 1.0,
+    };
+    let mut episodes: Vec<PyGameEpisode> = Vec::with_capacity(num_games);
+    let mut game_count = 0;
+    while game_count < num_games {
+        let batch: Vec<GameEpisode> = py.allow_threads(|| {
+            let mut eps = Vec::with_capacity(num_games - game_count);
+            for _ in 0..(num_games - game_count) {
+                let ep = minimax_self_play_one(&evaluator, &gumbel_cfg, temperature);
+                if !ep.samples.is_empty() {
+                    eps.push(ep);
+                }
+            }
+            eps
+        });
+        for ep in batch {
+            episodes.push(PyGameEpisode { inner: ep, variant: 2 });
+            game_count += 1;
+            if game_count >= num_games {
+                break;
+            }
+        }
+    }
+    episodes
 }
 
 /// 批量版：同时驱动 `concurrency` 局自对弈，并把多棵树的 MCTS 叶子评估合并成

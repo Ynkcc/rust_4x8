@@ -88,6 +88,8 @@ use crate::game_env::{BOARD_CHANNELS, SCALAR_FEATURE_COUNT};
 use crate::py::{
     PyGameEpisode, PySelfPlayConfig, run_batched_self_play_with_predictor_impl,
     run_game4x4_batched_self_play_with_predictor_impl,
+    run_game4x4_heuristic_self_play_impl,
+    run_game4x4_minimax_self_play_impl,
     run_game4x4_parallel_self_play_with_predictor_impl,
     run_game4x4_self_play_with_predictor_impl, run_mini_batched_self_play_with_predictor_impl,
     run_mini_parallel_self_play_with_predictor_impl, run_mini_self_play_with_predictor_impl,
@@ -226,6 +228,42 @@ fn run_game4x4_batched_self_play_with_predictor(
     ))
 }
 
+/// 4x4 启发式教师自对弈（不依赖 Python 网络，纯计算启发式评估器）。
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (config=None, num_games=1, concurrency=8, worker_id=0))]
+fn run_game4x4_heuristic_self_play(
+    py: Python<'_>,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(run_game4x4_heuristic_self_play_impl(
+        py, &cfg, num_games, concurrency, worker_id,
+    ))
+}
+
+/// 4x4 Minimax 教师自对弈（expectiminimax + alpha-beta，深度 `depth`）。
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (depth=2, num_games=1, concurrency=4, temperature=0.5))]
+fn run_game4x4_minimax_self_play(
+    py: Python<'_>,
+    depth: usize,
+    num_games: usize,
+    concurrency: usize,
+    temperature: f32,
+) -> PyResult<Vec<PyGameEpisode>> {
+    Ok(run_game4x4_minimax_self_play_impl(
+        py, depth, num_games, concurrency, temperature,
+    ))
+}
+
 #[cfg(feature = "pyo3")]
 #[pyfunction]
 #[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
@@ -318,6 +356,8 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_game4x4_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_game4x4_parallel_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_game4x4_batched_self_play_with_predictor, m)?)?;
+    m.add_function(wrap_pyfunction!(run_game4x4_heuristic_self_play, m)?)?;
+    m.add_function(wrap_pyfunction!(run_game4x4_minimax_self_play, m)?)?;
 
     m.add_function(wrap_pyfunction!(crate::py::describe_record, m)?)?;
 
