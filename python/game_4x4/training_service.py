@@ -64,6 +64,8 @@ class DataBuffer:
         self.values: List[float] = []
         self.masks: List[np.ndarray] = []
         self.root_visits: List[int] = []
+        # anneal 模式下 game_result 的权重（0~1），由 TrainWorker 按轮更新
+        self.value_result_weight = 0.0
 
     def add_samples(self, samples: List[Dict]) -> None:
         for s in samples:
@@ -76,10 +78,26 @@ class DataBuffer:
                 scalar_arr = scalar_arr[:SCALAR_FEATURE_COUNT]
             self.scalars.append(scalar_arr)
             self.probs.append(np.array(s['policy_probs'], dtype=np.float32))
-            # 自对弈 RL（run_training.py）：value 目标用游戏最终结果（AlphaZero 标准，
-            # 无偏）。模仿学习（train_imitate.py）走独立 FIFO buffer，直接传 mcts_value，
-            # 不经由此处。
-            val = s.get('game_result_value', s.get('mcts_value', 0.0))
+            # value 目标可配置（G4X4_VALUE_TARGET）：
+            #   mcts  -> mcts_value（搜索/教师平滑评估，噪声小；模仿阶段已用它训练）
+            #   game  -> game_result_value（AlphaZero 标准，终局真值 ±1，无自举漂移）
+            #   mixed -> 固定 0.5/0.5 混合
+            #   anneal-> (1-w)*mcts_value + w*game_result，w 由 TrainWorker 按轮退火
+            #            从 mcts_value 起步逐步过渡到 game_result，避免：
+            #            (a) 切换断层（价值头从平滑目标突变到 ±1 噪声）；
+            #            (b) RL 全程用模型自搜索 mcts_value 的自举闭环漂移。
+            target_mode = config.VALUE_TARGET_MODE
+            mv = s.get('mcts_value', 0.0)
+            gr = s.get('game_result_value', 0.0)
+            if target_mode == "game":
+                val = gr
+            elif target_mode == "mixed":
+                val = 0.5 * mv + 0.5 * gr
+            elif target_mode == "anneal":
+                w = self.value_result_weight
+                val = (1.0 - w) * mv + w * gr
+            else:  # mcts（默认）
+                val = mv
             self.values.append(val)
             self.masks.append(np.array(s['action_mask'], dtype=np.float32))
             self.root_visits.append(int(s.get('root_visit_count', 0)))
@@ -331,6 +349,19 @@ class TrainWorker(threading.Thread):
                 print(f"[Training4x4] 🗃️ 冷存储预填充: 从 {archive_dir} 加载 "
                       f"{len(episodes)} 局 → {len(samples)} 样本 (Buffer={len(self.buffer)}, "
                       f"耗时 {time.time()-t0:.1f}s)")
+            # 固定验证集（价值漂移监控）：取前 N 条局面及其终局结果，
+            # 训练中周期性评估价值头输出，检测漂移是否领先于胜率下降。
+            n_fixed = config.VALUE_DRIFT_NUM_POSITIONS
+            if n_fixed > 0:
+                self._fixed_eval = {
+                    "boards": np.stack([np.array(s['board_state'], dtype=np.float32).reshape(
+                        TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS) for s in samples[:n_fixed]]),
+                    "scalars": np.stack([np.array(s['scalar_state'], dtype=np.float32)
+                                         for s in samples[:n_fixed]]),
+                    "results": np.array([s.get('game_result_value', 0.0)
+                                         for s in samples[:n_fixed]], dtype=np.float32),
+                }
+                print(f"[Training4x4] 🎯 固定价值验证集 {len(self._fixed_eval['boards'])} 局面已就绪")
         except Exception as e:  # pragma: no cover
             print(f"[Training4x4] ⚠️ 冷存储预填充失败 ({e})，继续正常训练")
 
@@ -439,6 +470,20 @@ class TrainWorker(threading.Thread):
         if self.round_num % config.CHECKPOINT_EVERY_N_ROUNDS == 0:
             save_checkpoint(self.model, self.optimizer, self.scheduler)
 
+        # value 目标退火（anneal 模式）：每 VALUE_ANNEAL_STEP_ROUNDS 轮增加
+        # game_result 权重，从 mcts_value 平滑过渡到终局真值（防自举漂移）。
+        if config.VALUE_TARGET_MODE == "anneal":
+            w = config.VALUE_ANNEAL_START + \
+                (self.round_num // config.VALUE_ANNEAL_STEP_ROUNDS) * config.VALUE_ANNEAL_INCREMENT
+            w = min(1.0, w)
+            self.buffer.value_result_weight = w
+            print(f"[Training4x4] 🔄 value退火权重(game_result)={w:.2f} (Round#{self.round_num})")
+
+        # 固定验证集价值漂移监控：价值头输出均值/方差/区分度是否领先于胜率下降
+        if (config.VALUE_DRIFT_EVAL_ROUNDS > 0 and hasattr(self, "_fixed_eval")
+                and self.round_num % config.VALUE_DRIFT_EVAL_ROUNDS == 0):
+            self._eval_value_drift()
+
         # ---- TensorBoard 训练日志（x 轴为累计训练 batch 数）----
         if config.TENSORBOARD_ENABLED:
             step = self.total_batches_trained
@@ -446,6 +491,36 @@ class TrainWorker(threading.Thread):
             add_scalar("train/policy_loss", entry["train_policy_loss"], step)
             add_scalar("train/value_loss", entry["train_value_loss"], step)
             add_scalar("train/lr", entry["lr"], step)
+
+    def _eval_value_drift(self) -> None:
+        """在固定验证集上评估价值头输出，检测价值漂移。
+
+        指标：
+          - pred mean/std（漂移 = 预测值整体偏移/方差膨胀）
+          - 与终局结果的 Pearson 相关 & 胜负区分度（价值"准度"下降是漂移信号）
+        """
+        fixed = getattr(self, "_fixed_eval", None)
+        if fixed is None:
+            return
+        try:
+            self.model.eval()
+            with torch.inference_mode():
+                b = torch.from_numpy(np.ascontiguousarray(fixed["boards"]))
+                s = torch.from_numpy(np.ascontiguousarray(fixed["scalars"]))
+                logits, values = self.model(b, s)
+                pred = values.cpu().numpy().reshape(-1).astype(np.float32)
+            self.model.train()
+            gr = fixed["results"]
+            corr = float(np.corrcoef(pred, gr)[0, 1]) if len(pred) > 2 else 0.0
+            sep = float(pred[gr > 0].mean() - pred[gr < 0].mean()) if (np.any(gr > 0) and np.any(gr < 0)) else 0.0
+            print(f"[Training4x4] 📊 价值漂移 Round#{self.round_num}: pred_mean={pred.mean():+.3f} "
+                  f"std={pred.std():.3f} corr(终局)={corr:.3f} 胜负区分度={sep:.3f}")
+            add_scalar("value_drift/pred_mean", pred.mean())
+            add_scalar("value_drift/pred_std", pred.std())
+            add_scalar("value_drift/corr_result", corr)
+            add_scalar("value_drift/sep", sep)
+        except Exception as e:  # pragma: no cover
+            print(f"[Training4x4] ⚠️ 价值漂移评估失败 ({e})")
 
     def stats(self) -> Dict[str, float]:
         with self._stats_lock:

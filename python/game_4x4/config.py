@@ -55,6 +55,21 @@ class Config4x4:
     ARCHIVE_PREFILL_GAMES = int(os.getenv("G4X4_ARCHIVE_PREFILL", "400"))
     ARCHIVE_PREFILL_DIR = os.getenv("G4X4_ARCHIVE_PREFILL_DIR", "")  # 空=自动选择归档目录
 
+    # value 目标退火：从 mcts_value（平滑，模仿阶段已学）逐步过渡到 game_result
+    # （终局真值，无自举漂移）。RL 阶段若一直用模型自己搜索的 mcts_value 做目标，
+    # 会形成"价值漂移→搜索值跟随→目标锚定漂移"的自举闭环，无外部真值纠偏。
+    #    value = (1-w)*mcts_value + w*game_result
+    #    w 从 VALUE_ANNEAL_START 起步，每 VALUE_ANNEAL_STEP_ROUNDS 轮 +VALUE_ANNEAL_INCREMENT。
+    VALUE_TARGET_MODE = os.getenv("G4X4_VALUE_TARGET", "mcts")  # mcts|game|mixed|anneal
+    VALUE_ANNEAL_START = float(os.getenv("G4X4_ANNEAL_START", "0.2"))
+    VALUE_ANNEAL_INCREMENT = float(os.getenv("G4X4_ANNEAL_INCREMENT", "0.2"))
+    VALUE_ANNEAL_STEP_ROUNDS = int(os.getenv("G4X4_ANNEAL_STEP", "10"))
+
+    # 固定验证集价值监控：训练中每 N 轮在固定局面上评估价值头输出
+    # （均值/方差/与终局结果区分度），检测价值漂移是否领先于胜率下降。
+    VALUE_DRIFT_EVAL_ROUNDS = int(os.getenv("G4X4_VALUE_DRIFT_EVAL", "5"))
+    VALUE_DRIFT_NUM_POSITIONS = int(os.getenv("G4X4_VALUE_DRIFT_N", "500"))
+
     # =========================================================================
     # 数据增强（data_augmentation.py）
     # 4x4 方盘 D4 对称群全部 8 个空间自同构可用（比 4x8 长盘的 4 个还多），
