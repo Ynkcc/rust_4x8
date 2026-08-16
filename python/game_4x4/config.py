@@ -34,16 +34,26 @@ class Config4x4:
     # 训练
     # =========================================================================
     TRAIN_BATCH = 32
-    LEARNING_RATE = 2e-3
+    # 精化用较低 LR（5e-4），避免在数据量不足时大幅改动权重导致过拟合/退化。
+    # 冷启动（buffer 全空）时用 lr=2e-3 训练量已够；一旦从强先验精化必须小步长。
+    LEARNING_RATE = float(os.getenv("G4X4_LR", "5e-4"))
     MIN_LR = 1e-5
     # 注意：CosineAnnealingLR 会在 T_max 达到后周期性回升 LR，导致训练后期
-    # loss 反弹。每轮 ≈ (buffer/32)*8 个 batch ≈ 1000 batch，长会话可达数十万
-    # batch，因此 T_max 设很大，确保整个会话只走一个衰减周期、不中途回升。
+    # loss 反弹。T_max 设很大，确保整个会话只走一个衰减周期、不中途回升。
     LR_DECAY_STEPS = 300000
-    TRAIN_EPOCHS_PER_ROUND = 8
-    MAX_SAMPLE_BUFFER_SIZE = 4000   # 更新鲜的数据，避免旧弱模型拖累
+    # 关键修复：每轮只训练 1-2 epoch。此前 8 epoch 导致"训练量 >> 数据量"
+    # （每轮仅 ~1120 新样本，却训练 ~1000 batch × 8 轮），每个样本被训练
+    # ~100 次，灾难性过拟合近期自对弈分布 → 棋力退化（35%→10%）。
+    TRAIN_EPOCHS_PER_ROUND = int(os.getenv("G4X4_EPOCHS_PER_ROUND", "2"))
+    # 扩大 buffer 至 16000：配合冷存储预填充保留历史多样性，避免每轮被冲刷。
+    MAX_SAMPLE_BUFFER_SIZE = int(os.getenv("G4X4_BUFFER_SIZE", "16000"))
     MIN_SAMPLES_TO_START = 128
     QUEUE_FETCH_BATCH = 8
+
+    # 冷存储预填充：训练启动时从归档加载最近 N 局复用（0=关闭）。
+    # 默认 400 局（约 1.4 万样本），保证训练一开始就有多样化历史数据。
+    ARCHIVE_PREFILL_GAMES = int(os.getenv("G4X4_ARCHIVE_PREFILL", "400"))
+    ARCHIVE_PREFILL_DIR = os.getenv("G4X4_ARCHIVE_PREFILL_DIR", "")  # 空=自动选择归档目录
 
     # =========================================================================
     # 数据增强（data_augmentation.py）

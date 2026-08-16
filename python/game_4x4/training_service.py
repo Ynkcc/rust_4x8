@@ -10,6 +10,7 @@ import os
 import queue
 import random
 import threading
+import time
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -17,6 +18,11 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
+
+# 与 self_play.py 保持一致：限制 torch intra-op 线程数（进程级全局）。
+# 小网络多线程反而因线程池调度开销而变慢（实测 32 线程 batch=32 训练
+# 比 2 线程慢一个量级），且会拖累同进程的 MCTS 推理。
+torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 
 from config import config
 from constant import (
@@ -70,6 +76,9 @@ class DataBuffer:
                 scalar_arr = scalar_arr[:SCALAR_FEATURE_COUNT]
             self.scalars.append(scalar_arr)
             self.probs.append(np.array(s['policy_probs'], dtype=np.float32))
+            # 自对弈 RL（run_training.py）：value 目标用游戏最终结果（AlphaZero 标准，
+            # 无偏）。模仿学习（train_imitate.py）走独立 FIFO buffer，直接传 mcts_value，
+            # 不经由此处。
             val = s.get('game_result_value', s.get('mcts_value', 0.0))
             self.values.append(val)
             self.masks.append(np.array(s['action_mask'], dtype=np.float32))
@@ -124,7 +133,7 @@ def save_checkpoint(model, optimizer, scheduler) -> None:
         torch.save({
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
             'model_config': {
                 'input_channels': TOTAL_INPUT_CHANNELS,
                 'board_rows': BOARD_ROWS,
@@ -158,11 +167,23 @@ def load_checkpoint(model, optimizer, scheduler) -> None:
             if 'optimizer_state_dict' in checkpoint:
                 try:
                     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    # 重要：加载 optimizer 状态会恢复旧的 lr（如 2e-3→1e-3），
+                    # 覆盖 config.LEARNING_RATE。精化时必须强制使用配置 LR。
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = config.LEARNING_RATE
+                    if hasattr(optimizer, 'param_groups'):
+                        print(f"[Training4x4] ℹ️ 恢复 optimizer 状态后强制 lr={config.LEARNING_RATE}")
                 except Exception as e_opt:
                     print(f"[Training4x4] ⚠️ Optimizer 状态加载失败 ({e_opt})")
-            if 'scheduler_state_dict' in checkpoint:
+            if 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict'] is not None:
                 try:
                     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    # 重置衰减进度：精化会话从配置 LR 重新开始 cosine 周期，
+                    # 避免恢复旧 epoch 导致 lr 立即跌到 eta_min。
+                    try:
+                        scheduler.last_epoch = -1
+                    except Exception:
+                        pass
                 except Exception as e_sch:
                     print(f"[Training4x4] ⚠️ Scheduler 状态加载失败 ({e_sch})")
             print(f"[Training4x4] ✅ 从 {config.STATE_DICT_PATH} 恢复完整训练状态")
@@ -245,6 +266,9 @@ class TrainWorker(threading.Thread):
         save_checkpoint(self.model, self.optimizer, self.scheduler)
 
         self.buffer = DataBuffer(config.MAX_SAMPLE_BUFFER_SIZE)
+        # 冷存储预填充：启动时从归档加载历史局复用，避免训练从"空 buffer + 少量
+        # 新局"开始就过度拟合当轮数据（这是此前 RL 退化的核心原因之一）。
+        self._prefill_from_archive()
         self.round_num = 0
         self.total_batches_trained = 0
         self.total_loss_sum = 0.0
@@ -252,6 +276,39 @@ class TrainWorker(threading.Thread):
         self.total_value_loss_sum = 0.0
         self.round_history: List[Dict] = []
         self._stats_lock = threading.Lock()
+
+    def _prefill_from_archive(self) -> None:
+        """从冷存储归档加载历史 episode 预填充训练 buffer（复用训练数据）。
+
+        自动选择归档目录：显式配置 > 模仿学习归档 > 默认 run_training 归档。
+        """
+        n_games = getattr(config, "ARCHIVE_PREFILL_GAMES", 0)
+        if not n_games:
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        dirs = [
+            config.ARCHIVE_PREFILL_DIR,
+            os.path.join(here, "training_data", "archive_4x4_imitate"),
+            os.path.join(here, "training_data", "archive_4x4"),
+        ]
+        archive_dir = next((d for d in dirs if d and os.path.isdir(d)), None)
+        if not archive_dir:
+            print("[Training4x4] ⚠️ 冷存储预填充：未找到归档目录，跳过")
+            return
+        try:
+            from storage import load_jsonl_episodes, episode_dict_to_samples
+            t0 = time.time()
+            episodes = load_jsonl_episodes(archive_dir, limit_games=n_games)
+            samples: List[Dict] = []
+            for ep in episodes:
+                samples.extend(episode_dict_to_samples(ep))
+            if samples:
+                self.buffer.add_samples(samples)
+                print(f"[Training4x4] 🗃️ 冷存储预填充: 从 {archive_dir} 加载 "
+                      f"{len(episodes)} 局 → {len(samples)} 样本 (Buffer={len(self.buffer)}, "
+                      f"耗时 {time.time()-t0:.1f}s)")
+        except Exception as e:  # pragma: no cover
+            print(f"[Training4x4] ⚠️ 冷存储预填充失败 ({e})，继续正常训练")
 
     def _drain_new_episodes(self, max_items: int) -> List[Dict]:
         episodes: List[Dict] = []

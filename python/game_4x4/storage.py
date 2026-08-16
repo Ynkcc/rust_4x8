@@ -96,6 +96,80 @@ class FileSaver:
 
 
 # ============================================================================
+# 本地 JSONL 冷存储读取（复用训练数据）
+# ============================================================================
+
+def list_jsonl_files(archive_dir: str) -> List[str]:
+    """列出归档目录下所有 *.jsonl 文件（升序，保证迭代顺序）。"""
+    if not os.path.isdir(archive_dir):
+        return []
+    return sorted(
+        os.path.join(archive_dir, f)
+        for f in os.listdir(archive_dir)
+        if f.endswith(".jsonl")
+    )
+
+
+def load_jsonl_episodes(archive_dir: str, limit_games: Optional[int] = None) -> List[Dict]:
+    """从本地 JSONL 冷存储加载 episode dict 列表。
+
+    每行一局（FileSaver jsonl 格式），按文件/行序加载。可选限制局数，
+    用于控制内存占用与训练分布。
+    """
+    episodes: List[Dict] = []
+    for path in list_jsonl_files(archive_dir):
+        with open(path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                episodes.append(json.loads(line))
+                if limit_games is not None and len(episodes) >= limit_games:
+                    return episodes
+    return episodes
+
+
+def episode_dict_to_samples(ep: Dict) -> List[Dict]:
+    """把归档的 episode dict 转成训练样本列表（value 取 mcts_value 平滑评估）。"""
+    samples: List[Dict] = []
+    boards = ep.get("boards") or ep.get("board_states") or []
+    scalars = ep.get("scalars") or ep.get("scalar_states") or []
+    policies = ep.get("policies") or ep.get("policy_probs") or []
+    mcts_values = ep.get("mcts_values") or []
+    game_results = ep.get("game_results") or []
+    masks = ep.get("action_masks") or []
+    for board, scalar, policy, mv, gr, mask in zip(
+            boards, scalars, policies, mcts_values, game_results, masks):
+        samples.append({
+            "board_state": board,
+            "scalar_state": scalar,
+            "policy_probs": policy,
+            "mcts_value": float(mv) if mv is not None else 0.0,
+            "game_result_value": float(gr) if gr is not None else 0.0,
+            "action_mask": mask,
+        })
+    return samples
+
+
+def save_episodes_to_archive(episode_dicts: List[Dict], archive_dir: str,
+                             iteration: int = 0, worker_id: int = 0) -> int:
+    """把 episode dict 列表以 JSONL 追加写方式存到冷存储（复用 FileSaver）。
+
+    返回写入局数。iteration/worker_id 控制归档文件名（避免同名覆盖）；
+    同 iteration 内多次调用会追加到同一文件。
+    """
+    saver = FileSaver(archive_dir, save_format="jsonl")
+    try:
+        n = len(episode_dicts)
+        if n:
+            saver.save_episodes(episode_dicts, iteration=iteration,
+                                worker_id=worker_id, game_start=0)
+        return n
+    finally:
+        saver.close()
+
+
+# ============================================================================
 # MongoDB 保存器
 # ============================================================================
 

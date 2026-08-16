@@ -17,6 +17,11 @@ import numpy as np
 try:
     import torch
     HAS_TORCH = True
+    # 关键性能调优：torch 默认按 CPU 核数（本机 32）开 intra-op 线程池。
+    # 本网络仅 ~6 万参数，MCTS 叶子批量通常 ≤8，32 线程池的线程调度/同步
+    # 开销会把单次推理拖到 80-190ms；限制为 2 线程后所有批量都在 ~1ms 量级，
+    # 自对弈吞吐提升 3-5 倍。进程级全局设置，训练侧保持一致。
+    torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 except ImportError:  # pragma: no cover
     HAS_TORCH = False
 
