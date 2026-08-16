@@ -4,7 +4,6 @@
 //     输出基于规则的走子先验 Logits 与多特征启发式 Value；
 //   - `HeuristicMctsPolicy`：用该评估器驱动现有 Gumbel MCTS 搜索选择动作。
 
-use crate::game_env::ACTION_SPACE_SIZE;
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
 use crate::DarkChessEnv;
 
@@ -61,7 +60,8 @@ impl Evaluator<DarkChessEnv> for HeuristicEvaluator {
         let mut logits = Vec::with_capacity(envs.len());
         let mut values = Vec::with_capacity(envs.len());
         for env in envs {
-            let mut lg = vec![0.0f32; ACTION_SPACE_SIZE];
+            // config 驱动：动作空间大小随变体变化（4x8=352 / 4x2=40 / 4x4=112）
+            let mut lg = vec![0.0f32; env.config.action_space_size];
             for m in super::movegen::generate_moves(env, env.get_current_player()) {
                 lg[m.action] = prior_logit(env, &m, &self.params, self.prior_scale);
             }
