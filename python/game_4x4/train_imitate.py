@@ -119,7 +119,9 @@ def episodes_to_dicts(eps, tag: str):
 
 
 def eval_strength(model, tag, n=8):
+    """快速评估（统一协议，见 eval_common）。"""
     from verify_vs_heuristic_mcts import ModelPredictor
+    from eval_common import model_mcts_action, heuristic_action
     pred = ModelPredictor(model, DEVICE)
 
     def obs_of(env):
@@ -132,7 +134,7 @@ def eval_strength(model, tag, n=8):
         return max(env.legal_moves(), key=lambda a: logits[0][a])
 
     def mcts64(env):
-        return env.mcts_search_action(pred, 64, 16, 1.0, 0.25)
+        return model_mcts_action(env, pred, 64)  # 统一协议 c_scale=0.25/gumbel=1.0
 
     def rand_fn(env):
         legal = env.legal_moves()
@@ -142,7 +144,7 @@ def eval_strength(model, tag, n=8):
         return env.minimax_action(2)
 
     def heur64(env):
-        return env.heuristic_mcts_action(64)
+        return heuristic_action(env, 64)
 
     def play(red, black):
         env = banqi_4x8.Game4x4()

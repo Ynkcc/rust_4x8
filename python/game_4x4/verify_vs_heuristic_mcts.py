@@ -34,6 +34,7 @@ torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 import banqi_4x8
 
 from config import config
+from eval_common import play_one, play_match, report as eval_report
 from nn_model import Banqi4x4Net, load_model_weights
 
 NUM_GAMES = int(os.getenv("G4X4_HM_GAMES", "40"))
@@ -103,20 +104,10 @@ def main() -> None:
     predictor = load_model()
     print(f"[HM] 模型 MCTS sims={MCTS_SIMS} | 启发式 MCTS sims={HM_SIMS} | {NUM_GAMES} 局（各半先手）")
 
-    wins = draws = 0
-    t0 = time.time()
-    for i in range(NUM_GAMES):
-        model_is_red = (i % 2 == 0)
-        w = play_one_game(predictor, model_is_red, HM_SIMS)
-        if w == 1:
-            wins += 1
-        elif w == 0:
-            draws += 1
-        if (i + 1) % 10 == 0 or i + 1 == NUM_GAMES:
-            print(f"  [{i+1}/{NUM_GAMES}] 模型胜率={wins/(i+1):.2f} "
-                  f"(胜{wins} 平{draws} 负{i+1-wins-draws}) 累计{time.time()-t0:.0f}s")
-
-    losses = NUM_GAMES - wins - draws
+    wins, draws, losses, blk = play_match(predictor, n=NUM_GAMES, model_sims=MCTS_SIMS)
+    import numpy as np
+    mean = float(np.mean(blk)) if blk else 0.0
+    std = float(np.std(blk)) if blk else 0.0
     print("\n" + "=" * 60)
     print(f"  模型 vs 启发式 Gumbel MCTS(sims={HM_SIMS}) 共 {NUM_GAMES} 局")
     print("=" * 60)
@@ -124,7 +115,7 @@ def main() -> None:
     print(f"  平局：  {draws}（{draws/NUM_GAMES:.1%}）")
     print(f"  启发式胜：{losses}（{losses/NUM_GAMES:.1%}）")
     print("=" * 60)
-    print(f"  模型胜率 = {wins/NUM_GAMES:.3f}")
+    print(f"  模型胜率 = {wins/NUM_GAMES:.3f}（块均 {mean:.1f}±{std:.1f}%）")
     return 0
 
 
