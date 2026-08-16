@@ -184,6 +184,12 @@ def load_checkpoint(model, optimizer, scheduler) -> None:
                         scheduler.last_epoch = -1
                     except Exception:
                         pass
+                    # 跨版本防御：显式同步 base_lrs（torch 2.10 后部分版本
+                    # load_state_dict 不恢复 base_lrs，导致 cosine 从旧 base 计算）。
+                    try:
+                        scheduler.base_lrs = [config.LEARNING_RATE] * len(scheduler.base_lrs)
+                    except Exception:
+                        pass
                 except Exception as e_sch:
                     print(f"[Training4x4] ⚠️ Scheduler 状态加载失败 ({e_sch})")
             print(f"[Training4x4] ✅ 从 {config.STATE_DICT_PATH} 恢复完整训练状态")
@@ -225,7 +231,16 @@ def train_step(model, optimizer, batch_data, device):
     return total_loss.item(), policy_loss.item(), value_loss.item()
 
 
-def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs):
+def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
+                        max_batches: Optional[int] = None):
+    """训练 buffer，可选限制总批次数。
+
+    max_batches: 限制本轮总训练批次数。关键修复——当每轮新增数据量远小于
+    buffer（如 RL 自对弈慢、每轮仅几百样本而 buffer 上万）时，若每轮对整个
+    buffer 训练多 epoch，每个样本会被反复训练几十次，导致过拟合旧自对弈
+    分布、棋力退化（此前 55%→25% 的元凶）。限制训练量与"新数据量"匹配：
+      每轮批次 ≈ 新样本数/32 × epochs，GPU 数据量大时自动恢复全覆盖训练。
+    """
     total_batches = 0
     epoch_results = []
     for epoch in range(num_epochs):
@@ -234,6 +249,12 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs):
         num_batches = len(indices) // config.TRAIN_BATCH
         if num_batches == 0:
             break
+        # 本轮剩余可训练批次
+        if max_batches is not None:
+            remaining = max_batches - total_batches
+            if remaining <= 0:
+                break
+            num_batches = min(num_batches, remaining)
         batch_total_l, batch_pol_l, batch_val_l = 0.0, 0.0, 0.0
         for step in range(num_batches):
             batch_indices = indices[step * config.TRAIN_BATCH:(step + 1) * config.TRAIN_BATCH]
@@ -258,7 +279,9 @@ class TrainWorker(threading.Thread):
         self.data_q = data_q
         self.stop_flag = stop_flag
         self.model = model if model is not None else Banqi4x4Net().to(DEVICE)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=config.LEARNING_RATE)
+        # weight_decay=1e-4：轻正则化，抑制小数据量下的过拟合/价值头漂移
+        self.optimizer = optim.Adam(self.model.parameters(),
+                                    lr=config.LEARNING_RATE, weight_decay=1e-4)
         self.scheduler = lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=config.LR_DECAY_STEPS, eta_min=config.MIN_LR,
         )
@@ -269,6 +292,7 @@ class TrainWorker(threading.Thread):
         # 冷存储预填充：启动时从归档加载历史局复用，避免训练从"空 buffer + 少量
         # 新局"开始就过度拟合当轮数据（这是此前 RL 退化的核心原因之一）。
         self._prefill_from_archive()
+        self._last_round_new_samples = 0
         self.round_num = 0
         self.total_batches_trained = 0
         self.total_loss_sum = 0.0
@@ -365,12 +389,23 @@ class TrainWorker(threading.Thread):
             min_required = max(config.TRAIN_BATCH, config.MIN_SAMPLES_TO_START)
             if len(self.buffer) < min_required:
                 continue
+            # 记录本轮新增样本量（含增强），用于限制训练量
+            self._last_round_new_samples = len(train_samples)
             self._train_round()
 
     def _train_round(self) -> None:
+        # 每轮训练批次数与新数据量匹配，防过拟合旧分布：
+        #   max_batches = 新样本/32 × epochs（保证新数据至少被完整训练），
+        #   下限 32 批次（防退化），上限 = buffer 全覆盖（GPU 大数据量时自然达标）。
+        n_new = max(32, self._last_round_new_samples)
+        per_epoch_batches = max(1, n_new // config.TRAIN_BATCH)
+        max_batches = per_epoch_batches * config.TRAIN_EPOCHS_PER_ROUND
+        full_cover = (len(self.buffer) // config.TRAIN_BATCH) * config.TRAIN_EPOCHS_PER_ROUND
+        max_batches = min(max_batches, full_cover)
         epoch_results, batches_in_round = run_training_epochs(
             self.model, self.optimizer, self.scheduler,
             self.buffer, config.TRAIN_EPOCHS_PER_ROUND,
+            max_batches=max_batches,
         )
         with self._stats_lock:
             self.total_batches_trained += batches_in_round
