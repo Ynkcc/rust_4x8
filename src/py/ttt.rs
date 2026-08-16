@@ -20,7 +20,7 @@ use crate::self_play::{GameEpisode, SelfPlayConfig};
 use super::py_evaluator::PyEvaluator;
 
 /// 井字棋环境（Python 可见）
-#[pyclass(name = "TicTacToe")]
+#[pyclass(name = "TicTacToe", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTicTacToe {
     pub inner: TicTacToeEnv,
@@ -125,7 +125,7 @@ impl PyTicTacToe {
     max_considered_actions=9,
 ))]
 pub fn ttt_mcts_search(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cells: Vec<i8>,
     player: i32,
     num_simulations: usize,
@@ -159,8 +159,8 @@ pub fn ttt_mcts_search(
     let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
     let result = mcts.run();
 
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         match result {
             Some(r) => {
                 dict.set_item("action", r.action)?;
@@ -211,7 +211,7 @@ pub fn ttt_mcts_search(
     num_games=1,
 ))]
 pub fn run_ttt_self_play_with_predictor(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     mcts_sims: usize,
     max_considered_actions: usize,
     temperature_steps: usize,
@@ -228,7 +228,7 @@ pub fn run_ttt_self_play_with_predictor(
     let episodes: Vec<GameEpisode> =
         crate::self_play::run_batch_self_play(&evaluator, &cfg, num_games, TicTacToeEnv::new);
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let mut out = Vec::with_capacity(episodes.len());
         for ep in episodes {
             let dict = super::episode_to_dict_darkchess(py, &ep)?;

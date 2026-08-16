@@ -20,7 +20,7 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 10;
 /// - `scalars_np` shape `[batch, G::SCALAR_FEATURE_COUNT]`
 /// - `policy_logits` shape `[batch, G::action_space_size()]`
 pub struct PyEvaluator<G: GameEnv> {
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     /// 缓存的 numpy 模块引用，避免每次 call_python 都重新 import
     numpy_module: std::sync::OnceLock<Py<PyModule>>,
     /// 连续失败计数器（AtomicU32 允许在多线程下安全递增）
@@ -37,7 +37,7 @@ unsafe impl<G: GameEnv> Send for PyEvaluator<G> {}
 unsafe impl<G: GameEnv> Sync for PyEvaluator<G> {}
 
 impl<G: GameEnv> PyEvaluator<G> {
-    pub fn new(predict_fn: PyObject) -> Self {
+    pub fn new(predict_fn: Py<PyAny>) -> Self {
         Self {
             predict_fn,
             numpy_module: std::sync::OnceLock::new(),
@@ -51,7 +51,7 @@ impl<G: GameEnv> PyEvaluator<G> {
         // OnceLock 尚未初始化时执行 import
         if self.numpy_module.get().is_none() {
             let np = py
-                .import_bound("numpy")
+                .import("numpy")
                 .map_err(|e| PyRuntimeError::new_err(format!("numpy import failed: {}", e)))?;
             // clone_ref 后存入 OnceLock；竞争条件下多个线程可能同时 import，
             // 但 OnceLock::set 对第一个调用者生效，后续忽略，行为正确
@@ -72,7 +72,7 @@ impl<G: GameEnv> PyEvaluator<G> {
         scalars_flat: Vec<f32>,
         batch_size: usize,
     ) -> PyResult<(Vec<Vec<f32>>, Vec<f32>)> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let np = self.get_numpy(py)?;
 
             let boards_np = Self::to_numpy(
@@ -91,7 +91,7 @@ impl<G: GameEnv> PyEvaluator<G> {
                     PyRuntimeError::new_err(format!("predictor call failed: {}", e))
                 })?;
 
-            let (policy_logits_py, values_py) = result.extract::<(PyObject, PyObject)>(py).map_err(|e| {
+            let (policy_logits_py, values_py) = result.extract::<(Py<PyAny>, Py<PyAny>)>(py).map_err(|e| {
                 eprintln!("Failed to extract (policy, value) from predictor result: {}", e);
                 PyRuntimeError::new_err(format!(
                     "predictor should return (policy_logits, values) tuple: {}",
@@ -126,7 +126,7 @@ impl<G: GameEnv> PyEvaluator<G> {
     /// 支持：
     /// - 扁平 `[batch]`：直接提取
     /// - 嵌套 `[[v0],[v1],...]`（shape `(batch, 1)`，PyTorch 默认）：取每行首元素
-    fn extract_values_flat(py: Python<'_>, obj: &PyObject, batch_size: usize) -> PyResult<Vec<f32>> {
+    fn extract_values_flat(py: Python<'_>, obj: &Py<PyAny>, batch_size: usize) -> PyResult<Vec<f32>> {
         let bound = obj.bind(py);
         if let Ok(flat) = bound.extract::<Vec<f32>>() {
             return Ok(flat);
@@ -146,7 +146,7 @@ impl<G: GameEnv> PyEvaluator<G> {
     }
 
     /// 将 flat Vec<f32> 转换为指定 shape 的 float32 numpy 数组。
-    fn to_numpy(np: &Bound<'_, PyModule>, data: Vec<f32>, shape: &[usize]) -> PyResult<PyObject> {
+    fn to_numpy(np: &Bound<'_, PyModule>, data: Vec<f32>, shape: &[usize]) -> PyResult<Py<PyAny>> {
         let array = np
             .call_method1("array", (data,))
             .map_err(|e| PyRuntimeError::new_err(format!("numpy.array failed: {}", e)))?;

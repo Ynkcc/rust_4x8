@@ -16,6 +16,16 @@ crate-type = ["lib", "cdylib"]
 name = "banqi"
 path = "src/main.rs"
 
+# ── banqi-tauri ────────────────────────────────────────────────────────────
+# 桌面 GUI（Tauri 2）。仅在启用 `tauri` feature 时构建。
+#
+# ⚠️ 编译失败快速定位：需要系统级 GTK/WebKit 开发库（Debian/Ubuntu）：
+#     sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
+#       libayatana-appindicator3-dev librsvg2-dev patchelf
+#   - 报错 "failed to run custom build command for atk-sys/pango-sys/gdk-sys"
+#     = 缺 libgtk-3-dev（GTK3）；缺 libwebkit2gtk-4.1-dev 会报 webkit2gtk-sys 失败。
+#   - macOS 无需额外依赖；Windows 需安装 WebView2。
+#   - 若只做训练/纯库/数据收集，请勿启用 tauri feature，避免拉取 GTK 依赖。
 [[bin]]
 name = "banqi-tauri"
 path = "src/tauri_main.rs"
@@ -26,6 +36,25 @@ name = "banqi-data-collector"
 path = "src/data_collector.rs"
 required-features = ["torch"]
 
+# ── banqi-py-collector ─────────────────────────────────────────────────────
+# 嵌入 Python 的独立二进制（在 Rust 进程内直接调用 Python 网络做数据收集）。
+# 与 maturin 构建的 cdylib 扩展模块不同，它必须**链接共享版 libpython**，
+# 因此使用不带 `extension-module` 的 `pyo3` feature。
+#
+# ⚠️ 编译失败快速定位（链接错误）：
+#   - 错误 "undefined symbol: PyObject_VectorcallMethod / PyThreadState_Get"
+#     = 当前启用了 extension-module（如 maturin/`pyo3-extension`），二进制拿不到
+#     Python 符号。本地构建请用 `--features pyo3`（不要用 pyo3-extension）。
+#   - 错误 "relocation R_X86_64_PC32 cannot be used against symbol 'stderr';
+#     recompile with -fPIC"
+#     = 链接到的 libpython 是**静态库**（如 pyenv 默认编译，仅有 libpython3.x.a）。
+#     需要带共享库的 Python 环境，例如：
+#       · pyenv：PYTHON_CONFIGURE_OPTS="--enable-shared" pyenv install 3.11.x
+#       · 系统 Python：apt install libpython3.11-dev（提供 libpython3.11.so）
+#   - 若不需要该二进制，直接用 `cargo build --features pyo3-extension`（wheel）
+#     或 `cargo check --features pyo3` 仅检查编译即可。
+#   - 环境检测：crate 级 build.rs 会在「pyo3 启用但 pyo3-extension 未启用」
+#     （即本地构建 bin 的场景）时自动检查共享 libpython 并打印修复建议。
 [[bin]]
 name = "banqi-py-collector"
 path = "src/py_data_collector.rs"
@@ -60,7 +89,10 @@ async-trait ="0.1.92"
 tch = { version = "0.22", optional = true }
 
 # PyO3 依赖 - 可选，用于 Python 集成
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+# 注意：extension-module 通过独立的 pyo3-extension feature 启用，
+# 因为 banqi-py-collector（嵌入 Python 的独立二进制）需要链接 libpython，
+# 而 maturin 构建的 cdylib 扩展模块不能链接 libpython。
+pyo3 = { version = "0.29", features = [], optional = true }
 
 [features]
 # 默认不启用 torch 特性
@@ -69,6 +101,8 @@ default = []
 torch = ["tch"]
 # pyo3 特性：启用 Python 集成
 pyo3 = ["dep:pyo3"]
+# pyo3 扩展模块特性：maturin 构建 cdylib wheel 时启用（不链接 libpython）
+pyo3-extension = ["pyo3", "pyo3/extension-module"]
 # tauri 特性：桌面 GUI（构建 banqi-tauri 时才需要，含 GTK 系统依赖）
 tauri = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-build"]
 

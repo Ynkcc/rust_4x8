@@ -11,7 +11,7 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use crate::game_env::{DarkChessEnv, GameEnv, ACTION_SPACE_SIZE};
+use crate::game_env::{DarkChessEnv, ACTION_SPACE_SIZE};
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
 use rand::prelude::*;
 
@@ -114,7 +114,7 @@ impl PyDarkChess {
     #[pyo3(signature = (predict_fn, num_simulations, max_considered_actions, c_scale, gumbel_scale = 1.0))]
     fn mcts_search_action(
         &self,
-        predict_fn: PyObject,
+        predict_fn: Py<PyAny>,
         num_simulations: usize,
         max_considered_actions: usize,
         c_scale: f64,
@@ -134,7 +134,7 @@ impl PyDarkChess {
     /// 纯网络贪婪动作：对当前局面一次前向，取合法动作中 logit 最大者（无搜索）。
     ///
     /// 返回 `None` 表示无合法动作（终局）。
-    fn greedy_action(&self, predict_fn: PyObject) -> PyResult<Option<usize>> {
+    fn greedy_action(&self, predict_fn: Py<PyAny>) -> PyResult<Option<usize>> {
         let evaluator = PyEvaluator::<DarkChessEnv>::new(predict_fn);
         let (logits_batch, _values) = evaluator.evaluate(std::slice::from_ref(&self.inner));
         let mut masks = [0i32; ACTION_SPACE_SIZE];

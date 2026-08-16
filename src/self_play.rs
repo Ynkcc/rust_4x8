@@ -333,17 +333,6 @@ impl<G: GameEnv> EvalQueue<G> {
         self.cvar.notify_one();
     }
 
-    fn pop(&self) -> Option<EvalRequest<G>> {
-        let mut q = self.reqs.lock().unwrap();
-        loop {
-            if let Some(req) = q.pop_front() {
-                return Some(req);
-            }
-            // 队列空：等待被唤醒（关闭时返回 None）
-            q = self.cvar.wait(q).unwrap();
-        }
-    }
-
     /// 关闭：唤醒所有等待线程，使其退出。
     fn shutdown(&self) {
         self.cvar.notify_all();

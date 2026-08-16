@@ -103,7 +103,7 @@ use crate::self_play::SelfPlayConfig;
 #[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
 fn run_self_play_with_predictor(
     _py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_games: usize,
     worker_id: usize,
@@ -121,7 +121,7 @@ fn run_self_play_with_predictor(
 #[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
 fn run_mini_self_play_with_predictor(
     _py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_games: usize,
     worker_id: usize,
@@ -139,7 +139,7 @@ fn run_mini_self_play_with_predictor(
 #[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
 fn run_game4x4_self_play_with_predictor(
     _py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_games: usize,
     worker_id: usize,
@@ -156,7 +156,7 @@ fn run_game4x4_self_play_with_predictor(
 #[pyo3(signature = (predict_fn, config=None, num_games=1, concurrency=4, worker_id=0))]
 fn run_batched_self_play_with_predictor(
     py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_games: usize,
     concurrency: usize,
@@ -182,7 +182,7 @@ fn run_batched_self_play_with_predictor(
 #[pyo3(signature = (predict_fn, config=None, num_games=1, concurrency=4, worker_id=0))]
 fn run_mini_batched_self_play_with_predictor(
     py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_games: usize,
     concurrency: usize,
@@ -208,7 +208,7 @@ fn run_mini_batched_self_play_with_predictor(
 #[pyo3(signature = (predict_fn, config=None, num_games=1, concurrency=4, worker_id=0))]
 fn run_game4x4_batched_self_play_with_predictor(
     py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_games: usize,
     concurrency: usize,
@@ -269,7 +269,7 @@ fn run_game4x4_minimax_self_play(
 #[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
 fn run_parallel_self_play_with_predictor(
     _py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_workers: usize,
     games_per_worker: usize,
@@ -294,7 +294,7 @@ fn run_parallel_self_play_with_predictor(
 #[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
 fn run_mini_parallel_self_play_with_predictor(
     _py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_workers: usize,
     games_per_worker: usize,
@@ -319,7 +319,7 @@ fn run_mini_parallel_self_play_with_predictor(
 #[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
 fn run_game4x4_parallel_self_play_with_predictor(
     _py: Python<'_>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     config: Option<PyRef<PySelfPlayConfig>>,
     num_workers: usize,
     games_per_worker: usize,

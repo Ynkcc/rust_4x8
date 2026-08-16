@@ -512,7 +512,7 @@ pub mod memory_estimator {
     }
 }
 
-fn load_python_predictor(py: Python<'_>, module_path: &str, func_name: &str) -> Result<PyObject> {
+fn load_python_predictor(py: Python<'_>, module_path: &str, func_name: &str) -> Result<Py<PyAny>> {
     let module_name = Path::new(module_path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -523,24 +523,24 @@ fn load_python_predictor(py: Python<'_>, module_path: &str, func_name: &str) -> 
         .and_then(|p| p.to_str())
         .unwrap_or(".");
 
-    let sys = py.import_bound("sys")?;
+    let sys = py.import("sys")?;
     let path_list = sys.getattr("path")?;
     let _ = path_list.call_method1("insert", (0, dir));
     let _ = path_list.call_method1("insert", (0, "."));
 
     let module = py
-        .import_bound(module_name)
+        .import(module_name)
         .map_err(|e| anyhow::anyhow!("Failed to import python module {}: {}", module_name, e))?;
 
-    let predictor: PyObject = module
+    let predictor: Py<PyAny> = module
         .getattr(func_name)
         .map_err(|e| anyhow::anyhow!("Python module has no '{}': {}", func_name, e))?
-        .into();
+        .unbind();
 
     Ok(predictor)
 }
 
-fn load_python_saver(py: Python<'_>, module_path: &str, func_name: &str) -> Result<Option<PyObject>> {
+fn load_python_saver(py: Python<'_>, module_path: &str, func_name: &str) -> Result<Option<Py<PyAny>>> {
     let module_name = match Path::new(module_path).file_stem().and_then(|s| s.to_str()) {
         Some(name) => name,
         None => return Ok(None),
@@ -552,12 +552,12 @@ fn load_python_saver(py: Python<'_>, module_path: &str, func_name: &str) -> Resu
         .parent()
         .and_then(|p| p.to_str())
         .unwrap_or(".");
-    let sys = py.import_bound("sys")?;
+    let sys = py.import("sys")?;
     let path_list = sys.getattr("path")?;
     let _ = path_list.call_method1("insert", (0, dir));
     let _ = path_list.call_method1("insert", (0, "."));
 
-    let module = match py.import_bound(module_name) {
+    let module = match py.import(module_name) {
         Ok(m) => m,
         Err(e) => {
             eprintln!(
@@ -579,7 +579,7 @@ fn load_python_saver(py: Python<'_>, module_path: &str, func_name: &str) -> Resu
         }
     };
 
-    Ok(Some(attr.into()))
+    Ok(Some(attr.unbind()))
 }
 
 fn build_episode_dict<'py>(
@@ -638,7 +638,7 @@ fn main() -> Result<()> {
 
     memory_estimator::print_full_memory_report(mcts_sims, games_per_iteration);
 
-    Python::with_gil(|py| -> Result<()> {
+    Python::attach(|py| -> Result<()> {
         let predictor = load_python_predictor(py, &python_module, &predict_func)
             .context("Loading python predictor")?;
         let saver = load_python_saver(py, &python_module, &save_func)?;

@@ -10,7 +10,7 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use crate::game_env::{GAME4X4_ACTION_SPACE_SIZE, Game4x4Env, GameEnv};
+use crate::game_env::{GAME4X4_ACTION_SPACE_SIZE, Game4x4Env};
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
 use rand::prelude::*;
 
@@ -109,7 +109,7 @@ impl PyGame4x4 {
     #[pyo3(signature = (predict_fn, num_simulations, max_considered_actions, c_scale, gumbel_scale = 1.0))]
     fn mcts_search_action(
         &self,
-        predict_fn: PyObject,
+        predict_fn: Py<PyAny>,
         num_simulations: usize,
         max_considered_actions: usize,
         c_scale: f64,
@@ -143,7 +143,7 @@ impl PyGame4x4 {
     }
 
     /// 纯网络贪婪动作：对当前局面一次前向，取合法动作中 logit 最大者（无搜索）。
-    fn greedy_action(&self, predict_fn: PyObject) -> PyResult<Option<usize>> {
+    fn greedy_action(&self, predict_fn: Py<PyAny>) -> PyResult<Option<usize>> {
         let evaluator = PyEvaluator::<Game4x4Env>::new(predict_fn);
         let (logits_batch, _values) = evaluator.evaluate(std::slice::from_ref(&self.inner));
         let mut masks = vec![0i32; GAME4X4_ACTION_SPACE_SIZE];

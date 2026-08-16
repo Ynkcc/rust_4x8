@@ -4,6 +4,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 #[cfg(feature = "pyo3")]
+use rayon::prelude::*;
+
+#[cfg(feature = "pyo3")]
 mod py_evaluator;
 
 #[cfg(feature = "pyo3")]
@@ -31,7 +34,7 @@ use crate::self_play::{self, GameEpisode, ScenarioType, SelfPlayConfig, finalize
 use crate::mcts::{Evaluator, GumbelConfig};
 
 #[cfg(feature = "pyo3")]
-#[pyclass(name = "GameEpisode")]
+#[pyclass(name = "GameEpisode", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyGameEpisode {
     pub inner: GameEpisode,
@@ -168,7 +171,7 @@ fn episode_to_dict_with_shapes<'py>(
         actions.push(*action);
     }
 
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("game_length", episode.game_length)?;
     dict.set_item("winner", episode.winner)?;
     dict.set_item("num_samples", n)?;
@@ -189,7 +192,7 @@ fn episode_to_dict_with_shapes<'py>(
 }
 
 #[cfg(feature = "pyo3")]
-#[pyclass(name = "SelfPlayConfig")]
+#[pyclass(name = "SelfPlayConfig", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySelfPlayConfig {
     pub inner: SelfPlayConfig,
@@ -248,7 +251,7 @@ impl PySelfPlayConfig {
 /// 但并行版每 worker 返回数 ≤ `games_per_worker`，总量以 `take(total_games)` 兜底。
 #[cfg(feature = "pyo3")]
 pub fn run_self_play_with_predictor_impl(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_games: usize,
     worker_id: usize,
@@ -260,7 +263,7 @@ pub fn run_self_play_with_predictor_impl(
 /// 4x2 迷你暗棋版串行自对弈。
 #[cfg(feature = "pyo3")]
 pub fn run_mini_self_play_with_predictor_impl(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_games: usize,
     worker_id: usize,
@@ -279,7 +282,7 @@ pub fn run_mini_self_play_with_predictor_impl(
 /// 4x4 暗棋版串行自对弈。
 #[cfg(feature = "pyo3")]
 pub fn run_game4x4_self_play_with_predictor_impl(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_games: usize,
     worker_id: usize,
@@ -355,7 +358,7 @@ fn run_self_play_serial_core<G: GameEnv>(
 ///   可以真正并发叠加，吞吐随 worker 数近似线性扩展。
 #[cfg(feature = "pyo3")]
 pub fn run_parallel_self_play_with_predictor_impl(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_workers: usize,
     games_per_worker: usize,
@@ -369,7 +372,7 @@ pub fn run_parallel_self_play_with_predictor_impl(
 /// 4x2 迷你暗棋版并行自对弈。
 #[cfg(feature = "pyo3")]
 pub fn run_mini_parallel_self_play_with_predictor_impl(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_workers: usize,
     games_per_worker: usize,
@@ -383,7 +386,7 @@ pub fn run_mini_parallel_self_play_with_predictor_impl(
 /// 4x4 暗棋版并行自对弈。
 #[cfg(feature = "pyo3")]
 pub fn run_game4x4_parallel_self_play_with_predictor_impl(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_workers: usize,
     games_per_worker: usize,
@@ -396,7 +399,7 @@ pub fn run_game4x4_parallel_self_play_with_predictor_impl(
 
 #[cfg(feature = "pyo3")]
 fn run_parallel_core<G: GameEnv>(
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_workers: usize,
     games_per_worker: usize,
@@ -411,7 +414,7 @@ fn run_parallel_core<G: GameEnv>(
 
     // 在持有 GIL 的情况下，为每个 worker 克隆一份 predict_fn 引用
     // (本质只是增加 Python 对象的引用计数，不做深拷贝)
-    let predict_fn_per_worker: Vec<PyObject> = Python::with_gil(|py| {
+    let predict_fn_per_worker: Vec<Py<PyAny>> = Python::attach(|py| {
         (0..num_workers.max(1))
             .map(|_| predict_fn.clone_ref(py))
             .collect()
@@ -428,8 +431,8 @@ fn run_parallel_core<G: GameEnv>(
     // worker 线程内的 Python::with_gil 将永远等不到 GIL，形成互等死锁。
     // allow_threads 在等待期间释放 GIL，worker 按需获取；predictor 内部
     // sleep/IO 会再次释放 GIL，实现多 worker 的等待真正并发叠加。
-    let episodes_by_worker: Vec<Vec<PyGameEpisode>> = Python::with_gil(|py| {
-        py.allow_threads(|| {
+    let episodes_by_worker: Vec<Vec<PyGameEpisode>> = Python::attach(|py| {
+        py.detach(|| {
             pool.install(|| {
                 predict_fn_per_worker
                     .into_par_iter()
@@ -507,16 +510,30 @@ pub fn run_game4x4_heuristic_self_play_impl<'py>(
 
     impl Evaluator<Game4x4Env> for HeuristicEval4x4 {
         fn evaluate(&self, envs: &[Game4x4Env]) -> (Vec<Vec<f32>>, Vec<f32>) {
-            let mut logits = Vec::with_capacity(envs.len());
-            let mut values = Vec::with_capacity(envs.len());
-            for env in envs {
-                let inner = &env.inner;
-                let mut lg = vec![0.0f32; inner.config.action_space_size];
-                for m in generate_moves(inner, inner.get_current_player()) {
-                    lg[m.action] = prior_logit(inner, &m, &self.params, self.prior_scale);
-                }
+            // 用 rayon 并行计算启发式评估，充分利用多核。
+            // 背景：run_batched_self_play 只有单个 eval_worker 线程串行处理所有
+            // 树的叶子评估，导致并发高但 CPU 利用率极低（实测多核仅 ~12%）。
+            // 对纯计算启发式（无 Python 推理），并行 evaluate 是吞吐关键。
+            let params = &self.params;
+            let prior_scale = self.prior_scale;
+            let n = envs.len();
+            let results: Vec<_> = envs
+                .par_iter()
+                .map(|env| {
+                    let inner = &env.inner;
+                    let mut lg = vec![0.0f32; inner.config.action_space_size];
+                    for m in generate_moves(inner, inner.get_current_player()) {
+                        lg[m.action] = prior_logit(inner, &m, params, prior_scale);
+                    }
+                    let val = crate::ai::eval::evaluate(inner, params);
+                    (lg, val)
+                })
+                .collect();
+            let mut logits = Vec::with_capacity(n);
+            let mut values = Vec::with_capacity(n);
+            for (lg, val) in results {
                 logits.push(lg);
-                values.push(crate::ai::eval::evaluate(inner, &self.params));
+                values.push(val);
             }
             (logits, values)
         }
@@ -530,7 +547,7 @@ pub fn run_game4x4_heuristic_self_play_impl<'py>(
     let mut game_count = 0;
     let _ = worker_id;
     while game_count < num_games {
-        let batch: Vec<GameEpisode> = py.allow_threads(|| {
+        let batch: Vec<GameEpisode> = py.detach(|| {
             self_play::run_batched_self_play::<Game4x4Env, HeuristicEval4x4>(
                 &evaluator,
                 cfg,
@@ -664,7 +681,7 @@ pub fn run_game4x4_minimax_self_play_impl(
     let mut episodes: Vec<PyGameEpisode> = Vec::with_capacity(num_games);
     let mut game_count = 0;
     while game_count < num_games {
-        let batch: Vec<GameEpisode> = py.allow_threads(|| {
+        let batch: Vec<GameEpisode> = py.detach(|| {
             let mut eps = Vec::with_capacity(num_games - game_count);
             for _ in 0..(num_games - game_count) {
                 let ep = minimax_self_play_one(&evaluator, &gumbel_cfg, temperature);
@@ -693,7 +710,7 @@ pub fn run_game4x4_minimax_self_play_impl(
 #[cfg(feature = "pyo3")]
 pub fn run_batched_self_play_with_predictor_impl<'py>(
     py: Python<'py>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_games: usize,
     concurrency: usize,
@@ -709,7 +726,7 @@ pub fn run_batched_self_play_with_predictor_impl<'py>(
 #[cfg(feature = "pyo3")]
 pub fn run_mini_batched_self_play_with_predictor_impl<'py>(
     py: Python<'py>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_games: usize,
     concurrency: usize,
@@ -732,7 +749,7 @@ pub fn run_mini_batched_self_play_with_predictor_impl<'py>(
 #[cfg(feature = "pyo3")]
 pub fn run_game4x4_batched_self_play_with_predictor_impl<'py>(
     py: Python<'py>,
-    predict_fn: PyObject,
+    predict_fn: Py<PyAny>,
     cfg: SelfPlayConfig,
     num_games: usize,
     concurrency: usize,
@@ -771,7 +788,7 @@ fn run_batched_core<G: GameEnv + Sync>(
     // 拿不到 GIL、主线程又等它返回，会形成互等死锁。
     while game_count < num_games {
         let batch: Vec<GameEpisode> =
-            py.allow_threads(|| self_play::run_batched_self_play(
+            py.detach(|| self_play::run_batched_self_play(
                 evaluator, cfg, num_games - game_count, concurrency, make_env,
             ));
         for ep in batch {
