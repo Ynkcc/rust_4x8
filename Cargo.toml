@@ -19,6 +19,7 @@ path = "src/main.rs"
 [[bin]]
 name = "banqi-tauri"
 path = "src/tauri_main.rs"
+required-features = ["tauri"]
 
 [[bin]]
 name = "banqi-data-collector"
@@ -37,8 +38,8 @@ fixedbitset = "0.5"
 ndarray = "0.15"
 slab = "0.4"
 rayon = "1.12"
-tauri = { version = "2.11.5", features = [] }
-tauri-plugin-shell = "2.3"
+tauri = { version = "2.11.5", features = [], optional = true }
+tauri-plugin-shell = { version = "2.3", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
@@ -68,9 +69,11 @@ default = []
 torch = ["tch"]
 # pyo3 特性：启用 Python 集成
 pyo3 = ["dep:pyo3"]
+# tauri 特性：桌面 GUI（构建 banqi-tauri 时才需要，含 GTK 系统依赖）
+tauri = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-build"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+tauri-build = { version = "2.6.3", features = [], optional = true }
 tonic-build = "0.12"
 
 [dev-dependencies]

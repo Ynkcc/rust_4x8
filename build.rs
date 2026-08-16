@@ -1,5 +1,6 @@
 fn main() {
-    // Tauri build
+    // Tauri build（仅在启用 tauri feature 时编译，避免训练/纯库场景拉取 GTK 依赖）
+    #[cfg(feature = "tauri")]
     tauri_build::build();
 
     // libtorch linking configuration - 仅在启用 torch 特性时链接

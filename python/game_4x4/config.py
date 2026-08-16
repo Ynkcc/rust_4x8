@@ -18,10 +18,11 @@ class Config4x4:
     # 自对弈
     # =========================================================================
     # 4x4 状态空间（16 格/112 动作）比 4x2 大得多，MCTS sims 需在数据质量与
-    # 吞吐间平衡：默认 48（每局约 5-10s，CPU 可接受），可用 G4X4_MCTS_SIMS 覆盖。
-    MCTS_SIMS = int(os.getenv("G4X4_MCTS_SIMS", "48"))
+    # 吞吐间平衡。实测（CPU 32 核）：sims 48→256 吞吐几乎不变（瓶颈在 Python
+    # 推理开销而非树搜索），因此用高 sims 换取高质量 Gumbel 训练目标。
+    MCTS_SIMS = int(os.getenv("G4X4_MCTS_SIMS", "256"))
     MAX_CONSIDERED_ACTIONS = 16
-    TEMPERATURE_STEPS = 8      # 4x4 局更长，探索步数略增
+    TEMPERATURE_STEPS = 12     # 4x4 局更长（~25 步），前 ~一半步数保持探索
     GAMES_PER_ITER = int(os.getenv("G4X4_GAMES_PER_ITER", "40"))
     NUM_WORKERS = 4            # CPU 12 核并行自对弈
     GAMES_PER_WORKER = 10      # 总对局 = NUM_WORKERS × GAMES_PER_WORKER = 40
@@ -36,10 +37,9 @@ class Config4x4:
     LEARNING_RATE = 2e-3
     MIN_LR = 1e-5
     # 注意：CosineAnnealingLR 会在 T_max 达到后周期性回升 LR，导致训练后期
-    # loss 反弹。每轮 ≈ (buffer/32)*8 个 batch ≈ 1000 batch，默认 1 小时
-    # （MAX_RUNTIME_SECONDS=3600）会话约 40000 batch，因此 T_max 需 ≥ 会话
-    # 总 batch 数，确保整个会话只走一个衰减周期、不中途回升。
-    LR_DECAY_STEPS = 40000
+    # loss 反弹。每轮 ≈ (buffer/32)*8 个 batch ≈ 1000 batch，长会话可达数十万
+    # batch，因此 T_max 设很大，确保整个会话只走一个衰减周期、不中途回升。
+    LR_DECAY_STEPS = 300000
     TRAIN_EPOCHS_PER_ROUND = 8
     MAX_SAMPLE_BUFFER_SIZE = 4000   # 更新鲜的数据，避免旧弱模型拖累
     MIN_SAMPLES_TO_START = 128
