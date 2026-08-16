@@ -424,6 +424,28 @@ async function onSquareClick(idx) {
   }
 }
 
+// 根据当前选择的对手模式，只显示对应的 AI 设置面板
+function updateAiSettingsVisibility() {
+  const oppSel = document.getElementById('opponent-select');
+  if (!oppSel) return;
+  const opponent = oppSel.value;
+
+  const settingsMap = {
+    Minimax: 'settings-minimax',
+    Engine: 'settings-engine',
+    MctsHeuristic: 'settings-heuristic',
+    MctsDL: 'settings-mctsdl',
+  };
+  const targetId = settingsMap[opponent];
+
+  ['settings-minimax', 'settings-engine', 'settings-heuristic', 'settings-mctsdl'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.display = (id === targetId) ? '' : 'none';
+    }
+  });
+}
+
 function checkGameOver(result) {
   if (result.terminated || result.truncated) {
     setTimeout(() => {
@@ -438,6 +460,12 @@ function checkGameOver(result) {
 
 // 启动
 window.addEventListener('DOMContentLoaded', async () => {
+  const oppSel = document.getElementById('opponent-select');
+  if (oppSel) {
+    oppSel.addEventListener('change', updateAiSettingsVisibility);
+  }
+  updateAiSettingsVisibility();
+
   const btn = document.getElementById('btn-new-game');
   if (btn) {
     btn.onclick = async () => {

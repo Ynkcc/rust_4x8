@@ -32,7 +32,7 @@
             </select>
         </div>
         <button id="btn-new-game">开始新游戏</button>
-        <div class="group-box" style="margin-top:10px;">
+        <div class="group-box" id="settings-minimax" style="margin-top:10px;">
           <h3>Minimax 设置</h3>
           <div class="status-row">
             <label>搜索深度:</label>
@@ -43,7 +43,7 @@
           </div>
           <small>纯规则搜索（expectiminimax + alpha-beta，已升级：多特征评估 / 置换表 / 走子排序 / 静态搜索）。</small>
         </div>
-        <div class="group-box" style="margin-top:10px;">
+        <div class="group-box" id="settings-engine" style="margin-top:10px;">
           <h3>强引擎设置</h3>
           <div class="status-row">
             <label>难度档位:</label>
@@ -59,7 +59,7 @@
           </div>
           <small>αβ + Star1 + 置换表 + 迭代加深的纯计算强引擎（移植 misty-banqi），节点预算越高越强、耗时越长。</small>
         </div>
-        <div class="group-box" style="margin-top:10px;">
+        <div class="group-box" id="settings-heuristic" style="margin-top:10px;">
           <h3>启发式 MCTS 设置</h3>
           <div class="status-row">
             <label>模拟次数:</label>
@@ -70,7 +70,7 @@
           </div>
           <small>Gumbel MCTS + 纯计算多特征启发式评估（无需 torch/模型）。</small>
         </div>
-        <div class="group-box" style="margin-top:10px;">
+        <div class="group-box" id="settings-mctsdl" style="margin-top:10px;">
           <h3>MCTS+DL 设置</h3>
           <div class="status-row">
             <label>选择模型:</label>
