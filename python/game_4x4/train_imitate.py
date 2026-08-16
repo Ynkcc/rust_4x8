@@ -33,7 +33,7 @@ from nn_model import Banqi4x4Net, load_model_weights
 from training_service import train_step, save_checkpoint, _resolve_device
 from storage import (
     save_episodes_to_archive, load_jsonl_episodes, episode_dict_to_samples,
-    list_jsonl_files,
+    iter_jsonl_episodes, list_jsonl_files,
 )
 from tb_logger import add_scalar
 
@@ -73,7 +73,7 @@ class FIFOBuffer:
         return b, s, p, v, m
 
 
-def gen_teacher(sims, games, conc=12, threads=3):
+def gen_teacher(sims, games, conc=4, threads=3):
     per = max(1, games // threads)
 
     def _one(_):
@@ -181,7 +181,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--cap", type=int, default=6000, help="buffer 上限")
     ap.add_argument("--gen-threads", type=int, default=3)
-    ap.add_argument("--conc", type=int, default=12)
+    ap.add_argument("--conc", type=int, default=4, help="批自对弈并发度（4 足够，过高只耗内存不加速）")
     ap.add_argument("--eval-games", type=int, default=8)
     ap.add_argument("--sims-schedule", action="store_true", help="逐步提升教师 sims")
     ap.add_argument("--fresh", action="store_true")
@@ -193,17 +193,7 @@ def main():
                     help="每轮生成后归档到冷存储")
     args = ap.parse_args()
 
-    # 统一初始化：先加载冷存储样本（如有），再初始化模型/优化器/buffer
-    load_samples = []
-    if args.load_archive > 0:
-        t0 = time.time()
-        eps = load_jsonl_episodes(args.archive_dir, limit_games=args.load_archive)
-        print(f"[Imitation] 从冷存储加载 {len(eps)} 局复用 "
-              f"(耗时 {time.time()-t0:.1f}s)", flush=True)
-        for ep in eps:
-            load_samples.extend(episode_dict_to_samples(ep))
-        print(f"  → 冷存储样本 {len(load_samples)}", flush=True)
-
+    # 统一初始化：模型/优化器/buffer
     model = Banqi4x4Net().to(DEVICE)
     if args.fresh:
         print("[Imitation] 随机初始化", flush=True)
@@ -213,9 +203,21 @@ def main():
     model.train()
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     buf = FIFOBuffer(args.cap)
-    if load_samples:
-        buf.add(load_samples)
-        print(f"  → Buffer 初始 {len(buf)} 样本（含冷存储复用）", flush=True)
+
+    # 流式加载冷存储样本，直接入 buffer（不物化中间大列表，控制内存峰值）
+    if args.load_archive > 0:
+        t0 = time.time()
+        n_games = 0
+        n_samples = 0
+        for ep in iter_jsonl_episodes(args.archive_dir):
+            smp = episode_dict_to_samples(ep)
+            buf.add(smp)
+            n_samples += len(smp)
+            n_games += 1
+            if n_games >= args.load_archive:
+                break
+        print(f"[Imitation] 从冷存储流式加载 {n_games} 局 → {n_samples} 样本 "
+              f"(Buffer={len(buf)}, 耗时 {time.time()-t0:.1f}s)", flush=True)
 
     sims_list = ([args.sims] * args.rounds) if not args.sims_schedule else \
         [64, 128, 256, 384, 512, 512, 512, 512][:args.rounds]
@@ -227,18 +229,44 @@ def main():
     for r in range(args.rounds):
         sims = sims_list[r]
         eps = gen_teacher(sims, args.games, args.conc, args.gen_threads)
-        samples = episodes_to_samples(eps)
-        buf.add(samples)
-        print(f"  Round#{r}: 新样本 {len(samples)} → Buffer={len(buf)}", flush=True)
+        # 流式填充：逐 episode 转 samples 并加入 buffer，避免 eps+samples 双份驻留
+        n_new = 0
+        for e in eps:
+            (boards, scalars, policies, mcts_values, completed_qs,
+             root_visits, game_results, action_masks, actions) = e.get_samples()
+            batch_samples = []
+            for board, scalar, policy, mv, mask in zip(
+                    boards, scalars, policies, mcts_values, action_masks):
+                batch_samples.append({
+                    "board_state": board, "scalar_state": scalar,
+                    "policy_probs": policy, "mcts_value": float(mv),
+                    "action_mask": mask,
+                })
+            buf.add(batch_samples)
+            n_new += len(batch_samples)
+            del batch_samples
+        print(f"  Round#{r}: 新样本 {n_new} → Buffer={len(buf)}", flush=True)
 
-        # 冷存储归档（可复用）：异步批次写入，不阻塞训练
+        # 冷存储归档（可复用）：逐局物化并立即释放，避免累积超大内存（防泄漏）
         if args.save_archive:
-            dicts = episodes_to_dicts(eps, tag=f"r{r}_sims{sims}")
             t0a = time.time()
-            n_arch = save_episodes_to_archive(
-                dicts, args.archive_dir, iteration=r, worker_id=sims)
+            n_arch = 0
+            for i in range(0, len(eps), 20):  # 分批，控制峰值内存
+                batch_eps = eps[i:i+20]
+                dicts = episodes_to_dicts(batch_eps, tag=f"r{r}_sims{sims}")
+                n_arch += save_episodes_to_archive(
+                    dicts, args.archive_dir,
+                    iteration=r + i // 1000, worker_id=sims + i)
+                del dicts
             print(f"  → 归档 {n_arch} 局到 {args.archive_dir} "
                   f"(耗时 {time.time()-t0a:.1f}s)", flush=True)
+
+        # 释放本轮 Rust episode 对象，防内存累积（Rust PyGameEpisode 持有游戏树
+        # 内存，不释放会随轮次无限增长）
+        del eps
+        if r < args.rounds - 1:
+            import gc
+            gc.collect()
 
         # 每轮训练固定 epochs，随机采样（不遍历全量，保持分布混合）
         for epc in range(args.epochs):

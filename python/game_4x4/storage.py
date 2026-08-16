@@ -129,6 +129,21 @@ def load_jsonl_episodes(archive_dir: str, limit_games: Optional[int] = None) -> 
     return episodes
 
 
+def iter_jsonl_episodes(archive_dir: str):
+    """流式迭代 JSONL 归档中的 episode dict（逐行 yield，不一次性物化全部）。
+
+    用于大幅降低内存占用：一批大对局数组不会同时驻留内存。
+    按文件/行序 yield；调用方负责及时丢弃。
+    """
+    for path in list_jsonl_files(archive_dir):
+        with open(path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                yield json.loads(line)
+
+
 def episode_dict_to_samples(ep: Dict) -> List[Dict]:
     """把归档的 episode dict 转成训练样本列表（value 取 mcts_value 平滑评估）。"""
     samples: List[Dict] = []
