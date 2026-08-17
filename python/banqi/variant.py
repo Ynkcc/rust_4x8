@@ -159,7 +159,7 @@ VARIANTS: Dict[str, Variant] = {
         env_const_prefix="MINI_",
         env_prefix="MINI_",
         model_basename="banqi_mini_model_latest",
-        archive_dir=None,                # mini 无归档线程
+        archive_dir="./training_data/archive_mini",
         tb_dir="runs_mini",
     ),
 }
