@@ -1,22 +1,38 @@
 """banqi/config.py — 统一训练配置（4x2 / 4x4 / 4x8 共用）
 
 把原先三份 config.py（4x8 顶层 / game_4x4 / mini_4x2）合并为一份 Config，
-字段为三者并集；不同变体的默认值由 `make_config(variant_id)` 按变体注入。
+字段为三者并集；所有配置值一律来自本地配置文件，源码内不内嵌任何默认值。
+
+配置来源（优先级从低到高）：
+  1. 本地配置文件 config.local.yaml（也可用环境变量 BANQI_CONFIG 指定
+     其他 YAML 文件）。该文件为必需：缺失时 make_config 直接报错，
+     请先运行 `python -m banqi.config --write-template` 生成。
+  2. 环境变量（最高优先）
+
+config.default.yaml 仅是生成 config.local.yaml 的模板（--write-template），
+运行时不会读取，也不作为任何兜底。
 
 环境变量覆盖规则（统一）：
   1. 优先读「变体前缀 + 字段名」：G4X4_XXX / MINI_XXX（4x8 无前缀）
   2. 其次读兼容旧名（如 G4X4_DATA_AUGMENT、G4X4_LR、MONGODB_URI 等历史变量）
   3. 最后读无前缀字段名（DATA_AUGMENT_ENABLED、MONITOR_ENABLED…）
 
+路径字段（MODEL_PATH / STATE_DICT_PATH）：配置文件中写相对 python/ 目录的
+相对路径即可，绝对路径也可直接用。
+
 用法：
     from banqi.config import make_config
     cfg = make_config("4x4")          # 含全部字段
     cfg.VALUE_TARGET_MODE             # "mcts" 等
+
+生成本地配置模板：
+    python -m banqi.config --write-template   # 生成 config.local.yaml
 """
 
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -24,6 +40,13 @@ from banqi.variant import get_variant
 
 # python/ 目录（banqi/config.py 位于 python/banqi/）
 _PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# banqi/ 包目录：本地配置文件所在位置
+_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_YAML = os.path.join(_CONFIG_DIR, "config.default.yaml")  # 仅作模板
+_LOCAL_YAML = os.path.join(_CONFIG_DIR, "config.local.yaml")      # 唯一运行时来源
+
+# 相对 python/ 目录解析的路径字段（兼容旧版 os.path.join(_PY_DIR, ...)）
+_PATH_FIELDS = ("MODEL_PATH", "STATE_DICT_PATH")
 
 # 历史环境变量别名：字段名 -> 依次尝试的旧变量名（保留既有脚本的 env 兼容）
 _LEGACY_ENV: Dict[str, List[str]] = {
@@ -84,183 +107,7 @@ def _cast_str_or_none(v: str) -> Optional[str]:
     return v if v else None
 
 
-# --------------------------------------------------------------------------- #
-# 变体默认值
-# --------------------------------------------------------------------------- #
-
-_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "4x8": {
-        "PREDICT_BATCH": 128,
-        "MCTS_SIMS": 128,
-        "MAX_CONSIDERED_ACTIONS": 24,
-        "TEMPERATURE_STEPS": 16,
-        "GAMES_PER_ITER": 100,
-        "NUM_WORKERS": 2,
-        "GAMES_PER_WORKER": 50,
-        "USE_BATCHED_SELF_PLAY": False,
-        # GPU 实测：batched 方案 batch 越大越占优（kernel 固定开销被摊薄）。
-        # 仅当 USE_BATCHED_SELF_PLAY=True 时生效；默认 serial/parallel 不受影响。
-        # 仍可按需用环境变量覆盖（BATCH_CONCURRENCY=16 等）。
-        "BATCH_CONCURRENCY": 8,
-        "TRAIN_BATCH": 64,
-        "LEARNING_RATE": 2e-4,
-        "MIN_LR": 5e-6,
-        "LR_DECAY_STEPS": 60000,
-        "TRAIN_EPOCHS_PER_ROUND": 3,
-        "WEIGHT_DECAY": 1e-4,
-        "MAX_SAMPLE_BUFFER_SIZE": 100000,
-        "MIN_SAMPLES_TO_START": 1000,
-        "QUEUE_FETCH_BATCH": 8,
-        "DATA_AUGMENT_ENABLED": True,
-        "DATA_AUGMENT_KEEP_ORIGINAL": True,
-        "DATA_AUGMENT_TRANSFORMS": "hflip,vflip,rot180",
-        "MODEL_PATH": "banqi_model_latest.pt",
-        "STATE_DICT_PATH": "banqi_model_latest.pth",
-        "INFER_DEVICE": "cpu",
-        "TRAIN_DEVICE": "auto",
-        "INFER_CPU_AUX_WORKERS": 0,
-        "INFER_CPU_FRACTION": 0.3,
-        "INFER_MIN_SPLIT_BATCH": 16,
-        "DATA_QUEUE_MAXSIZE": 128,
-        "ARCHIVE_QUEUE_MAXSIZE": 256,
-        "CHECKPOINT_EVERY_N_ROUNDS": 2,
-        "MONITOR_ENABLED": True,
-        "MONITOR_INTERVAL": 10.0,
-        "MONITOR_PER_CORE": False,
-        "MONITOR_CSV_PATH": None,
-        "TENSORBOARD_ENABLED": True,
-        "TENSORBOARD_LOG_DIR": "runs",
-        "TENSORBOARD_LOG_SYS": True,
-        "MONGO_URI": "mongodb://localhost:27017",
-        "DB_NAME": "banqi_training",
-        "COLLECTION": "games",
-        "ARCHIVE_BATCH": 32,
-        "ARCHIVE_POLL_INTERVAL": 1.0,
-        "MAX_RUNTIME_SECONDS": 0,                # 0 = 不限时
-        "ARCHIVE_ENABLED": True,
-        "ARCHIVE_PREFILL_GAMES": 0,
-        "ARCHIVE_PREFILL_DIR": "",
-        "VALUE_TARGET_MODE": "mcts",
-        "VALUE_ANNEAL_START": 0.2,
-        "VALUE_ANNEAL_INCREMENT": 0.2,
-        "VALUE_ANNEAL_STEP_ROUNDS": 10,
-        "VALUE_DRIFT_EVAL_ROUNDS": 0,
-        "VALUE_DRIFT_NUM_POSITIONS": 0,
-    },
-    "4x4": {
-        "PREDICT_BATCH": 64,
-        "MCTS_SIMS": 256,
-        "MAX_CONSIDERED_ACTIONS": 16,
-        "TEMPERATURE_STEPS": 12,
-        "GAMES_PER_ITER": 40,
-        "NUM_WORKERS": 4,
-        "GAMES_PER_WORKER": 10,
-        "USE_BATCHED_SELF_PLAY": False,
-        "BATCH_CONCURRENCY": 4,
-        "TRAIN_BATCH": 32,
-        "LEARNING_RATE": 5e-4,
-        "MIN_LR": 1e-5,
-        "LR_DECAY_STEPS": 300000,
-        "TRAIN_EPOCHS_PER_ROUND": 2,
-        "WEIGHT_DECAY": 1e-4,
-        "MAX_SAMPLE_BUFFER_SIZE": 16000,
-        "MIN_SAMPLES_TO_START": 128,
-        "QUEUE_FETCH_BATCH": 8,
-        "DATA_AUGMENT_ENABLED": True,
-        "DATA_AUGMENT_KEEP_ORIGINAL": True,
-        "DATA_AUGMENT_TRANSFORMS": "hflip,vflip,rot180,rot90,rot270,diag,anti_diag",
-        "MODEL_PATH": os.path.join(_PY_DIR, "game_4x4", "banqi4x4_model_latest.pt"),
-        "STATE_DICT_PATH": os.path.join(_PY_DIR, "game_4x4", "banqi4x4_model_latest.pth"),
-        "INFER_DEVICE": "cpu",
-        "TRAIN_DEVICE": "cpu",
-        "INFER_CPU_AUX_WORKERS": 0,
-        "INFER_CPU_FRACTION": 0.3,
-        "INFER_MIN_SPLIT_BATCH": 16,
-        "DATA_QUEUE_MAXSIZE": 256,
-        "ARCHIVE_QUEUE_MAXSIZE": 256,
-        "CHECKPOINT_EVERY_N_ROUNDS": 2,
-        "MONITOR_ENABLED": True,
-        "MONITOR_INTERVAL": 10.0,
-        "MONITOR_PER_CORE": False,
-        "MONITOR_CSV_PATH": None,
-        "TENSORBOARD_ENABLED": True,
-        "TENSORBOARD_LOG_DIR": "runs_4x4",
-        "TENSORBOARD_LOG_SYS": True,
-        "MONGO_URI": "mongodb://localhost:27017",
-        "DB_NAME": "banqi_4x4",
-        "COLLECTION": "games",
-        "ARCHIVE_BATCH": 32,
-        "ARCHIVE_POLL_INTERVAL": 1.0,
-        "MAX_RUNTIME_SECONDS": 60 * 60,
-        "ARCHIVE_ENABLED": True,
-        "ARCHIVE_PREFILL_GAMES": 400,
-        "ARCHIVE_PREFILL_DIR": "",
-        "VALUE_TARGET_MODE": "mcts",
-        "VALUE_ANNEAL_START": 0.2,
-        "VALUE_ANNEAL_INCREMENT": 0.2,
-        "VALUE_ANNEAL_STEP_ROUNDS": 10,
-        "VALUE_DRIFT_EVAL_ROUNDS": 5,
-        "VALUE_DRIFT_NUM_POSITIONS": 500,
-    },
-    "4x2": {
-        "PREDICT_BATCH": 64,
-        "MCTS_SIMS": 128,
-        "MAX_CONSIDERED_ACTIONS": 16,
-        "TEMPERATURE_STEPS": 6,
-        "GAMES_PER_ITER": 60,
-        "NUM_WORKERS": 4,
-        "GAMES_PER_WORKER": 15,
-        "USE_BATCHED_SELF_PLAY": False,
-        "BATCH_CONCURRENCY": 4,
-        "TRAIN_BATCH": 32,
-        "LEARNING_RATE": 2e-3,
-        "MIN_LR": 1e-5,
-        "LR_DECAY_STEPS": 12000,
-        "TRAIN_EPOCHS_PER_ROUND": 8,
-        "WEIGHT_DECAY": 1e-4,
-        "MAX_SAMPLE_BUFFER_SIZE": 4000,
-        "MIN_SAMPLES_TO_START": 256,
-        "QUEUE_FETCH_BATCH": 8,
-        "DATA_AUGMENT_ENABLED": False,
-        "DATA_AUGMENT_KEEP_ORIGINAL": True,
-        "DATA_AUGMENT_TRANSFORMS": "hflip",
-        "MODEL_PATH": os.path.join(_PY_DIR, "mini_4x2", "banqi_mini_model_latest.pt"),
-        "STATE_DICT_PATH": os.path.join(_PY_DIR, "mini_4x2", "banqi_mini_model_latest.pth"),
-        "INFER_DEVICE": "cpu",
-        "TRAIN_DEVICE": "cpu",
-        "INFER_CPU_AUX_WORKERS": 0,
-        "INFER_CPU_FRACTION": 0.3,
-        "INFER_MIN_SPLIT_BATCH": 16,
-        "DATA_QUEUE_MAXSIZE": 256,
-        "ARCHIVE_QUEUE_MAXSIZE": 256,
-        "CHECKPOINT_EVERY_N_ROUNDS": 2,
-        "MONITOR_ENABLED": False,
-        "MONITOR_INTERVAL": 10.0,
-        "MONITOR_PER_CORE": False,
-        "MONITOR_CSV_PATH": None,
-        "TENSORBOARD_ENABLED": False,
-        "TENSORBOARD_LOG_DIR": "runs_mini",
-        "TENSORBOARD_LOG_SYS": True,
-        "MONGO_URI": "mongodb://localhost:27017",
-        "DB_NAME": "banqi_mini",
-        "COLLECTION": "games",
-        "ARCHIVE_BATCH": 32,
-        "ARCHIVE_POLL_INTERVAL": 1.0,
-        "MAX_RUNTIME_SECONDS": 18 * 60,
-        "ARCHIVE_ENABLED": False,
-        "ARCHIVE_PREFILL_GAMES": 0,
-        "ARCHIVE_PREFILL_DIR": "",
-        "VALUE_TARGET_MODE": "mcts",
-        "VALUE_ANNEAL_START": 0.2,
-        "VALUE_ANNEAL_INCREMENT": 0.2,
-        "VALUE_ANNEAL_STEP_ROUNDS": 10,
-        "VALUE_DRIFT_EVAL_ROUNDS": 0,
-        "VALUE_DRIFT_NUM_POSITIONS": 0,
-    },
-}
-
-
-# 字段 -> 类型转换（未列出的按 str 处理）
+# 字段 -> 类型转换（仅环境变量字符串需要；未列出的按 str 处理）
 _CASTS: Dict[str, Callable[[str], Any]] = {
     "PREDICT_BATCH": _cast_int,
     "MCTS_SIMS": _cast_int,
@@ -269,6 +116,7 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "GAMES_PER_ITER": _cast_int,
     "NUM_WORKERS": _cast_int,
     "GAMES_PER_WORKER": _cast_int,
+    "SELF_PLAY_PROCESSES": _cast_int,
     "USE_BATCHED_SELF_PLAY": _cast_bool,
     "BATCH_CONCURRENCY": _cast_int,
     "TRAIN_BATCH": _cast_int,
@@ -312,8 +160,68 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "VALUE_DRIFT_NUM_POSITIONS": _cast_int,
 }
 
-# 全部字段顺序（4x8 默认值为全集，其余变体从自身默认表取）
-_FIELD_NAMES: List[str] = list(_DEFAULTS["4x8"].keys())
+
+# --------------------------------------------------------------------------- #
+# YAML 配置文件加载（唯一来源：config.local.yaml 或 BANQI_CONFIG 指定文件）
+# --------------------------------------------------------------------------- #
+
+def _load_yaml(path: str) -> Optional[Dict[str, Any]]:
+    """读取 YAML 配置文件。
+
+    返回 None 表示文件不存在；文件存在但解析失败或非字典结构则直接报错
+    （配置错误应当暴露，不做任何静默兜底）。
+    """
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        raise RuntimeError(
+            f"[banqi.config] 需要 PyYAML 才能读取配置文件 {path}\n"
+            f"  请安装: pip install pyyaml"
+        )
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise RuntimeError(f"[banqi.config] 配置文件解析失败: {path}\n  {e}")
+    return data if isinstance(data, dict) else None
+
+
+_config_data: Optional[Dict[str, Dict[str, Any]]] = None
+_config_path: Optional[str] = None
+
+
+def _get_config_data() -> Dict[str, Dict[str, Any]]:
+    """惰性加载本地配置文件（首次 make_config 时）。缺失则报错，绝不兜底。"""
+    global _config_data, _config_path
+    if _config_data is not None:
+        return _config_data
+    path = os.environ.get("BANQI_CONFIG", "").strip() or _LOCAL_YAML
+    data = _load_yaml(path)
+    if data is None:
+        raise RuntimeError(
+            f"[banqi.config] 缺少配置文件: {path}\n"
+            f"  本地配置文件是必需的。请先运行:\n"
+            f"    python -m banqi.config --write-template\n"
+            f"  生成 config.local.yaml，再修改其中的参数。"
+        )
+    known = set(Config.__dataclass_fields__) - {"variant_id"}
+    cleaned: Dict[str, Dict[str, Any]] = {}
+    for vid, fields in data.items():
+        if not isinstance(fields, dict):
+            _warn_unknown(f"变体 {vid!r} 的配置必须是字段字典")
+            continue
+        kept: Dict[str, Any] = {}
+        for k, v in fields.items():
+            if k in known:
+                kept[k] = v
+            else:
+                _warn_unknown(k)
+        cleaned[vid] = kept
+    _config_data = cleaned
+    _config_path = path
+    return cleaned
 
 
 def _alias_applies(prefix: str, alias: str) -> bool:
@@ -344,82 +252,137 @@ def _resolve_env(variant_id: str, name: str, default: Any) -> Any:
 
 @dataclass
 class Config:
-    """一个变体的完整训练配置。所有字段由 make_config 解析后填充。"""
+    """一个变体的完整训练配置。
 
-    variant_id: str = ""
-    PREDICT_BATCH: int = 128
-    MCTS_SIMS: int = 128
-    MAX_CONSIDERED_ACTIONS: int = 16
-    TEMPERATURE_STEPS: int = 8
-    GAMES_PER_ITER: int = 100
-    NUM_WORKERS: int = 2
-    GAMES_PER_WORKER: int = 50
-    USE_BATCHED_SELF_PLAY: bool = False
-    BATCH_CONCURRENCY: int = 4
-    TRAIN_BATCH: int = 64
-    LEARNING_RATE: float = 2e-4
-    MIN_LR: float = 1e-5
-    LR_DECAY_STEPS: int = 60000
-    TRAIN_EPOCHS_PER_ROUND: int = 3
-    WEIGHT_DECAY: float = 1e-4
-    MAX_SAMPLE_BUFFER_SIZE: int = 100000
-    MIN_SAMPLES_TO_START: int = 1000
-    QUEUE_FETCH_BATCH: int = 8
-    DATA_AUGMENT_ENABLED: bool = True
-    DATA_AUGMENT_KEEP_ORIGINAL: bool = True
-    DATA_AUGMENT_TRANSFORMS: str = "hflip,vflip,rot180"
-    MODEL_PATH: str = "banqi_model_latest.pt"
-    STATE_DICT_PATH: str = "banqi_model_latest.pth"
-    INFER_DEVICE: str = "cpu"
-    TRAIN_DEVICE: str = "auto"
-    INFER_CPU_AUX_WORKERS: int = 0
-    INFER_CPU_FRACTION: float = 0.3
-    INFER_MIN_SPLIT_BATCH: int = 16
-    DATA_QUEUE_MAXSIZE: int = 128
-    ARCHIVE_QUEUE_MAXSIZE: int = 256
-    CHECKPOINT_EVERY_N_ROUNDS: int = 2
-    MONITOR_ENABLED: bool = True
-    MONITOR_INTERVAL: float = 10.0
-    MONITOR_PER_CORE: bool = False
-    MONITOR_CSV_PATH: Optional[str] = None
-    TENSORBOARD_ENABLED: bool = True
-    TENSORBOARD_LOG_DIR: str = "runs"
-    TENSORBOARD_LOG_SYS: bool = True
-    MONGO_URI: str = "mongodb://localhost:27017"
-    DB_NAME: str = "banqi_training"
-    COLLECTION: str = "games"
-    ARCHIVE_BATCH: int = 32
-    ARCHIVE_POLL_INTERVAL: float = 1.0
-    MAX_RUNTIME_SECONDS: int = 0
-    ARCHIVE_ENABLED: bool = True
-    ARCHIVE_PREFILL_GAMES: int = 0
-    ARCHIVE_PREFILL_DIR: str = ""
-    VALUE_TARGET_MODE: str = "mcts"
-    VALUE_ANNEAL_START: float = 0.2
-    VALUE_ANNEAL_INCREMENT: float = 0.2
-    VALUE_ANNEAL_STEP_ROUNDS: int = 10
-    VALUE_DRIFT_EVAL_ROUNDS: int = 0
-    VALUE_DRIFT_NUM_POSITIONS: int = 0
+    字段为四个变体的并集，且不设任何内嵌默认值——所有值由 make_config
+    从本地配置文件读取并填充（缺失字段直接报错，无源码兜底）。
+    """
+
+    variant_id: str
+    PREDICT_BATCH: int
+    MCTS_SIMS: int
+    MAX_CONSIDERED_ACTIONS: int
+    TEMPERATURE_STEPS: int
+    GAMES_PER_ITER: int
+    NUM_WORKERS: int
+    GAMES_PER_WORKER: int
+    SELF_PLAY_PROCESSES: int
+    USE_BATCHED_SELF_PLAY: bool
+    BATCH_CONCURRENCY: int
+    TRAIN_BATCH: int
+    LEARNING_RATE: float
+    MIN_LR: float
+    LR_DECAY_STEPS: int
+    TRAIN_EPOCHS_PER_ROUND: int
+    WEIGHT_DECAY: float
+    MAX_SAMPLE_BUFFER_SIZE: int
+    MIN_SAMPLES_TO_START: int
+    QUEUE_FETCH_BATCH: int
+    DATA_AUGMENT_ENABLED: bool
+    DATA_AUGMENT_KEEP_ORIGINAL: bool
+    DATA_AUGMENT_TRANSFORMS: str
+    MODEL_PATH: str
+    STATE_DICT_PATH: str
+    INFER_DEVICE: str
+    TRAIN_DEVICE: str
+    INFER_CPU_AUX_WORKERS: int
+    INFER_CPU_FRACTION: float
+    INFER_MIN_SPLIT_BATCH: int
+    DATA_QUEUE_MAXSIZE: int
+    ARCHIVE_QUEUE_MAXSIZE: int
+    CHECKPOINT_EVERY_N_ROUNDS: int
+    MONITOR_ENABLED: bool
+    MONITOR_INTERVAL: float
+    MONITOR_PER_CORE: bool
+    MONITOR_CSV_PATH: Optional[str]
+    TENSORBOARD_ENABLED: bool
+    TENSORBOARD_LOG_DIR: str
+    TENSORBOARD_LOG_SYS: bool
+    MONGO_URI: str
+    DB_NAME: str
+    COLLECTION: str
+    ARCHIVE_BATCH: int
+    ARCHIVE_POLL_INTERVAL: float
+    MAX_RUNTIME_SECONDS: int
+    ARCHIVE_ENABLED: bool
+    ARCHIVE_PREFILL_GAMES: int
+    ARCHIVE_PREFILL_DIR: str
+    VALUE_TARGET_MODE: str
+    VALUE_ANNEAL_START: float
+    VALUE_ANNEAL_INCREMENT: float
+    VALUE_ANNEAL_STEP_ROUNDS: int
+    VALUE_DRIFT_EVAL_ROUNDS: int
+    VALUE_DRIFT_NUM_POSITIONS: int
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+# 已知字段集合与字段顺序（均由 dataclass 声明决定）
+_KNOWN_FIELDS = set(Config.__dataclass_fields__) - {"variant_id"}
+_FIELD_NAMES: List[str] = [f for f in Config.__dataclass_fields__ if f != "variant_id"]
+_unknown_warned: set = set()
+
+
+def _warn_unknown(field: str) -> None:
+    if field not in _unknown_warned:
+        _unknown_warned.add(field)
+        warnings.warn(f"[banqi.config] 忽略未知配置字段: {field!r}")
 
 
 _config_cache: Dict[str, Config] = {}
 
 
 def make_config(variant_id: str) -> Config:
-    """构造（并缓存）指定变体的 Config，应用变体默认值与环境变量覆盖。"""
+    """构造（并缓存）指定变体的 Config。
+
+    配置只来自本地配置文件（config.local.yaml 或 BANQI_CONFIG）与
+    环境变量；源码不提供任何默认值，配置文件缺失/字段缺失直接报错。
+    """
     if variant_id not in _config_cache:
-        defaults = _DEFAULTS.get(variant_id, _DEFAULTS["4x8"])
-        c = Config(variant_id=variant_id)
+        data = _get_config_data()
+        fields = data.get(variant_id)
+        if fields is None:
+            raise RuntimeError(
+                f"[banqi.config] 配置文件 {_config_path} 中缺少变体 {variant_id!r}\n"
+                f"  可用变体: {sorted(data)}"
+            )
+        missing = sorted(_KNOWN_FIELDS - set(fields))
+        if missing:
+            raise RuntimeError(
+                f"[banqi.config] 配置文件 {_config_path} 中变体 {variant_id!r} 缺少字段: {missing}\n"
+                f"  请参考 config.default.yaml 补全（或重新生成 config.local.yaml）。"
+            )
+        c = object.__new__(Config)
+        c.variant_id = variant_id
         for name in _FIELD_NAMES:
-            setattr(c, name, _resolve_env(variant_id, name, defaults[name]))
+            value = fields[name]
+            # 路径字段：相对 python/ 目录解析（绝对路径直接使用）
+            if (
+                name in _PATH_FIELDS
+                and isinstance(value, str)
+                and value
+                and not os.path.isabs(value)
+            ):
+                value = os.path.join(_PY_DIR, value)
+            setattr(c, name, _resolve_env(variant_id, name, value))
         _config_cache[variant_id] = c
     return _config_cache[variant_id]
 
 
 if __name__ == "__main__":
+    import sys
+    import shutil
+
+    if "--write-template" in sys.argv:
+        if not os.path.isfile(_DEFAULT_YAML):
+            print(f"[banqi.config] 模板文件缺失: {_DEFAULT_YAML}")
+            sys.exit(1)
+        shutil.copyfile(_DEFAULT_YAML, _LOCAL_YAML)
+        print(f"[banqi.config] 已生成本地配置文件: {_LOCAL_YAML}")
+        print("  修改其中的参数即可生效（环境变量优先级仍最高）。")
+        sys.exit(0)
+
     from banqi.variant import VARIANTS
     for vid in VARIANTS:
         c = make_config(vid)

@@ -37,7 +37,7 @@ from banqi.config import make_config
 from banqi.constants import Constants, build_constants
 from banqi.nn_model import BanqiNet, load_model_weights
 from banqi.tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
-from banqi.variant import Variant
+from banqi.variant import Variant, get_variant
 
 # Rust 绑定函数名分发表（按 variant.rust_prefix）：(单局, 并行, 批量)
 _SPLAY_FNS: Dict[str, Tuple[str, str, str]] = {
@@ -477,3 +477,121 @@ def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
         c_scale=c_scale,
         gumbel_scale=gumbel_scale,
     )
+
+
+# ============================================================================
+# 多进程自对弈子进程入口（spawn 模式，独立 GIL + 独立 CUDA context）
+# ============================================================================
+
+def _log_episode(tag: str, ep: Dict, duration: float, game_index: int) -> None:
+    """打印单局日志（子进程用，不含 TensorBoard / 统计记录）。"""
+    winner_str = {1: "红胜", -1: "黑胜"}.get(ep["winner"], "平局")
+    print(
+        f"{tag} Game #{game_index} (iter={ep.get('iteration', 0)}): "
+        f"步数={ep['game_length']}, 结果={winner_str}, "
+        f"耗时={duration:.1f}s ({ep['game_length'] / max(duration, 1e-9):.1f} steps/s)"
+    )
+
+
+def sp_worker_main(
+    variant_id: str,
+    worker_id: int,
+    data_q,
+    archive_q,
+    stop_event,
+    inner_scheme: str = "",
+    games_per_iter: Optional[int] = None,
+    inner_workers: int = 1,
+) -> None:
+    """多进程自对弈子进程入口（target，必须模块级，spawn 才能 pickle）。
+
+    每个子进程拥有独立的 Python 解释器（独立 GIL）与 CUDA context，
+    从根本上消除「多线程共享 GIL → 叶子评估串行」的吞吐瓶颈。
+
+    参数（全部可 pickle）：
+      - variant_id  : 变体 id（进程内 get_variant 重建描述符）
+      - worker_id   : 子进程编号（写入 episode.worker_id）
+      - data_q      : multiprocessing.Queue，episode dict 压给训练侧
+      - archive_q   : multiprocessing.Queue（或 None），episode dict 压给归档侧
+      - stop_event  : multiprocessing.Event，置位后当前批结束优雅退出
+      - inner_scheme: "" 取配置（USE_BATCHED_SELF_PLAY 决定）；也可显式
+                      "serial" / "parallel" / "batched"（进程内子方案）
+      - games_per_iter: 每次迭代局数（默认取配置 GAMES_PER_ITER）
+      - inner_workers: 进程内 Rust 并行度；多进程场景建议 1（并行度由进程数提供）
+
+    权重同步：Predictor 自带 model_path mtime 热重载——训练侧保存 checkpoint 后，
+    各子进程自动加载新权重，无需额外进程间通信。
+    """
+    import torch as _torch  # noqa: PLC0415
+
+    variant = get_variant(variant_id)
+    cfg = make_config(variant_id)
+    tag = f"[SP-{variant.id}#{worker_id}]"
+    gpi = games_per_iter or cfg.GAMES_PER_ITER
+    scheme = (inner_scheme or
+              ("batched" if cfg.USE_BATCHED_SELF_PLAY else "parallel"))
+
+    _torch.set_num_threads(1)  # 每进程 1 torch 线程，防多进程共享核超售
+    predictor, device = build_predictor(variant, cfg.MODEL_PATH, cfg.INFER_DEVICE)
+    sp_cfg = build_self_play_config(variant)
+    fn_single, fn_parallel, fn_batched = _splay_fns(variant)
+    print(f"{tag} 🚀 子进程启动: device={device}, pid={os.getpid()}, "
+          f"scheme={scheme}, games/iter={gpi}, inner_workers={inner_workers}")
+
+    total_games = 0
+    iteration = 0
+    game_count = 0
+    while not stop_event.is_set():
+        t0 = time.time()
+        try:
+            if scheme == "batched":
+                episodes = getattr(banqi_4x8, fn_batched)(
+                    predict_fn=predictor, config=sp_cfg,
+                    num_games=gpi,
+                    concurrency=cfg.BATCH_CONCURRENCY,
+                    worker_id=worker_id,
+                )
+            elif scheme == "parallel" and inner_workers > 1:
+                episodes = getattr(banqi_4x8, fn_parallel)(
+                    predict_fn=predictor, config=sp_cfg,
+                    num_workers=inner_workers,
+                    games_per_worker=max(1, -(-gpi // inner_workers)),
+                    worker_id=worker_id,
+                )
+            else:
+                episodes = getattr(banqi_4x8, fn_single)(
+                    predict_fn=predictor, config=sp_cfg,
+                    num_games=gpi, worker_id=worker_id,
+                )
+        except Exception as exc:  # pragma: no cover
+            print(f"{tag} ⚠️ 自对弈异常: {exc}，子进程退出")
+            break
+
+        batch_duration = time.time() - t0
+        if not episodes:
+            if stop_event.is_set():
+                break
+            continue
+
+        for ep in episodes:
+            if stop_event.is_set():
+                break
+            ep_dict = _episode_to_dict(ep, iteration, worker_id)
+            _log_episode(tag, ep_dict, batch_duration / max(len(episodes), 1),
+                         total_games + 1)
+            # 压队列（带超时，退出时不因队列满而卡死；超时则丢弃该局）
+            if not stop_event.is_set():
+                try:
+                    data_q.put(ep_dict, timeout=30.0)
+                    if archive_q is not None:
+                        archive_q.put(ep_dict, timeout=30.0)
+                except queue.Full:  # pragma: no cover
+                    print(f"{tag} ⚠️ 队列满，丢弃 1 局（stop 退出中）")
+            total_games += 1
+            game_count += 1
+            if game_count >= gpi:
+                game_count -= gpi
+                iteration += 1
+                print(f"{tag} 📍 完成迭代 {iteration - 1} → 进入迭代 {iteration}")
+
+    print(f"{tag} 子进程退出，累计 {total_games} 局，{iteration} 个迭代")

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import queue
 import signal
@@ -43,12 +44,7 @@ except ImportError as exc:  # pragma: no cover
 from banqi.archiver import ArchiverWorker
 from banqi.config import Config, make_config
 from banqi.memory_guard import start_memory_guard
-from banqi.self_play import (
-    SelfPlayWorker,
-    build_mixed_predictor,
-    build_predictor,
-    build_self_play_config,
-)
+from banqi.self_play import sp_worker_main
 from banqi.tb_logger import close_summary_writer, init_summary_writer
 from banqi.training_service import TrainWorker
 from banqi.variant import get_variant
@@ -60,6 +56,36 @@ try:
 except ImportError:  # pragma: no cover
     HAS_MONITOR = False
     SystemMonitor = None  # type: ignore[assignment,misc]
+
+
+class _CountingQueue:
+    """包装 multiprocessing.Queue：主进程侧统计已消费的局数/样本数（供结束统计）。
+
+    子进程把 episode put 到原始 Queue；TrainWorker 在主进程 get 时计数。
+    注意：只包装 get 侧，put 透传（子进程不需要计数包装）。
+    """
+
+    def __init__(self, q: "multiprocessing.Queue") -> None:
+        self._q = q
+        self.consumed_games = 0
+        self.consumed_samples = 0
+
+    def get(self, *args, **kwargs):
+        item = self._q.get(*args, **kwargs)
+        if item is not None:
+            self.consumed_games += 1
+            self.consumed_samples += int(item.get("num_samples", 0))
+        return item
+
+    def get_nowait(self, *args, **kwargs):
+        item = self._q.get_nowait(*args, **kwargs)
+        if item is not None:
+            self.consumed_games += 1
+            self.consumed_samples += int(item.get("num_samples", 0))
+        return item
+
+    def put(self, *args, **kwargs):
+        self._q.put(*args, **kwargs)
 
 
 def main(variant_id: str) -> None:
@@ -91,6 +117,7 @@ def main(variant_id: str) -> None:
     print(f"  TRAIN_BATCH     = {config.TRAIN_BATCH}")
     print(f"  MCTS_SIMS       = {config.MCTS_SIMS}")
     print(f"  GAMES_PER_ITER  = {config.GAMES_PER_ITER} (workers={config.NUM_WORKERS})")
+    print(f"  SELF_PLAY_PROC  = {config.SELF_PLAY_PROCESSES}（spawn 子进程，独立 GIL/CUDA）")
     print(f"  MODEL_PATH      = {config.MODEL_PATH}")
     print(f"  STATE_DICT_PATH = {config.STATE_DICT_PATH}")
     print(f"  MONGO_URI       = {config.MONGO_URI if config.ARCHIVE_ENABLED else '（归档关闭）'}")
@@ -127,27 +154,18 @@ def main(variant_id: str) -> None:
 
     signal.signal(signal.SIGINT, _handler)
 
-    # ---- 队列 ----
-    data_q: "queue.Queue" = queue.Queue(maxsize=config.DATA_QUEUE_MAXSIZE)
+    # ---- 跨进程队列（spawn 多进程自对弈）----
+    ctx = multiprocessing.get_context("spawn")
+    stop_event = ctx.Event()
+    data_q = ctx.Queue(maxsize=config.DATA_QUEUE_MAXSIZE)
     use_archive = bool(config.ARCHIVE_ENABLED and variant.archive_dir is not None)
-    archive_q: Optional["queue.Queue"] = (
-        queue.Queue(maxsize=config.ARCHIVE_QUEUE_MAXSIZE) if use_archive else None
+    archive_q = (
+        ctx.Queue(maxsize=config.ARCHIVE_QUEUE_MAXSIZE) if use_archive else None
     )
 
-    # ---- 构建 Predictor + SelfPlayConfig ----
-    if config.INFER_CPU_AUX_WORKERS > 0:
-        predictor, infer_device = build_mixed_predictor(
-            variant, config.MODEL_PATH,
-            device_str=config.INFER_DEVICE,
-            cpu_workers=config.INFER_CPU_AUX_WORKERS,
-            cpu_fraction=config.INFER_CPU_FRACTION,
-            min_split_batch=config.INFER_MIN_SPLIT_BATCH,
-        )
-    else:
-        predictor, infer_device = build_predictor(
-            variant, config.MODEL_PATH, device_str=config.INFER_DEVICE
-        )
-    sp_cfg = build_self_play_config(variant)
+    # 主进程侧消费计数包装（供结束统计 / 吞吐观察）
+    counting_q = _CountingQueue(data_q)
+
     print(
         f"{tag} banqi_4x8 {variant.env_const_prefix or '标准'}常量: "
         f"BOARD=({build_const(variant, 'BOARD_CHANNELS')},"
@@ -155,15 +173,25 @@ def main(variant_id: str) -> None:
         f"SCALAR={build_const(variant, 'SCALAR_FEATURE_COUNT')}, "
         f"ACTION={build_const(variant, 'ACTION_SPACE_SIZE')}"
     )
-    print(f"{tag} 推理设备 = {infer_device}（MCTS 自对弈）")
-    if config.INFER_CPU_AUX_WORKERS > 0 and infer_device.type == "cuda":
-        print(f"{tag} ✅ CPU 辅助推理已启用: {config.INFER_CPU_AUX_WORKERS} 个 CPU 线程, "
-              f"每批 {config.INFER_CPU_FRACTION:.0%} 给 CPU")
 
-    # ---- 线程组 ----
+    # ---- 自对弈子进程组（每个独立 GIL + CUDA context，spawn）----
+    procs = [
+        ctx.Process(
+            target=sp_worker_main,
+            args=(variant_id, wid, data_q, archive_q, stop_event),
+            name=f"SelfPlayProc-{wid}",
+            daemon=True,
+        )
+        for wid in range(config.SELF_PLAY_PROCESSES)
+    ]
+    for p in procs:
+        p.start()
+    print(f"{tag} 🚀 自对弈子进程 × {len(procs)} 已启动 "
+          f"(推理设备={config.INFER_DEVICE}, 独立 GIL/CUDA)")
+
+    # ---- 主进程线程组（训练 / 归档；TrainWorker 不调 Rust，线程足够）----
     workers = [
-        SelfPlayWorker(predictor, sp_cfg, variant, data_q, archive_q, stop_flag, worker_id=0),
-        TrainWorker(data_q, stop_flag, variant),
+        TrainWorker(counting_q, stop_flag, variant),
     ]
     if use_archive:
         workers.append(ArchiverWorker(archive_q, stop_flag, variant))
@@ -197,21 +225,35 @@ def main(variant_id: str) -> None:
             if config.MAX_RUNTIME_SECONDS > 0 and elapsed >= config.MAX_RUNTIME_SECONDS:
                 print(f"\n{tag} 达到运行时限 {config.MAX_RUNTIME_SECONDS}s，优雅停止...")
                 stop_flag[0] = True
+                stop_event.set()
                 break
             threads_alive = [w.name for w in workers if w.is_alive()]
             if len(threads_alive) < len(workers):
-                print(f"{tag} 有线程退出: {threads_alive}")
+                print(f"{tag} 有主进程线程退出: {threads_alive}")
+                stop_flag[0] = True
+                stop_event.set()
+                break
+            dead_procs = [p.name for p in procs if not p.is_alive()]
+            if dead_procs:
+                print(f"{tag} 有自对弈子进程退出: {dead_procs}，停止整个闭环")
+                stop_flag[0] = True
+                stop_event.set()
                 break
             time.sleep(2)
     except KeyboardInterrupt:
         stop_flag[0] = True
+        stop_event.set()
 
     # ---- 优雅关闭 ----
-    print(f"\n{tag} 正在优雅关闭各线程...")
-    sp_worker: SelfPlayWorker = workers[0]
-    train_worker: TrainWorker = workers[1]
-    if sp_worker.is_alive():
-        sp_worker.join(timeout=15)
+    print(f"\n{tag} 正在优雅关闭各线程/子进程...")
+    for p in procs:
+        p.join(timeout=15)
+    for p in procs:  # 仍有存活子进程：强制终止（防 Rust 线程挂住退出）
+        if p.is_alive():
+            print(f"{tag} ⚠️ 子进程 {p.name} 未在超时内退出，强制终止")
+            p.terminate()
+            p.join(timeout=5)
+    train_worker: TrainWorker = workers[0]
     if train_worker.is_alive():
         train_worker.join(timeout=30)
     if train_worker.is_alive():
@@ -219,23 +261,26 @@ def main(variant_id: str) -> None:
         train_worker.join(timeout=10)
     train_worker.finalize()
     if use_archive:
-        archiver_worker: ArchiverWorker = workers[2]
+        archiver_worker: ArchiverWorker = workers[1]
         if archiver_worker.is_alive():
             archiver_worker.join(timeout=15)
     if monitor is not None and monitor.is_alive():
         monitor.join(timeout=3)
     close_summary_writer()
 
-    # ---- 结束统计 ----
-    sp_stats = sp_worker.stats()
+    # ---- 结束统计（自对弈侧来自主进程消费计数）----
+    sp_stats = {
+        "iteration": counting_q.consumed_games // max(1, config.GAMES_PER_ITER),
+        "total_games": counting_q.consumed_games,
+        "total_samples": counting_q.consumed_samples,
+    }
     tr_stats = train_worker.stats()
     history = train_worker.round_history_snapshot()
     sep = "=" * 56
     print(f"\n{sep}")
     print(f"  {variant_id} 变体 数据收集 / 训练结束")
     print(f"{sep}")
-    print(f"  最终迭代:          {sp_stats['iteration']}")
-    print(f"  累计自对弈局数:    {sp_stats['total_games']}")
+    print(f"  累计消费局数:      {sp_stats['total_games']}")
     print(f"  累计样本数:        {sp_stats['total_samples']}")
     print(f"  训练轮次:          {tr_stats['round_num']}")
     print(f"  累计训练批次:      {tr_stats['total_batches']}")

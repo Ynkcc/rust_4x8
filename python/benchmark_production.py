@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import sys
 import threading
@@ -77,8 +78,8 @@ from banqi.self_play import build_predictor
 
 # 全部可测环境变种（顺序即打印顺序）
 AVAILABLE_VARIANTS: Tuple[str, ...] = ("4x8", "4x4", "4x2")
-# 自对弈运行方案
-AVAILABLE_SCHEMES: Tuple[str, ...] = ("serial", "parallel", "batched")
+# 自对弈运行方案（multiproc = spawn 多进程，独立 GIL，实测整体吞吐）
+AVAILABLE_SCHEMES: Tuple[str, ...] = ("serial", "parallel", "batched", "multiproc")
 
 # Rust 绑定函数名分发表（与 banqi/self_play.py::_SPLAY_FNS 保持一致）：
 #   变体 rust_prefix -> (serial, parallel, batched)
@@ -98,6 +99,7 @@ _SCHEME_LABELS: Dict[str, str] = {
     "serial": "串行 (单树, 小 batch)",
     "parallel": "并行 (rayon, 多树各自推理)",
     "batched": "批量 (并发多局, 合并大 batch)",
+    "multiproc": "多进程 (spawn ×N, 独立 GIL)",
 }
 
 
@@ -263,8 +265,8 @@ def _resolve_device(args: argparse.Namespace, variant: Variant) -> str:
     else:
         device = make_config(variant.id).INFER_DEVICE or "auto"
 
-    if device not in ("auto", "cpu", "cuda"):
-        raise SystemExit(f"非法设备 {device!r}，可选: auto / cpu / cuda")
+    if device not in ("auto", "cpu", "cuda") and not device.startswith("cuda:"):
+        raise SystemExit(f"非法设备 {device!r}，可选: auto / cpu / cuda / cuda:N")
 
     # 模拟推理不依赖真实 GPU/模型，跳过 CUDA 可用性检查（device 仅作为结果标签）
     if not args.simulated and device == "cuda" and not (HAS_TORCH and torch.cuda.is_available()):
@@ -304,12 +306,76 @@ def _build_predictor(
         action_space = build_constants(variant).ACTION_SPACE_SIZE
         return CountingPredictor(SimulatedPredictor(action_space)), device
     if HAS_TORCH:
-        infer_device = device if device in ("cpu", "cuda") else "auto"
+        infer_device = device if device in ("cpu", "cuda") or device.startswith("cuda:") else "auto"
         predictor, resolved = build_predictor(variant, model_path, device_str=infer_device)
         return CountingPredictor(predictor), str(resolved)
     # 无 torch 时用退化 Predictor：直接借道 build_predictor（内部会退化预测）
     predictor, resolved = build_predictor(variant, model_path, device_str="cpu")
     return CountingPredictor(predictor), str(resolved)
+
+
+def _mp_bench_worker_main(
+    variant_id: str,
+    device: str,
+    model_path: Optional[str],
+    simulated: bool,
+    num_games: int,
+    inner_scheme: str,
+    sims: int,
+    max_actions: int,
+    temp_steps: int,
+    c_scale: float,
+    gumbel_scale: float,
+    worker_id: int,
+    result_q,
+) -> None:
+    """multiproc 方案的子进程入口（模块级，spawn 可 pickle）。
+
+    每个子进程独立 GIL + CUDA context：构建自己的 predictor，跑 inner_scheme
+    生成 num_games 局，把 (games, steps, samples, calls, pred_samples) 回传
+    主进程汇总。失败回传 (-1, 0, 0, 0, 0)。
+    """
+    try:
+        # 多进程场景：每进程限定 torch 线程数，防 4 进程 × N 线程在共享核上超售
+        if HAS_TORCH:
+            torch.set_num_threads(1)
+        variant = get_variant(variant_id)
+        sp_cfg = banqi_4x8.SelfPlayConfig(
+            mcts_sims=sims, max_considered_actions=max_actions,
+            temperature_steps=temp_steps, c_scale=c_scale, gumbel_scale=gumbel_scale,
+        )
+        predictor, _ = _build_predictor(variant, device, model_path,
+                                        simulated=simulated)
+        fns = _SCHEME_FNS[variant.rust_prefix]
+        cfg = make_config(variant_id)
+        if inner_scheme == "batched":
+            episodes = getattr(banqi_4x8, fns[2])(
+                predict_fn=predictor, config=sp_cfg,
+                num_games=num_games, concurrency=cfg.BATCH_CONCURRENCY,
+                worker_id=worker_id,
+            )
+        elif inner_scheme == "parallel":
+            episodes = getattr(banqi_4x8, fns[1])(
+                predict_fn=predictor, config=sp_cfg,
+                num_workers=2, games_per_worker=max(1, -(-num_games // 2)),
+                worker_id=worker_id,
+            )
+        else:
+            episodes = getattr(banqi_4x8, fns[0])(
+                predict_fn=predictor, config=sp_cfg,
+                num_games=num_games, worker_id=worker_id,
+            )
+        games = len(episodes)
+        steps = sum(int(e.game_length) for e in episodes)
+        samples = sum(int(e.num_samples) for e in episodes)
+        if isinstance(predictor, CountingPredictor):
+            calls, pred_samples = predictor.calls, predictor.samples
+        else:
+            calls, pred_samples = 0, 0
+        result_q.put((games, steps, samples, calls, pred_samples))
+    except Exception as exc:  # pragma: no cover
+        print(f"[mp-worker#{worker_id}] ⚠️ 子进程失败: {exc}")
+        result_q.put((-1, 0, 0, 0, 0))
 
 
 def _run_scheme(
@@ -365,6 +431,9 @@ def benchmark_cell(
     print(f"\n▶️  开始: {label}  "
           f"(sims={sp_cfg.mcts_sims}, max_actions={sp_cfg.max_considered_actions})")
 
+    if scheme == "multiproc":
+        return _benchmark_multiproc(variant, device, model_path, args, label)
+
     predictor, resolved_device = _build_predictor(
         variant, device, model_path, simulated=args.simulated,
     )
@@ -387,6 +456,69 @@ def benchmark_cell(
 
     result.predictor_calls = int(calls)
     result.predictor_samples = int(samples)
+    return result
+
+
+def _benchmark_multiproc(
+    variant: Variant,
+    device: str,
+    model_path: Optional[str],
+    args: argparse.Namespace,
+    label: str,
+) -> BenchResult:
+    """multiproc 方案：spawn 起 N 个子进程并行自对弈，汇总整体实际吞吐。
+
+    每个子进程独立 GIL + CUDA context（消除线程方案的 GIL 串行瓶颈），
+    内部按 --mp-scheme（默认 batched）跑若干局；主进程汇总全部产出统计，
+    以「总样本 / 墙钟耗时」衡量多进程真实吞吐。
+    """
+    cfg = make_config(variant.id)
+    n_procs = max(1, args.mp_processes or 4)
+    inner = args.mp_scheme or "batched"
+    # 每进程跑完整 num_games 局（总产出 = num_games × 进程数），
+    # 与单进程方案相同的每进程工作量，衡量多进程整体吞吐。
+    per_proc = max(1, args.num_games)
+    sims = args.mcts_sims or cfg.MCTS_SIMS
+    max_actions = args.max_considered_actions or cfg.MAX_CONSIDERED_ACTIONS
+    temp_steps = args.temperature_steps or cfg.TEMPERATURE_STEPS
+    c_scale = float(os.getenv(variant.env_prefix + "C_SCALE", os.getenv("C_SCALE", "1.0")))
+    gumbel = float(os.getenv(variant.env_prefix + "GUMBEL_SCALE", os.getenv("GUMBEL_SCALE", "1.0")))
+
+    print(f"  [multiproc] 子进程×{n_procs}, 每进程内部 {inner} {per_proc} 局")
+    ctx = mp.get_context("spawn")
+    result_q = ctx.Queue()
+    procs = [
+        ctx.Process(
+            target=_mp_bench_worker_main,
+            args=(variant.id, device, model_path, args.simulated, per_proc,
+                  inner, sims, max_actions, temp_steps, c_scale, gumbel,
+                  wid, result_q),
+            name=f"bench-mp-{wid}", daemon=True,
+        )
+        for wid in range(n_procs)
+    ]
+    result = BenchResult(variant_id=variant.id, scheme="multiproc", device=device)
+    t0 = time.perf_counter()
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
+    result.duration_s = time.perf_counter() - t0
+
+    games = steps = samples = calls = pred_samples = 0
+    for _ in procs:
+        g, st, sa, c, ps = result_q.get()
+        if g >= 0:
+            games += g
+            steps += st
+            samples += sa
+            calls += c
+            pred_samples += ps
+    result.completed_games = games
+    result.total_steps = steps
+    result.total_samples = samples
+    result.predictor_calls = calls
+    result.predictor_samples = pred_samples
     return result
 
 
@@ -490,6 +622,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--concurrency", type=int, default=None,
         help="batched 方案的并发局数（默认取变体配置 BATCH_CONCURRENCY）",
+    )
+    parser.add_argument(
+        "--mp-processes", type=int, default=4,
+        help="multiproc 方案的子进程数（每个独立 GIL/CUDA context）",
+    )
+    parser.add_argument(
+        "--mp-scheme", choices=("serial", "parallel", "batched"), default="batched",
+        help="multiproc 方案每个子进程内部的自对弈方案（默认 batched，吞吐最高）",
     )
     parser.add_argument(
         "--mcts-sims", type=int, default=None,
