@@ -103,6 +103,12 @@ torch = ["tch"]
 pyo3 = ["dep:pyo3"]
 # pyo3 扩展模块特性：maturin 构建 cdylib wheel 时启用（不链接 libpython）
 pyo3-extension = ["pyo3", "pyo3/extension-module"]
+# 组合特性：Rust 持有模型的 Torch 数据收集器（RustTorchCollector）。
+# 同时启用 torch + pyo3，才能在 Python 侧使用「模型加载进 Rust、推理不经过 GIL」的
+# 多线程/批量自对弈收集器（见 src/py/rust_collector.rs）。
+#   - maturin wheel：--features pyo3-extension,torch
+#   - 本地 check：  cargo check --features pyo3,torch
+rust-torch-collector = ["torch", "pyo3"]
 # tauri 特性：桌面 GUI（构建 banqi-tauri 时才需要，含 GTK 系统依赖）
 tauri = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-build"]
 

@@ -372,6 +372,12 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::py::chess_env::PyMiniDarkChess>()?;
     m.add_class::<crate::py::chess_env::PyGame4x4>()?;
 
+    // --- Rust 持有模型的 Torch 数据收集器（需同时启用 torch + pyo3） ---
+    // 模型加载进 Rust（LocalEvaluator），推理不经过 GIL，多线程/批量自对弈真正并行，
+    // 且模型只加载一份，避免 spawn 多进程重复加载 libtorch 带来的内存开销。
+    #[cfg(all(feature = "torch", feature = "pyo3"))]
+    m.add_class::<crate::py::rust_collector::RustTorchCollector>()?;
+
     m.add("BOARD_ROWS", BOARD_ROWS)?;
     m.add("BOARD_COLS", BOARD_COLS)?;
     m.add("BOARD_CHANNELS", BOARD_CHANNELS)?;

@@ -19,6 +19,14 @@ pub mod ttt;
 #[cfg(feature = "pyo3")]
 pub mod chess_env;
 
+/// Rust 持有模型的 Torch 数据收集器（pyo3 + torch 双 feature）。
+///
+/// 与 `run_*_self_play_with_predictor`（传 Python predict_fn，受 GIL 串行化）不同，
+/// 本模块用 `LocalEvaluator`（tch-rs）把模型加载进 Rust，推理不经过 GIL，
+/// 可在多线程/批量自对弈中真正并行，且模型只加载一份。
+#[cfg(all(feature = "torch", feature = "pyo3"))]
+pub mod rust_collector;
+
 #[cfg(feature = "pyo3")]
 use crate::game_env::{
     ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, Game4x4Env,
