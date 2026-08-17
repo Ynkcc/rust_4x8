@@ -114,8 +114,13 @@ def opponent_action(env, opponent: str, sims: int = HM_SIMS,
 def play_one(predictor, model_is_red: bool, max_moves: int = 400,
              model_sims: int = EVAL_SIMS,
              opponent: str = OPP_MINIMAX3,
-             variant_id: str = "4x4") -> int:
-    """单局：模型 vs 指定对手。返回 (红视角) 1/0/-1。"""
+             variant_id: str = "4x4",
+             heuristic_sims: Optional[int] = None) -> int:
+    """单局：模型 vs 指定对手。返回 (红视角) 1/0/-1。
+
+    heuristic_sims：非 None 时覆盖启发式 MCTS 对手的模拟数（仅
+    opponent 为启发式时生效），默认用 HM_SIMS(=64)。
+    """
     env = get_env_class(variant_id)()
     moves = 0
     while not env.terminated():
@@ -125,7 +130,8 @@ def play_one(predictor, model_is_red: bool, max_moves: int = 400,
         if (cur == 1) == model_is_red:
             a = model_mcts_action(env, predictor, model_sims)
         else:
-            a = opponent_action(env, opponent)
+            a = opponent_action(env, opponent,
+                                sims=heuristic_sims if heuristic_sims is not None else HM_SIMS)
         if a is None:
             break
         env.step(a)
@@ -139,7 +145,8 @@ def play_one(predictor, model_is_red: bool, max_moves: int = 400,
 def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
                progress: bool = False,
                opponent: str = OPP_MINIMAX3,
-               variant_id: str = "4x4") -> Tuple[int, int, int, List[float]]:
+               variant_id: str = "4x4",
+               heuristic_sims: Optional[int] = None) -> Tuple[int, int, int, List[float]]:
     """n 局分块对战，返回 (wins, draws, losses, block_wr)。
 
     wins/draws/losses 均为模型视角（交替先后手，模型既当红也当黑）。
@@ -152,7 +159,8 @@ def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
     blk_w = blk_tot = 0
     for i in range(n):
         r = play_one(predictor, model_is_red, model_sims=model_sims,
-                     opponent=opponent, variant_id=variant_id)
+                     opponent=opponent, variant_id=variant_id,
+                     heuristic_sims=heuristic_sims)
         if r == 0:
             draws += 1
         elif r == 1:
@@ -172,13 +180,19 @@ def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
 
 def report(predictor, tag: str, n: int = 100, model_sims: int = EVAL_SIMS,
            opponent: str = OPP_MINIMAX3,
-           variant_id: str = "4x4") -> Tuple[int, int, int, List[float]]:
-    """统一打印评估报告：胜/平/负 + 分块均值±std。"""
+           variant_id: str = "4x4",
+           heuristic_sims: Optional[int] = None) -> Tuple[int, int, int, List[float]]:
+    """统一打印评估报告：胜/平/负 + 分块均值±std。
+
+    heuristic_sims 非 None 时显示实际模拟数（如 heuristic64(sims=300)）。
+    """
     wins, draws, losses, blk = play_match(predictor, n=n, model_sims=model_sims,
-                                          opponent=opponent, variant_id=variant_id)
+                                          opponent=opponent, variant_id=variant_id,
+                                          heuristic_sims=heuristic_sims)
     mean = float(np.mean(blk)) if blk else 0.0
     std = float(np.std(blk)) if blk else 0.0
-    print(f"[Eval:{tag}] 对手={opponent} 胜{wins} 平{draws} 负{losses} "
+    opp_disp = f"{opponent}(sims={heuristic_sims})" if heuristic_sims is not None else opponent
+    print(f"[Eval:{tag}] 对手={opp_disp} 胜{wins} 平{draws} 负{losses} "
           f"(n={n}, 块均胜率={mean:.1f}±{std:.1f}%)", flush=True)
     return wins, draws, losses, blk
 
@@ -303,6 +317,9 @@ if __name__ == "__main__":
                     help="棋盘变体（默认 4x4）")
     ap.add_argument("--opponent", choices=OPPONENTS, default=OPP_MINIMAX3,
                     help=f"对手类型（默认 {OPP_MINIMAX3}；与 --vs 互斥）")
+    ap.add_argument("--heuristic-sims", type=int, default=None,
+                    help="启发式 MCTS 对手的模拟数（默认 HM_SIMS=64；"
+                         "仅 --opponent heuristic64 时生效）")
     ap.add_argument("--vs", default=None, help="对头评估：对方模型权重路径（覆盖 --opponent）")
     args = ap.parse_args()
     p = load_predictor(args.model_path, variant_id=args.variant)
@@ -311,4 +328,4 @@ if __name__ == "__main__":
         report_vs(p, pb, "main", n=args.n, variant_id=args.variant)
     else:
         report(p, "main", n=args.n, opponent=args.opponent,
-               variant_id=args.variant)
+               variant_id=args.variant, heuristic_sims=args.heuristic_sims)

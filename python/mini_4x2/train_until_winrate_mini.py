@@ -1,13 +1,19 @@
 """
-train_until_winrate_mini.py — 继续训练 mini 模型，直到「vs minimax(alpha-beta, depth=4) 胜率 > 80%」。
+train_until_winrate_mini.py — 继续训练 4x2 mini 模型，直到「vs minimax(alpha-beta, depth=4) 胜率 > 80%」。
 
-流程：
-  1. 复用 SelfPlayWorkerMini（生产者）+ TrainWorker（消费者）续训（自动从现有 checkpoint 恢复）。
+所有基础设施复用 banqi 统一实现（已被 banqi 实现的逻辑不再重复）：
+  - 配置：   banqi.config.make_config("4x2")
+  - 自对弈： banqi.self_play（SelfPlayWorker / build_predictor / build_self_play_config）
+  - 训练：   banqi.training_service.TrainWorker（含 checkpoint 恢复/落盘）
+  - 评估：   banqi.eval（load_predictor 加载模型 + 本脚本保留 depth 可调的评估循环）
+
+本脚本仅保留 banqi 中无等价物的「训练直到胜率达标」编排：
+  1. 启动 自对弈 + 训练 闭环（自动从现有 checkpoint 恢复）。
   2. 主线程周期性从磁盘加载最新 checkpoint，跑「模型(MCTS) vs minimax(depth=4)」对局验证。
   3. 胜率超过 TARGET_WINRATE（默认 0.80，按 EVAL_GAMES 局判定）→ 优雅停止并落盘。
 
 用法：
-    python python/train_until_winrate_mini.py
+    python python/mini_4x2/train_until_winrate_mini.py
     # 环境变量：
     #   MINI_MM_DEPTH    minimax 深度（默认 4）
     #   MINI_EVAL_GAMES  每轮评估局数（默认 20）
@@ -20,33 +26,30 @@ from __future__ import annotations
 
 import os
 import queue
-import random
 import signal
 import sys
 import time
-from typing import List, Tuple
+from typing import List
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-import numpy as np
-import torch
-
 import banqi_4x8
 
-# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+# 使 python/（banqi 共享包所在目录）可导入
 import os as _os
 import sys as _sys
 _sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
-from config_mini import config
-from self_play_mini import SelfPlayWorkerMini, build_predictor_mini, build_self_play_config
-from training_service_mini import TrainWorker
-from banqi.variant import get_variant
-from banqi.nn_model import BanqiNet, load_model_weights
+from banqi.config import make_config  # noqa: E402
+from banqi.eval import ModelPredictor, load_predictor  # noqa: E402
+from banqi.self_play import SelfPlayWorker, build_predictor, build_self_play_config  # noqa: E402
+from banqi.training_service import TrainWorker  # noqa: E402
+from banqi.variant import get_variant  # noqa: E402
 
 VARIANT = get_variant("4x2")
+config = make_config("4x2")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 MINIMAX_DEPTH = int(os.getenv("MINI_MM_DEPTH", "4"))
@@ -59,35 +62,7 @@ MODEL_PATH = os.getenv("MINI_MODEL_PATH", os.path.join(_HERE, "banqi_mini_model_
 STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", os.path.join(_HERE, "banqi_mini_model_latest.pth"))
 
 
-class EvalPredictor:
-    """从磁盘 checkpoint 加载的评估用 Predictor（与 verify_mini_vs_minimax 一致）。"""
-
-    def __init__(self, model: BanqiNet, device: "torch.device"):
-        self.model = model.to(device).eval()
-        self.device = device
-
-    def __call__(self, boards: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        with torch.inference_mode():
-            b = torch.from_numpy(np.ascontiguousarray(boards)).to(self.device)
-            s = torch.from_numpy(np.ascontiguousarray(scalars)).to(self.device)
-            logits, value = self.model(b, s)
-            return logits.cpu().numpy().astype(np.float32), value.cpu().numpy().reshape(-1).astype(np.float32)
-
-
-def load_disk_model() -> EvalPredictor:
-    device = torch.device("cpu")
-    model = BanqiNet(VARIANT)
-    if os.path.exists(MODEL_PATH):
-        load_model_weights(model, MODEL_PATH, device)
-    elif os.path.exists(STATE_DICT_PATH):
-        state = torch.load(STATE_DICT_PATH, map_location=device)
-        model.load_state_dict(state["model_state_dict"])
-    else:
-        raise FileNotFoundError(f"未找到模型 {MODEL_PATH} / {STATE_DICT_PATH}")
-    return EvalPredictor(model, device)
-
-
-def play_one_game(predictor: EvalPredictor, model_is_red: bool, mm_depth: int) -> int:
+def play_one_game(predictor: ModelPredictor, model_is_red: bool, mm_depth: int) -> int:
     """模型 vs minimax 一局。返回 +1 模型胜 / 0 平 / -1 minimax 胜。"""
     env = banqi_4x8.MiniDarkChess()
     moves = 0
@@ -118,7 +93,8 @@ def play_one_game(predictor: EvalPredictor, model_is_red: bool, mm_depth: int) -
 
 def evaluate_vs_minimax() -> dict:
     """从磁盘加载最新模型，跑 EVAL_GAMES 局 vs minimax(depth)，返回统计。"""
-    predictor = load_disk_model()
+    ckpt = MODEL_PATH if os.path.exists(MODEL_PATH) else STATE_DICT_PATH
+    predictor = load_predictor(ckpt, variant_id="4x2")
     wins = draws = 0
     for i in range(EVAL_GAMES):
         model_is_red = (i % 2 == 0)
@@ -139,7 +115,7 @@ def evaluate_vs_minimax() -> dict:
 
 def main() -> None:
     print("=" * 64)
-    print("  🚀 继续训练 mini 模型，直到 vs minimax(depth=4) 胜率 > 80%")
+    print("  🚀 继续训练 4x2 mini 模型，直到 vs minimax(depth=4) 胜率 > 80%")
     print("=" * 64)
     print(f"  minimax depth      = {MINIMAX_DEPTH}")
     print(f"  评估局数/轮        = {EVAL_GAMES}（目标胜率 {TARGET_WINRATE:.0%}）")
@@ -157,12 +133,12 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handler)
 
     data_q: "queue.Queue" = queue.Queue(maxsize=config.DATA_QUEUE_MAXSIZE)
-    predictor, _ = build_predictor_mini(config.MODEL_PATH, device_str=config.INFER_DEVICE)
-    sp_cfg = build_self_play_config()
+    predictor, _ = build_predictor(VARIANT, config.MODEL_PATH, config.INFER_DEVICE)
+    sp_cfg = build_self_play_config(VARIANT)
 
     workers = [
-        SelfPlayWorkerMini(predictor, sp_cfg, data_q, stop_flag, worker_id=0),
-        TrainWorker(data_q, stop_flag),
+        SelfPlayWorker(predictor, sp_cfg, VARIANT, data_q, None, stop_flag, worker_id=0),
+        TrainWorker(data_q, stop_flag, VARIANT),
     ]
     for w in workers:
         w.start()
@@ -206,7 +182,7 @@ def main() -> None:
                 if elapsed > 60 and round_num % 10 == 0:
                     tr = train_worker.stats()
                     print(f"[Main] 进度: round={round_num} batches={tr['total_batches']:.0f} "
-                          f"avg_loss={tr['avg_loss']:.4f} 已运行 {elapsed/60:.1f}min")
+                          f"avg_loss={tr['avg_loss']:.4f} 已运行 {elapsed / 60:.1f}min")
             time.sleep(3)
     except KeyboardInterrupt:
         stop_flag[0] = True
@@ -236,7 +212,7 @@ def main() -> None:
     if reached:
         print(f"  ✅ 已达标: vs minimax(depth={MINIMAX_DEPTH}) 胜率 > {TARGET_WINRATE:.0%}")
     else:
-        print(f"  ⚠️ 未达标（受时限/信号中断）")
+        print("  ⚠️ 未达标（受时限/信号中断）")
     print("=" * 64)
     return 0
 

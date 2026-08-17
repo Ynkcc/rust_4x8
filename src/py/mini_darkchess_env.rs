@@ -131,6 +131,14 @@ impl PyMiniDarkChess {
         Ok(result.map(|r| r.action))
     }
 
+    /// 用纯计算启发式 Gumbel MCTS 选动作（不依赖网络，规则先验 + 多特征评估）。
+    ///
+    /// `sims` 为模拟次数；返回 None 表示无合法动作（终局）。
+    fn heuristic_mcts_action(&self, sims: usize) -> PyResult<Option<usize>> {
+        let policy = crate::ai::HeuristicMctsPolicy::new(sims);
+        Ok(policy.choose_action(&self.inner.inner))
+    }
+
     /// 纯网络贪婪动作：对当前局面一次前向，取合法动作中 logit 最大者（无搜索）。
     fn greedy_action(&self, predict_fn: Py<PyAny>) -> PyResult<Option<usize>> {
         let evaluator = PyEvaluator::<MiniDarkChessEnv>::new(predict_fn);
