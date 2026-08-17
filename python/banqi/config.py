@@ -98,7 +98,10 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "NUM_WORKERS": 2,
         "GAMES_PER_WORKER": 50,
         "USE_BATCHED_SELF_PLAY": False,
-        "BATCH_CONCURRENCY": 4,
+        # GPU 实测：batched 方案 batch 越大越占优（kernel 固定开销被摊薄）。
+        # 仅当 USE_BATCHED_SELF_PLAY=True 时生效；默认 serial/parallel 不受影响。
+        # 仍可按需用环境变量覆盖（BATCH_CONCURRENCY=16 等）。
+        "BATCH_CONCURRENCY": 8,
         "TRAIN_BATCH": 64,
         "LEARNING_RATE": 2e-4,
         "MIN_LR": 5e-6,

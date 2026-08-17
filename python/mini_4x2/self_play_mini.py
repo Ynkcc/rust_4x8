@@ -38,6 +38,11 @@ C = build_constants(VARIANT)
 ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
 
 
+# 模型热重载检查节流间隔：Rust 每步 MCTS 评估都会回调 __call__，若每次都做
+# os.path.exists + os.path.getmtime 两个系统调用，会白白占用推理热路径。
+RELOAD_CHECK_INTERVAL = 2.0
+
+
 class PredictorMini:
     """迷你推理端：eval/inference_mode + 分块推理，匹配 py_evaluator.rs 契约。"""
 
@@ -46,10 +51,18 @@ class PredictorMini:
         self.device = device
         self.model_path: str | None = model_path
         self._mtime: float = 0.0
+        self._last_reload_check: float = 0.0
         self.model.eval()
 
     def _maybe_reload_weights(self, force: bool = False) -> None:
-        if not HAS_TORCH or not self.model_path or not os.path.exists(self.model_path):
+        if not HAS_TORCH or not self.model_path:
+            return
+        # 节流：force（初始化）与超过间隔的调用才做文件 stat，热路径零系统调用。
+        now = time.monotonic()
+        if not force and now - self._last_reload_check < RELOAD_CHECK_INTERVAL:
+            return
+        self._last_reload_check = now
+        if not os.path.exists(self.model_path):
             return
         mtime = os.path.getmtime(self.model_path)
         if force or mtime > self._mtime:
@@ -80,16 +93,18 @@ class PredictorMini:
             pl, vl = self._infer(board[i:i + chunk], scalars[i:i + chunk])
             policy_list.append(pl)
             value_list.append(vl)
-        return (np.concatenate(policy_list, axis=0).astype(np.float32),
-                np.concatenate(value_list, axis=0).astype(np.float32))
+        # 模型输出恒为 float32：concatenate 保持 dtype，无需再 astype 拷贝一次
+        return (np.concatenate(policy_list, axis=0),
+                np.concatenate(value_list, axis=0))
 
     def _infer(self, board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         with torch.inference_mode():
             b = torch.from_numpy(np.ascontiguousarray(board)).to(self.device, non_blocking=True)
             s = torch.from_numpy(np.ascontiguousarray(scalars)).to(self.device, non_blocking=True)
             logits, value = self.model(b, s)
-            return (logits.cpu().numpy().astype(np.float32),
-                    value.cpu().numpy().reshape(-1).astype(np.float32))
+            # 模型输出恒为 float32：直接 .numpy()，去掉冗余 astype 的全量拷贝
+            return (logits.detach().cpu().numpy(),
+                    value.detach().cpu().numpy().reshape(-1))
 
 
 def _episode_to_dict(ep, iteration: int, worker_id: int) -> Dict:

@@ -513,8 +513,10 @@ class TrainWorker(threading.Thread):
         try:
             self.model.eval()
             with torch.inference_mode():
-                b = torch.from_numpy(np.ascontiguousarray(fixed["boards"]))
-                s = torch.from_numpy(np.ascontiguousarray(fixed["scalars"]))
+                # 验证集输入需搬到模型所在设备（GPU 训练时 self.device=cuda:*），
+                # 否则 FloatTensor(CPU) vs cuda.FloatTensor 类型不匹配。
+                b = torch.from_numpy(np.ascontiguousarray(fixed["boards"])).to(self.device)
+                s = torch.from_numpy(np.ascontiguousarray(fixed["scalars"])).to(self.device)
                 _, values = self.model(b, s)
                 pred = values.cpu().numpy().reshape(-1).astype(np.float32)
             self.model.train()
@@ -523,10 +525,13 @@ class TrainWorker(threading.Thread):
             sep = float(pred[gr > 0].mean() - pred[gr < 0].mean()) if (np.any(gr > 0) and np.any(gr < 0)) else 0.0
             print(f"{self.tag} 📊 价值漂移 Round#{self.round_num}: pred_mean={pred.mean():+.3f} "
                   f"std={pred.std():.3f} corr(终局)={corr:.3f} 胜负区分度={sep:.3f}")
-            add_scalar("value_drift/pred_mean", pred.mean())
-            add_scalar("value_drift/pred_std", pred.std())
-            add_scalar("value_drift/corr_result", corr)
-            add_scalar("value_drift/sep", sep)
+            # step 必须显式传入：SummaryWriter 在 global_step=None 时所有点落在
+            # step=0 重叠，导致 TensorBoard 上曲线"看起来不动"。与 train/* 同 x 轴。
+            step = self.total_batches_trained
+            add_scalar("value_drift/pred_mean", pred.mean(), step)
+            add_scalar("value_drift/pred_std", pred.std(), step)
+            add_scalar("value_drift/corr_result", corr, step)
+            add_scalar("value_drift/sep", sep, step)
         except Exception as e:  # pragma: no cover
             print(f"{self.tag} ⚠️ 价值漂移评估失败 ({e})")
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -56,14 +57,25 @@ _MODEL: "BanqiNet | None" = None
 _MODEL_PATH: str | None = None
 _MODEL_MTIME: float = 0.0
 _DEVICE = None
+_LAST_RELOAD_CHECK: float = 0.0
+
+# 热重载检查节流间隔：Rust MCTS 每步都会回调 predict，若每次都 stat 模型文件，
+# 会产生大量无谓系统调用，拖慢推理热路径。
+RELOAD_CHECK_INTERVAL = 2.0
 
 
 def _reload_if_updated() -> None:
     """若 MODEL_PATH 指向的文件有更新则重载；没有模型就新建一个。"""
-    global _MODEL, _MODEL_PATH, _MODEL_MTIME, _DEVICE
+    global _MODEL, _MODEL_PATH, _MODEL_MTIME, _DEVICE, _LAST_RELOAD_CHECK
 
     if not HAS_TORCH:
         return
+
+    # 节流：未超间隔则直接跳过（首次调用必然执行）。
+    now = time.monotonic()
+    if now - _LAST_RELOAD_CHECK < RELOAD_CHECK_INTERVAL:
+        return
+    _LAST_RELOAD_CHECK = now
 
     model_path = os.environ.get("MODEL_PATH")
     if _DEVICE is None:
@@ -101,9 +113,10 @@ def _infer_batch(board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np
         logits, value = _MODEL(b, s)  # type: ignore[misc]
         # 忽略未使用的 import，避免仅用于类型提示时的告警
         _ = config
+        # 模型输出恒为 float32：直接 .numpy()，去掉冗余 astype 的全量拷贝
         return (
-            logits.detach().cpu().numpy().astype(np.float32),
-            value.detach().cpu().numpy().reshape(-1).astype(np.float32),
+            logits.detach().cpu().numpy(),
+            value.detach().cpu().numpy().reshape(-1),
         )
 
 
@@ -154,9 +167,10 @@ def predict(board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndar
         policy_list.append(pl)
         value_list.append(vl)
 
+    # 模型输出恒为 float32：concatenate 保持 dtype，无需再 astype 拷贝一次
     return (
-        np.concatenate(policy_list, axis=0).astype(np.float32),
-        np.concatenate(value_list, axis=0).astype(np.float32),
+        np.concatenate(policy_list, axis=0),
+        np.concatenate(value_list, axis=0),
     )
 
 

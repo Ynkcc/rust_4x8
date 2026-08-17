@@ -1,9 +1,10 @@
 // src/py/py_evaluator.rs
 // 基于 Python 回调的通用评估器（泛型化：G = 游戏环境）
 
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyByteArray, PyModule};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -76,12 +77,17 @@ impl<G: GameEnv> PyEvaluator<G> {
             let np = self.get_numpy(py)?;
 
             let boards_np = Self::to_numpy(
+                py,
                 &np,
-                boards_flat,
+                &boards_flat,
                 &[batch_size, G::BOARD_CHANNELS, G::BOARD_ROWS, G::BOARD_COLS],
             )?;
-            let scalars_np =
-                Self::to_numpy(&np, scalars_flat, &[batch_size, G::SCALAR_FEATURE_COUNT])?;
+            let scalars_np = Self::to_numpy(
+                py,
+                &np,
+                &scalars_flat,
+                &[batch_size, G::SCALAR_FEATURE_COUNT],
+            )?;
 
             let result = self
                 .predict_fn
@@ -99,15 +105,25 @@ impl<G: GameEnv> PyEvaluator<G> {
                 ))
             })?;
 
-            let policy_vec: Vec<Vec<f32>> = policy_logits_py.extract(py).map_err(|e| {
-                eprintln!("Failed to extract policy logits: {}", e);
-                PyRuntimeError::new_err(format!("policy logits extraction failed: {}", e))
-            })?;
+            // 优先用 PyBuffer 零拷贝读取 numpy 输出（无 Python 对象装箱 / 逐元素转换）。
+            // 若 predictor 返回的不是 buffer 协议对象（如 list-of-lists），回退逐元素提取。
+            let policy_vec =
+                match Self::extract_policy_via_buffer(py, policy_logits_py.bind(py), batch_size) {
+                    Ok(v) => v,
+                    Err(_) => policy_logits_py.extract(py).map_err(|e| {
+                        eprintln!("Failed to extract policy logits: {}", e);
+                        PyRuntimeError::new_err(format!("policy logits extraction failed: {}", e))
+                    })?,
+                };
 
             // values 兼容两种形状：
             // - 扁平 (batch,)：numpy 默认（当前暗棋 predictor 约定）
             // - 嵌套 (batch, 1)：PyTorch 网络输出的默认形状
-            let values_vec_flat = Self::extract_values_flat(py, &values_py, batch_size)?;
+            let values_vec_flat =
+                match Self::extract_values_via_buffer(py, values_py.bind(py), batch_size) {
+                    Ok(v) => v,
+                    Err(_) => Self::extract_values_flat(py, &values_py, batch_size)?,
+                };
 
             // 与 policy 的 normalize_policy_shape 一致：先截断到 batch_size，
             // 不足部分补 0.0，保证任何返回形状下都不会触发 chunks(0) panic。
@@ -145,18 +161,78 @@ impl<G: GameEnv> PyEvaluator<G> {
         Ok(out)
     }
 
+    /// 用 PyBuffer 从 numpy 输出中提取 policy（零拷贝，无逐元素 Python 装箱）。
+    ///
+    /// 返回 `Vec<Vec<f32>>`，每行长度为 `G::action_space_size()`；形状不足 / 多余时
+    /// 自动截断补齐，与 `normalize_policy_shape` 语义保持一致。
+    fn extract_policy_via_buffer(
+        py: Python<'_>,
+        obj: &Bound<'_, PyAny>,
+        batch_size: usize,
+    ) -> PyResult<Vec<Vec<f32>>> {
+        let buf = PyBuffer::<f32>::get(obj)?;
+        if !buf.is_c_contiguous() {
+            return Err(PyRuntimeError::new_err("policy buffer is not C-contiguous"));
+        }
+        let action_space = G::action_space_size();
+        let flat = buf.to_vec(py)?;
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let start = i * action_space;
+            let end = (start + action_space).min(flat.len());
+            let mut row = Vec::with_capacity(action_space);
+            row.extend_from_slice(&flat[start..end]);
+            row.resize(action_space, 0.0);
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    /// 用 PyBuffer 从 numpy 输出中提取 values（零拷贝，兼容 `(batch,)` 与 `(batch, 1)`）。
+    fn extract_values_via_buffer(
+        py: Python<'_>,
+        obj: &Bound<'_, PyAny>,
+        batch_size: usize,
+    ) -> PyResult<Vec<f32>> {
+        let buf = PyBuffer::<f32>::get(obj)?;
+        if !buf.is_c_contiguous() {
+            return Err(PyRuntimeError::new_err("values buffer is not C-contiguous"));
+        }
+        let mut flat = buf.to_vec(py)?;
+        flat.truncate(batch_size);
+        flat.resize(batch_size, 0.0);
+        Ok(flat)
+    }
+
     /// 将 flat Vec<f32> 转换为指定 shape 的 float32 numpy 数组。
-    fn to_numpy(np: &Bound<'_, PyModule>, data: Vec<f32>, shape: &[usize]) -> PyResult<Py<PyAny>> {
+    ///
+    /// 优化：直接把数据 memcpy 进 PyByteArray（一次拷贝），再 `np.frombuffer(...,
+    /// dtype='float32').reshape(shape)` 构造视图。旧实现 `np.array(Vec<f32>)` 会先把
+    /// 每个 f32 装箱成 Python float（约 8 倍内存膨胀），再生成 float64 数组、再
+    /// `astype("float32")`，共三次全量转换 + 海量小对象分配，是跨进程拷贝的主要瓶颈。
+    ///
+    /// 返回数组 C 连续且可写（`torch.from_numpy` 要求可写），语义与原契约一致。
+    fn to_numpy(
+        py: Python<'_>,
+        np: &Bound<'_, PyModule>,
+        data: &[f32],
+        shape: &[usize],
+    ) -> PyResult<Py<PyAny>> {
+        // f32 是无可变 padding 的 POD，按字节切片安全（rust-numpy 同样依赖此性质）。
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        let bytearray = PyByteArray::new(py, bytes);
         let array = np
-            .call_method1("array", (data,))
-            .map_err(|e| PyRuntimeError::new_err(format!("numpy.array failed: {}", e)))?;
+            .call_method1("frombuffer", (bytearray, "float32"))
+            .map_err(|e| PyRuntimeError::new_err(format!("numpy.frombuffer failed: {}", e)))?;
         let reshaped = array
             .call_method1("reshape", (shape.to_vec(),))
             .map_err(|e| PyRuntimeError::new_err(format!("numpy reshape failed: {}", e)))?;
-        let astype = reshaped
-            .call_method1("astype", ("float32",))
-            .map_err(|e| PyRuntimeError::new_err(format!("numpy astype failed: {}", e)))?;
-        Ok(astype.into())
+        Ok(reshaped.unbind())
     }
 
     fn normalize_policy_shape(mut policy: Vec<Vec<f32>>, batch_size: usize) -> Vec<Vec<f32>> {
@@ -208,7 +284,10 @@ impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
             Vec::with_capacity(batch_size * G::BOARD_CHANNELS * G::BOARD_ROWS * G::BOARD_COLS);
         let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * G::SCALAR_FEATURE_COUNT);
 
-        // 直接写入 flat buffer，避免创建 Observation（ndarray 分配 + clone）的开销
+        // 直接写入 flat buffer，避免创建 Observation（ndarray 分配 + clone）的开销。
+        // 注意：`encode_features_flat_into` 内部会 `clear()` 后重写，因此为每个 env
+        // 复用同一组临时 Vec，再 extend 进目标 batch buffer（相比旧实现每 env 新分配，
+        // 省去 batch 规模次数的堆分配）。
         let mut board_buf = Vec::new();
         let mut scalar_buf = Vec::new();
         for env in envs {
