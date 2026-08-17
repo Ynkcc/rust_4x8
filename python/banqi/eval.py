@@ -330,6 +330,8 @@ if __name__ == "__main__":
     ap.add_argument("--heuristic-sims", type=int, default=None,
                     help="启发式 MCTS 对手的模拟数（默认 HM_SIMS=64；"
                          "仅 --opponent heuristic64 时生效）")
+    ap.add_argument("--model-sims", type=int, default=EVAL_SIMS,
+                    help=f"模型 MCTS 模拟数（默认 {EVAL_SIMS}）")
     ap.add_argument("--vs", default=None, help="对头评估：对方模型权重路径（覆盖 --opponent）")
     args = ap.parse_args()
     p = load_predictor(args.model_path, variant_id=args.variant)
@@ -337,5 +339,6 @@ if __name__ == "__main__":
         pb = load_predictor(args.vs, variant_id=args.variant)
         report_vs(p, pb, "main", n=args.n, variant_id=args.variant)
     else:
-        report(p, "main", n=args.n, opponent=args.opponent,
-               variant_id=args.variant, heuristic_sims=args.heuristic_sims)
+        report(p, "main", n=args.n, model_sims=args.model_sims,
+               opponent=args.opponent, variant_id=args.variant,
+               heuristic_sims=args.heuristic_sims)
