@@ -208,6 +208,23 @@ def load_checkpoint(model, optimizer, scheduler) -> None:
                         scheduler.base_lrs = [config.LEARNING_RATE] * len(scheduler.base_lrs)
                     except Exception:
                         pass
+                    # 修复：checkpoint 持久化了旧 T_max（如 15000）会跨会话自我延续，
+                    # 使 LR 沿错误余弦周期衰减（实测 lr 被压到 3.39e-4 而非 ~4.9e-4）。
+                    # LR 计划本应由当前 config 决定，显式重置为配置值。
+                    try:
+                        scheduler.T_max = config.LR_DECAY_STEPS
+                    except Exception:
+                        pass
+                    try:
+                        scheduler.eta_min = config.MIN_LR
+                    except Exception:
+                        pass
+                    # 与 last_epoch=-1 语义一致，防未来 torch 版本把 _step_count
+                    # 引入余弦计算时再次踩坑。
+                    try:
+                        scheduler._step_count = 0
+                    except Exception:
+                        pass
                 except Exception as e_sch:
                     print(f"[Training4x4] ⚠️ Scheduler 状态加载失败 ({e_sch})")
             print(f"[Training4x4] ✅ 从 {config.STATE_DICT_PATH} 恢复完整训练状态")
@@ -318,6 +335,11 @@ class TrainWorker(threading.Thread):
         self.total_value_loss_sum = 0.0
         self.round_history: List[Dict] = []
         self._stats_lock = threading.Lock()
+        # 固定价值验证集（价值漂移监控）：优先由归档预填充构建；
+        # 无归档时降级为"用本会话前 N 条自对弈样本构建"（见
+        # _ensure_fixed_eval_from_selfplay），保证监控在任何机器上都生效。
+        self._fixed_eval = None
+        self._raw_sample_pool: List[Dict] = []
 
     def _prefill_from_archive(self) -> None:
         """从冷存储归档加载历史 episode 预填充训练 buffer（复用训练数据）。
@@ -365,6 +387,38 @@ class TrainWorker(threading.Thread):
         except Exception as e:  # pragma: no cover
             print(f"[Training4x4] ⚠️ 冷存储预填充失败 ({e})，继续正常训练")
 
+    def _ensure_fixed_eval_from_selfplay(self, samples: List[Dict]) -> None:
+        """无归档时，用本会话自对弈原始样本构建固定价值验证集。
+
+        自对弈样本自带 game_result_value（终局真值），漂移监控不需要教师数据。
+        只在 _fixed_eval 尚未构建时收集前 VALUE_DRIFT_NUM_POSITIONS 条；构建后
+        释放样本池。必须在数据增强之前调用（保留原始局面）。
+        """
+        if self._fixed_eval is not None:
+            return
+        n_fixed = config.VALUE_DRIFT_NUM_POSITIONS
+        if n_fixed <= 0:
+            return
+        self._raw_sample_pool.extend(samples)
+        if len(self._raw_sample_pool) < n_fixed:
+            return
+        pool = self._raw_sample_pool[:n_fixed]
+        try:
+            self._fixed_eval = {
+                "boards": np.stack([np.array(s['board_state'], dtype=np.float32).reshape(
+                    TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS) for s in pool]),
+                "scalars": np.stack([np.array(s['scalar_state'], dtype=np.float32)
+                                     for s in pool]),
+                "results": np.array([s.get('game_result_value', 0.0)
+                                     for s in pool], dtype=np.float32),
+            }
+            self._raw_sample_pool = []
+            print(f"[Training4x4] 🎯 固定价值验证集（自对弈样本）"
+                  f"{len(self._fixed_eval['boards'])} 局面已就绪")
+        except Exception as e:  # pragma: no cover
+            print(f"[Training4x4] ⚠️ 自对弈样本构建固定价值验证集失败 ({e})，稍后重试")
+            self._raw_sample_pool = pool
+
     def _drain_new_episodes(self, max_items: int) -> List[Dict]:
         episodes: List[Dict] = []
         try:
@@ -396,6 +450,10 @@ class TrainWorker(threading.Thread):
                 if not has_data:
                     continue
                 train_samples.extend(episode_to_samples(ep))
+
+            # 无归档时用自对弈原始样本构建固定验证集（价值漂移监控）。
+            # 必须在增强之前调用，保留原始局面与终局结果。
+            self._ensure_fixed_eval_from_selfplay(train_samples)
 
             # 对称增强（仅训练侧）：冷存储 archive_q 保存的仍是原始 episode，
             # 此处增强只作用于训练 replay buffer 的数据源。

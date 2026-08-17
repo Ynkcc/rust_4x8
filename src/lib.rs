@@ -360,6 +360,7 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_game4x4_minimax_self_play, m)?)?;
 
     m.add_function(wrap_pyfunction!(crate::py::describe_record, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::py::decode_scalar_state, m)?)?;
 
     // --- 井字棋绑定（验证逻辑复用） ---
     m.add_class::<crate::py::ttt::PyTicTacToe>()?;

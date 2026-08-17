@@ -7,12 +7,15 @@
 //   与记录中的 action_masks 逐元素断言一致；
 // - 断言记录的 actions[i] 一定在合法掩码内；
 // - 输出中文棋谱描述，动作带坐标，如：红马(0,a)->黑兵(1,b)。
+//
+// 变体支持：所有解码函数均由 `GameConfig` 驱动，支持 4x8 / 4x2 / 4x4。
+// `describe_record` 保持 4x8 默认（向后兼容），`describe_record_with_config`
+// 接受任意变体配置。
 
 use crate::game_env::actions::action_lookup_tables;
 use crate::game_env::board::DarkChessEnv;
-use crate::game_env::config::darkchess_config;
-use crate::game_env::constants::*;
-use crate::game_env::types::*;
+use crate::game_env::config::{MAX_POSITIONS, darkchess_config, GameConfig};
+use crate::game_env::types::{Piece, PieceType, Player, Slot};
 
 /// 根据手数（0 基）确定当前行棋方：偶数为红方，奇数为黑方。
 fn player_at(step: usize) -> Player {
@@ -61,44 +64,47 @@ fn piece_name(piece: Piece) -> String {
 }
 
 /// 坐标文本：行用数字、列用字母，如 (0,a)。
-fn coord_str(sq: usize) -> String {
-    let r = sq / BOARD_COLS;
-    let c = sq % BOARD_COLS;
+fn coord_str(sq: usize, cols: usize) -> String {
+    let r = sq / cols;
+    let c = sq % cols;
     format!("({},{})", r, (b'a' + c as u8) as char)
 }
 
 /// 将观测张量解码为绝对棋盘的槽位数组。
 ///
-/// 通道布局见 features.rs：前 7 通道为己方棋子、7..14 为敌方棋子、
-/// 14 为暗子、15 为空位。"己方/敌方"以当前行棋方为视角。
-pub fn decode_board(board: &[f32], current_player: Player) -> Vec<Slot> {
+/// 通道布局见 features.rs：前 `num_active` 通道为己方棋子（按 active_types 顺序）、
+/// 接下来 `num_active` 通道为敌方棋子、再接下来为暗子、最后为空位。
+/// "己方/敌方"以当前行棋方为视角。
+pub fn decode_board_with_config(board: &[f32], current_player: Player, cfg: &GameConfig) -> Vec<Slot> {
     assert_eq!(
         board.len(),
-        BOARD_CHANNELS * TOTAL_POSITIONS,
+        cfg.board_channels * cfg.total_positions,
         "board 张量长度错误: 期望 {}，实际 {}",
-        BOARD_CHANNELS * TOTAL_POSITIONS,
+        cfg.board_channels * cfg.total_positions,
         board.len()
     );
     let opp = current_player.opposite();
-    let mut slots = Vec::with_capacity(TOTAL_POSITIONS);
-    for sq in 0..TOTAL_POSITIONS {
-        let hidden = board[(BOARD_CHANNELS - 2) * TOTAL_POSITIONS + sq];
-        let empty = board[(BOARD_CHANNELS - 1) * TOTAL_POSITIONS + sq];
+    let mut slots = Vec::with_capacity(cfg.total_positions);
+    for sq in 0..cfg.total_positions {
+        let hidden = board[(cfg.board_channels - 2) * cfg.total_positions + sq];
+        let empty = board[(cfg.board_channels - 1) * cfg.total_positions + sq];
         let slot = if hidden > 0.5 {
             Slot::Hidden
         } else if empty > 0.5 {
             Slot::Empty
         } else {
             let mut piece: Option<Piece> = None;
-            for pt in 0..NUM_PIECE_TYPES {
-                if board[pt * TOTAL_POSITIONS + sq] > 0.5 {
+            for ci in 0..cfg.num_active {
+                if board[ci * cfg.total_positions + sq] > 0.5 {
+                    let pt = cfg.active_types[ci];
                     piece = Some(Piece::new(piece_type_from_idx(pt), current_player));
                     break;
                 }
             }
             if piece.is_none() {
-                for pt in 0..NUM_PIECE_TYPES {
-                    if board[(NUM_PIECE_TYPES + pt) * TOTAL_POSITIONS + sq] > 0.5 {
+                for ci in 0..cfg.num_active {
+                    if board[(cfg.num_active + ci) * cfg.total_positions + sq] > 0.5 {
+                        let pt = cfg.active_types[ci];
                         piece = Some(Piece::new(piece_type_from_idx(pt), opp));
                         break;
                     }
@@ -114,23 +120,27 @@ pub fn decode_board(board: &[f32], current_player: Player) -> Vec<Slot> {
     slots
 }
 
+/// 4x8 兼容入口。
+pub fn decode_board(board: &[f32], current_player: Player) -> Vec<Slot> {
+    decode_board_with_config(board, current_player, &darkchess_config())
+}
+
 /// 描述单个动作（中文，带坐标）。
 ///
 /// - 翻棋：翻开(0,a)
 /// - 移动/炮击（吃明子）：红马(0,a)->黑兵(1,b)
 /// - 移动/炮击（走到空位或暗子）：红马(0,a)->(1,b)
-fn describe_action(slots: &[Slot], action: usize) -> String {
+fn describe_action(slots: &[Slot], action: usize, cfg: &GameConfig) -> String {
     assert!(
-        action < ACTION_SPACE_SIZE,
+        action < cfg.action_space_size,
         "动作索引越界: {} (动作空间大小={})",
         action,
-        ACTION_SPACE_SIZE
+        cfg.action_space_size
     );
-    let cfg = darkchess_config();
-    let tables = action_lookup_tables(&cfg);
+    let tables = action_lookup_tables(cfg);
     let coords = &tables.action_to_coords[action];
     if coords.len() == 1 {
-        format!("翻开{}", coord_str(coords[0]))
+        format!("翻开{}", coord_str(coords[0], cfg.cols))
     } else {
         let (from_sq, to_sq) = (coords[0], coords[1]);
         let from_piece = match slots[from_sq] {
@@ -142,32 +152,38 @@ fn describe_action(slots: &[Slot], action: usize) -> String {
             Slot::Revealed(tp) => format!(
                 "{}{}->{}{}",
                 from_name,
-                coord_str(from_sq),
+                coord_str(from_sq, cfg.cols),
                 piece_name(tp),
-                coord_str(to_sq)
+                coord_str(to_sq, cfg.cols)
             ),
-            _ => format!("{}{}->{}", from_name, coord_str(from_sq), coord_str(to_sq)),
+            _ => format!(
+                "{}{}->{}",
+                from_name,
+                coord_str(from_sq, cfg.cols),
+                coord_str(to_sq, cfg.cols)
+            ),
         }
     }
 }
 
 /// 从 scalars 的存活向量中解析出某一方的存活棋子数量。
 ///
-/// 存活编码（见 features.rs）：对每种棋子按 `PIECE_MAX_COUNTS[pt]` 分块，
+/// 存活编码（见 features.rs）：对每种棋子按 `piece_counts[pt]` 分块，
 /// 每块用 `count` 个 1 + `(max - count)` 个 0 表示该种棋子存活 count 个。
 /// `start` 为存活向量在 scalars 中的起始偏移。
-fn parse_survival(scalars: &[f32], start: usize) -> [u8; NUM_PIECE_TYPES] {
-    let mut counts = [0u8; NUM_PIECE_TYPES];
+/// 返回按 `cfg.active_types[0..num_active]` 顺序的存活数数组。
+fn parse_survival(scalars: &[f32], start: usize, cfg: &GameConfig) -> Vec<u8> {
+    let mut counts = vec![0u8; cfg.num_active];
     let mut offset = start;
-    for pt in 0..NUM_PIECE_TYPES {
-        let max = PIECE_MAX_COUNTS[pt];
+    for (ci, &pt) in cfg.active_types.iter().enumerate().take(cfg.num_active) {
+        let max = cfg.piece_counts[pt];
         let mut c = 0u8;
         for k in 0..max {
             if scalars[offset + k] > 0.5 {
                 c += 1;
             }
         }
-        counts[pt] = c;
+        counts[ci] = c;
         offset += max;
     }
     counts
@@ -176,10 +192,15 @@ fn parse_survival(scalars: &[f32], start: usize) -> [u8; NUM_PIECE_TYPES] {
 /// 从一手的 scalars 解析出双方存活棋子数，返回 (红方存活, 黑方存活)。
 ///
 /// scalars 布局：`[0]` 步数、`[1]` 当前行棋方 HP、`[2]` 对方 HP、
-/// `[3..3+16]` 当前行棋方存活、`[3+16..]` 对方存活。
-fn survival_from_scalars(scalars: &[f32], cur_player: Player) -> ([u8; NUM_PIECE_TYPES], [u8; NUM_PIECE_TYPES]) {
-    let my_counts = parse_survival(scalars, 3);
-    let opp_counts = parse_survival(scalars, 3 + SURVIVAL_VECTOR_SIZE);
+/// `[3..3+total_pieces]` 当前行棋方存活、`[3+total_pieces..]` 对方存活。
+/// 存活向量按 active_types 顺序、每类 piece_counts 个槽位编码。
+fn survival_from_scalars(
+    scalars: &[f32],
+    cur_player: Player,
+    cfg: &GameConfig,
+) -> (Vec<u8>, Vec<u8>) {
+    let my_counts = parse_survival(scalars, 3, cfg);
+    let opp_counts = parse_survival(scalars, 3 + cfg.total_pieces_per_player, cfg);
     match cur_player {
         Player::Red => (my_counts, opp_counts),
         Player::Black => (opp_counts, my_counts),
@@ -190,11 +211,11 @@ fn survival_from_scalars(scalars: &[f32], cur_player: Player) -> ([u8; NUM_PIECE
 ///
 /// 阵亡数 = 该类棋子总数 - 存活数。存活数直接从 scalars 得出，天然包含吃暗子
 /// 与炮吃己方暗子的情况（只要被吃，存活数就会减少），无需差分、无需特殊处理。
-fn survival_to_dead(survival: &[u8; NUM_PIECE_TYPES]) -> Vec<PieceType> {
-    let mut dead = Vec::with_capacity(TOTAL_PIECES_PER_PLAYER);
-    for pt in 0..NUM_PIECE_TYPES {
-        let total = PIECE_MAX_COUNTS[pt];
-        let alive = survival[pt] as usize;
+fn survival_to_dead(survival: &[u8], cfg: &GameConfig) -> Vec<PieceType> {
+    let mut dead = Vec::with_capacity(cfg.total_pieces_per_player);
+    for (ci, &pt) in cfg.active_types.iter().enumerate().take(cfg.num_active) {
+        let total = cfg.piece_counts[pt];
+        let alive = survival[ci] as usize;
         for _ in 0..total.saturating_sub(alive) {
             dead.push(piece_type_from_idx(pt));
         }
@@ -209,18 +230,18 @@ fn pad_cell(s: &str) -> String {
     format!("{}{}", s, " ".repeat(pad))
 }
 
-fn format_board(slots: &[Slot]) -> String {
+fn format_board(slots: &[Slot], cfg: &GameConfig) -> String {
     let mut s = String::new();
     s.push_str("    ");
-    for c in 0..BOARD_COLS {
+    for c in 0..cfg.cols {
         s.push_str(&pad_cell(&((b'a' + c as u8) as char).to_string()));
         s.push_str("  ");
     }
     s.push('\n');
-    for r in 0..BOARD_ROWS {
+    for r in 0..cfg.rows {
         s.push_str(&format!("{}   ", r));
-        for c in 0..BOARD_COLS {
-            let cell = match slots[r * BOARD_COLS + c] {
+        for c in 0..cfg.cols {
+            let cell = match slots[r * cfg.cols + c] {
                 Slot::Hidden => "?".to_string(),
                 Slot::Empty => ".".to_string(),
                 Slot::Revealed(p) => piece_name(p),
@@ -245,10 +266,10 @@ fn dead_str(player: Player, dead_list: &[PieceType]) -> String {
     }
 }
 
-/// 从对局记录解析完整的中文棋谱描述。
+/// 从对局记录解析完整的中文棋谱描述（config 驱动，支持 4x8/4x2/4x4）。
 ///
 /// 参数对应 `GameEpisode` 序列化后的数组（见 `py::episode_to_dict`）：
-/// - `boards`: 每手的棋盘观测张量（16 通道 × 32 格，扁平）
+/// - `boards`: 每手的棋盘观测张量（扁平）
 /// - `scalars`: 每手的标量特征（长度 ≥ 3：步数/己方血量/对方血量，均为归一化）
 /// - `action_masks`: 每手的合法动作掩码
 /// - `actions`: 每手实际选择的动作索引
@@ -258,11 +279,12 @@ fn dead_str(player: Player, dead_list: &[PieceType]) -> String {
 /// 2. 重新生成 action_masks 与传入的逐元素比较，**断言一致**；
 /// 3. 断言 actions[i] 一定在对应合法掩码内；
 /// 4. 输出含坐标的中文棋谱（阵营由手数奇偶 i%2 决定）。
-pub fn describe_record(
+pub fn describe_record_with_config(
     boards: &[Vec<f32>],
     scalars: &[Vec<f32>],
     action_masks: &[Vec<i32>],
     actions: &[usize],
+    cfg: &GameConfig,
 ) -> String {
     assert_eq!(
         boards.len(),
@@ -290,17 +312,17 @@ pub fn describe_record(
     let mut out = String::new();
     for i in 0..boards.len() {
         let player = player_at(i);
-        let slots = decode_board(&boards[i], player);
+        let slots = decode_board_with_config(&boards[i], player, cfg);
 
         // 每手直接用存活数推导双方已阵亡棋子（阵亡 = 总数 - 存活）
-        let (red_survival, black_survival) = survival_from_scalars(&scalars[i], player);
-        let red_dead_vec = survival_to_dead(&red_survival);
-        let black_dead_vec = survival_to_dead(&black_survival);
+        let (red_survival, black_survival) = survival_from_scalars(&scalars[i], player, cfg);
+        let red_dead_vec = survival_to_dead(&red_survival, cfg);
+        let black_dead_vec = survival_to_dead(&black_survival, cfg);
 
         // --- 重建环境并断言 action_masks 一致 ---
-        let mut board_array = [Slot::Empty; TOTAL_POSITIONS];
-        board_array.copy_from_slice(&slots);
-        let env = DarkChessEnv::from_board(board_array, player);
+        let mut board_array = [Slot::Empty; MAX_POSITIONS];
+        board_array[..cfg.total_positions].copy_from_slice(&slots);
+        let env = DarkChessEnv::from_board_with_config(board_array, player, *cfg);
         let rebuilt_mask = env.action_masks();
         assert_eq!(
             rebuilt_mask.len(),
@@ -329,11 +351,11 @@ pub fn describe_record(
         // --- 断言实际行动在合法掩码内 ---
         let action = actions[i];
         assert!(
-            action < ACTION_SPACE_SIZE,
+            action < cfg.action_space_size,
             "第{}手: action 越界: {} (动作空间大小={})",
             i + 1,
             action,
-            ACTION_SPACE_SIZE
+            cfg.action_space_size
         );
         assert!(
             action_masks[i][action] == 1,
@@ -344,15 +366,16 @@ pub fn describe_record(
             action_masks[i][action]
         );
 
-        // --- 血量（scalars[1]=己方HP/60，scalars[2]=对方HP/60，按当前行棋方换算） ---
+        // --- 血量（scalars[1]=己方HP/上限，scalars[2]=对方HP/上限，按当前行棋方换算） ---
         assert!(
             scalars[i].len() >= 3,
             "第{}手: scalars 长度不足 3: {}",
             i + 1,
             scalars[i].len()
         );
-        let my_hp = (scalars[i][1] * INITIAL_HEALTH_POINTS as f32).round() as i32;
-        let opp_hp = (scalars[i][2] * INITIAL_HEALTH_POINTS as f32).round() as i32;
+        let hp_max = cfg.initial_health as f32;
+        let my_hp = (scalars[i][1] * hp_max).round() as i32;
+        let opp_hp = (scalars[i][2] * hp_max).round() as i32;
         let (red_hp, black_hp) = match player {
             Player::Red => (my_hp, opp_hp),
             Player::Black => (opp_hp, my_hp),
@@ -363,9 +386,9 @@ pub fn describe_record(
             .iter()
             .enumerate()
             .filter(|(_, m)| **m == 1)
-            .map(|(a, _)| describe_action(&slots, a))
+            .map(|(a, _)| describe_action(&slots, a, cfg))
             .collect();
-        let actual = describe_action(&slots, action);
+        let actual = describe_action(&slots, action, cfg);
 
         let turn_label = match player {
             Player::Red => "红方回合",
@@ -378,7 +401,7 @@ pub fn describe_record(
         out.push_str("\n\n");
         out.push_str(&format!("第{}手\n{}\n\n", i + 1, turn_label));
         out.push_str("棋盘（数字=行，字母=列）:\n");
-        out.push_str(&format_board(&slots));
+        out.push_str(&format_board(&slots, cfg));
         out.push('\n');
         out.push_str(&format!("红方血量: {}\n", red_hp));
         out.push_str(&format!("红方已阵亡棋子: {}\n", red_dead));
@@ -394,4 +417,106 @@ pub fn describe_record(
         out.push('\n');
     }
     out
+}
+
+/// 4x8 默认变体入口（向后兼容）。
+pub fn describe_record(
+    boards: &[Vec<f32>],
+    scalars: &[Vec<f32>],
+    action_masks: &[Vec<i32>],
+    actions: &[usize],
+) -> String {
+    describe_record_with_config(boards, scalars, action_masks, actions, &darkchess_config())
+}
+
+// ============================================================================
+// 标量特征解码（供 MongoDB 数据诊断 / Python 侧解析）
+// ============================================================================
+
+/// 单手标量特征解码结果。
+#[derive(Debug, Clone)]
+pub struct ScalarDecodeResult {
+    /// 连续无吃子步数（未归一化，原始步数）。
+    pub move_counter: usize,
+    /// 当前行棋方 HP。
+    pub my_hp: i32,
+    /// 对方 HP。
+    pub opp_hp: i32,
+    /// 当前行棋方存活数（按 active_types 顺序）。
+    pub my_survival: Vec<u8>,
+    /// 对方存活数（按 active_types 顺序）。
+    pub opp_survival: Vec<u8>,
+}
+
+/// 由某一方存活数推导该方已阵亡棋子列表（按 active_types 顺序）。
+pub fn survival_to_dead_vec(survival: &[u8], cfg: &GameConfig) -> Vec<PieceType> {
+    survival_to_dead(survival, cfg)
+}
+
+/// 解码单手标量特征（config 驱动，支持 4x8/4x2/4x4）。
+///
+/// scalars 布局（见 features.rs `get_scalar_state_vector_into`）：
+/// `[0]` = move_counter / max_consecutive_moves_for_draw
+/// `[1]` = 当前行棋方 HP / initial_health
+/// `[2]` = 对方 HP / initial_health
+/// `[3..3+total_pieces]` = 当前行棋方存活 one-hot（按 active_types / piece_counts 分块）
+/// `[3+total_pieces..]`   = 对方存活 one-hot
+///
+/// 返回结构化结果；`cur_player` 用于标注红/黑视角（仅影响 HP 归属，不影响数值）。
+pub fn decode_scalar_state(scalars: &[f32], cfg: &GameConfig) -> ScalarDecodeResult {
+    assert!(
+        scalars.len() >= 3 + 2 * cfg.total_pieces_per_player,
+        "scalars 长度不足: 期望 ≥{}，实际 {}",
+        3 + 2 * cfg.total_pieces_per_player,
+        scalars.len()
+    );
+    let move_counter =
+        (scalars[0] * cfg.max_consecutive_moves_for_draw as f32).round() as usize;
+    let my_hp = (scalars[1] * cfg.initial_health as f32).round() as i32;
+    let opp_hp = (scalars[2] * cfg.initial_health as f32).round() as i32;
+    let my_survival = parse_survival(scalars, 3, cfg);
+    let opp_survival = parse_survival(scalars, 3 + cfg.total_pieces_per_player, cfg);
+    ScalarDecodeResult {
+        move_counter,
+        my_hp,
+        opp_hp,
+        my_survival,
+        opp_survival,
+    }
+}
+
+/// 生成人类可读的单手标量描述（供诊断输出）。
+pub fn format_scalar_state(
+    scalars: &[f32],
+    cfg: &GameConfig,
+    cur_player: Player,
+) -> String {
+    let r = decode_scalar_state(scalars, cfg);
+    let (my_name, opp_name) = match cur_player {
+        Player::Red => ("红", "黑"),
+        Player::Black => ("黑", "红"),
+    };
+    let mut my_pieces = Vec::new();
+    let mut opp_pieces = Vec::new();
+    for (ci, &pt) in cfg.active_types.iter().enumerate().take(cfg.num_active) {
+        if r.my_survival[ci] > 0 {
+            my_pieces.push(format!("{}x{}", piece_name(Piece::new(piece_type_from_idx(pt), cur_player)), r.my_survival[ci]));
+        }
+        if r.opp_survival[ci] > 0 {
+            opp_pieces.push(format!("{}x{}", piece_name(Piece::new(piece_type_from_idx(pt), cur_player.opposite())), r.opp_survival[ci]));
+        }
+    }
+    format!(
+        "{}方回合 | 连续无吃子步数 {} | HP {}({}) vs {}({}) | {}存活: {} | {}存活: {}",
+        my_name,
+        r.move_counter,
+        my_name,
+        r.my_hp,
+        opp_name,
+        r.opp_hp,
+        my_name,
+        if my_pieces.is_empty() { "无".to_string() } else { my_pieces.join(" ") },
+        opp_name,
+        if opp_pieces.is_empty() { "无".to_string() } else { opp_pieces.join(" ") },
+    )
 }
