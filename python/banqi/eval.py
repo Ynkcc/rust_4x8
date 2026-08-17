@@ -16,6 +16,13 @@
   - 分块统计：n 局分成 k 块（默认 5×20），输出每块胜率 + 均值±std，
     便于评估差异是否超过噪声（n=20 单块 σ≈11%）。
 
+Rust 侧说明：`DarkChess` / `Game4x4` / `MiniDarkChess` 三个环境类由
+`src/py/chess_env.rs`（统一暗棋入口，宏生成）提供**同一套方法集**——
+`mcts_search_action` / `minimax_action` / `heuristic_mcts_action` /
+`greedy_action` / `step` / `terminated` / `winner` / `observation` 等。
+因此本模块的评估协议对 4x2 / 4x4 / 4x8 全部变体一致可用（4x8 也能
+用 minimax / 启发式做对手）。
+
 判定规则：主指标 vs minimax(d3) 取 n=100（SE≈3.4%），差异 <10pp 不下结论。
 
 警告：所有评估必须统一走本模块。
@@ -35,7 +42,7 @@ EVAL_MAX_ACTIONS = 16
 EVAL_C_SCALE = 0.25
 EVAL_GUMBEL_SCALE = 1.0
 HM_SIMS = 64
-# 主对手：minimax 搜索深度（Rust 侧 Game4x4.minimax_action 实现 expectiminimax）
+# 主对手：minimax 搜索深度（Rust 侧 minimax_action 实现 expectiminimax）
 MINIMAX_DEPTH = 3
 
 # 对手枚举
@@ -46,6 +53,9 @@ OPPONENTS = (OPP_MINIMAX3, OPP_HEURISTIC64)
 
 # ---------------------------------------------------------------------------
 # Rust 绑定环境类分派（按 variant.rust_prefix）
+#
+# 三类环境（DarkChess / Game4x4 / MiniDarkChess）均由 Rust 统一暗棋入口
+# `src/py/chess_env.rs`（宏生成）提供，方法集完全一致，此处仅按变体选类。
 # ---------------------------------------------------------------------------
 
 # rust_prefix -> banqi_4x8 模块中的 pyclass 名

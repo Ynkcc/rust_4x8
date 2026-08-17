@@ -367,14 +367,10 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::py::ttt::ttt_mcts_search, m)?)?;
     m.add_function(wrap_pyfunction!(crate::py::ttt::run_ttt_self_play_with_predictor, m)?)?;
 
-    // --- 暗棋环境绑定（视角反转验证） ---
-    m.add_class::<crate::py::darkchess_env::PyDarkChess>()?;
-
-    // --- 4x2 迷你暗棋环境绑定（训练验证） ---
-    m.add_class::<crate::py::mini_darkchess_env::PyMiniDarkChess>()?;
-
-    // --- 4x4 暗棋环境绑定（变体训练验证） ---
-    m.add_class::<crate::py::game4x4_env::PyGame4x4>()?;
+    // --- 暗棋环境绑定（统一入口：视角反转验证 / 训练验证 / 变体训练） ---
+    m.add_class::<crate::py::chess_env::PyDarkChess>()?;
+    m.add_class::<crate::py::chess_env::PyMiniDarkChess>()?;
+    m.add_class::<crate::py::chess_env::PyGame4x4>()?;
 
     m.add("BOARD_ROWS", BOARD_ROWS)?;
     m.add("BOARD_COLS", BOARD_COLS)?;

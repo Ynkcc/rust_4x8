@@ -15,12 +15,9 @@ pub use py_evaluator::PyEvaluator;
 #[cfg(feature = "pyo3")]
 pub mod ttt;
 
+/// 统一暗棋环境 Python 绑定（唯一入口，宏生成 DarkChess / Game4x4 / MiniDarkChess）。
 #[cfg(feature = "pyo3")]
-pub mod darkchess_env;
-#[cfg(feature = "pyo3")]
-pub mod game4x4_env;
-#[cfg(feature = "pyo3")]
-pub mod mini_darkchess_env;
+pub mod chess_env;
 
 #[cfg(feature = "pyo3")]
 use crate::game_env::{
