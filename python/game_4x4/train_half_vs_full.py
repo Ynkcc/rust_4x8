@@ -5,7 +5,7 @@ train_half_vs_full.py — 对比实验：启发式 MCTS 数据「后一半」vs�
   1. 从 training_data/archive_4x4_imitate/*.jsonl 加载启发式 Gumbel MCTS 生成的
      训练数据（每行一个 episode dict，含 boards/scalars/policies/mcts_values/
      game_results/action_masks 等）。
-  2. 两个 Banqi4x4Net 用「相同随机种子」初始化（起始权重完全一致）：
+  2. 两个 BanqiNet 用「相同随机种子」初始化（起始权重完全一致）：
        - Model A (half)：仅使用每局「后一半」样本训练
        - Model B (full)：使用每局「全部」样本训练
   3. 完全相同的训练超参（Adam / lr / epochs / batch / 顺序）。
@@ -45,8 +45,11 @@ torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 import banqi_4x8
 
 from config import config
-from nn_model import Banqi4x4Net
+from banqi.variant import get_variant
+from banqi.nn_model import BanqiNet
 from training_service import train_step  # 复用标准训练步骤（pol loss + val loss）
+
+VARIANT = get_variant("4x4")
 
 DEVICE = torch.device("cpu")
 
@@ -113,7 +116,7 @@ def build_datasets(episodes: List[Dict], value_key: str) -> Tuple[List[Dict], Li
 # 训练
 # =============================================================================
 
-def train_one(model: "Banqi4x4Net", samples: List[Dict], epochs: int, batch: int,
+def train_one(model: "BanqiNet", samples: List[Dict], epochs: int, batch: int,
               lr: float, seed: int, tag: str) -> None:
     """在给定样本集上训练模型（Adam + 标准 train_step）。"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -146,7 +149,7 @@ def train_one(model: "Banqi4x4Net", samples: List[Dict], epochs: int, batch: int
 # =============================================================================
 
 class ModelPredictor:
-    def __init__(self, model: "Banqi4x4Net"):
+    def __init__(self, model: "BanqiNet"):
         self.model = model.to(DEVICE).eval()
 
     def __call__(self, boards: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -255,8 +258,8 @@ def main() -> int:
 
     # ---- 2. 同种子初始化两个模型（起始权重完全一致） ----
     torch.manual_seed(args.seed)
-    model_a = Banqi4x4Net().to(DEVICE)   # 后一半
-    model_b = Banqi4x4Net().to(DEVICE)   # 全部
+    model_a = BanqiNet(VARIANT).to(DEVICE)   # 后一半
+    model_b = BanqiNet(VARIANT).to(DEVICE)   # 全部
     model_b.load_state_dict(model_a.state_dict())
     print(f"[Init] 两个模型使用相同随机种子 seed={args.seed} 初始化（权重一致）")
 

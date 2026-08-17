@@ -72,7 +72,8 @@ class BanqiNet(nn.Module):
         )
         self.policy_bn = nn.BatchNorm2d(self.policy_channels)
         self.policy_flat_size = self.policy_channels * rows * cols
-        self.policy_fc1 = nn.Linear(self.policy_flat_size + scalar, c.POLICY_FC1_HIDDEN)
+        self.policy_fc_input = self.policy_flat_size + scalar
+        self.policy_fc1 = nn.Linear(self.policy_fc_input, c.POLICY_FC1_HIDDEN)
         self.policy_fc2 = nn.Linear(c.POLICY_FC1_HIDDEN, c.ACTION_SPACE_SIZE)
 
         # 4. 价值头
@@ -82,7 +83,8 @@ class BanqiNet(nn.Module):
         )
         self.value_bn = nn.BatchNorm2d(self.value_channels)
         self.value_flat_size = self.value_channels * rows * cols
-        self.value_fc1 = nn.Linear(self.value_flat_size + scalar, c.VALUE_FC1_HIDDEN)
+        self.value_fc_input = self.value_flat_size + scalar
+        self.value_fc1 = nn.Linear(self.value_fc_input, c.VALUE_FC1_HIDDEN)
         self.value_fc2 = nn.Linear(c.VALUE_FC1_HIDDEN, 1)
 
     def forward(

@@ -23,13 +23,16 @@ from typing import List
 import numpy as np
 
 from config import config
-from constant import (
-    ACTION_SPACE_SIZE,
-    BOARD_COLS,
-    BOARD_ROWS,
-    SCALAR_FEATURE_COUNT,
-    TOTAL_INPUT_CHANNELS,
-)
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_COLS = C.BOARD_COLS
+BOARD_ROWS = C.BOARD_ROWS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 from predictor_entry import (
     MAX_STEPS_PER_EPISODE,
     _sizeof_fmt,

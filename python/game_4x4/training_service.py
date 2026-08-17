@@ -1,7 +1,7 @@
 """
 training_service.py — 4x4 暗棋的训练消费者
 
-从数据队列消费自对弈 episode，填充向量化 replay buffer，迭代训练 Banqi4x4Net，
+从数据队列消费自对弈 episode，填充向量化 replay buffer，迭代训练 BanqiNet，
 周期性导出 checkpoint（.pt 供推理 / .pth 供训练恢复）。CPU 训练。
 """
 from __future__ import annotations
@@ -24,23 +24,27 @@ import torch.optim.lr_scheduler as lr_scheduler
 # 比 2 线程慢一个量级），且会拖累同进程的 MCTS 推理。
 torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+import os as _os
+import sys as _sys
+_sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from config import config
-from constant import (
-    TOTAL_INPUT_CHANNELS,
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    ACTION_SPACE_SIZE,
-)
-from nn_model import Banqi4x4Net
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
+from banqi.data_augmentation import make_augmentor
 from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 
-# 训练数据对称增强（仅训练侧；冷存储归档不应用，见 run_training.py 队列拆分）
-try:
-    from data_augmentation import augment_samples
-    HAS_AUGMENT = True
-except ImportError:  # pragma: no cover
-    HAS_AUGMENT = False
+VARIANT = get_variant("4x4")
+C = build_constants(VARIANT)
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+AUG = make_augmentor(VARIANT)
+HAS_AUGMENT = True
 
 
 def _resolve_device(spec: str) -> "torch.device":
@@ -309,11 +313,11 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
 
 
 class TrainWorker(threading.Thread):
-    def __init__(self, data_q: "queue.Queue", stop_flag: "List[bool]", model: Optional[Banqi4x4Net] = None):
+    def __init__(self, data_q: "queue.Queue", stop_flag: "List[bool]", model: Optional[BanqiNet] = None):
         super().__init__(name="TrainWorker4x4", daemon=True)
         self.data_q = data_q
         self.stop_flag = stop_flag
-        self.model = model if model is not None else Banqi4x4Net().to(DEVICE)
+        self.model = model if model is not None else BanqiNet(VARIANT).to(DEVICE)
         # weight_decay=1e-4：轻正则化，抑制小数据量下的过拟合/价值头漂移
         self.optimizer = optim.Adam(self.model.parameters(),
                                     lr=config.LEARNING_RATE, weight_decay=1e-4)
@@ -461,7 +465,7 @@ class TrainWorker(threading.Thread):
             if HAS_AUGMENT and config.DATA_AUGMENT_ENABLED and train_samples:
                 transforms = [t.strip() for t in config.DATA_AUGMENT_TRANSFORMS.split(",") if t.strip()]
                 raw_count = len(train_samples)
-                train_samples = augment_samples(
+                train_samples = AUG.augment_samples(
                     train_samples,
                     transforms=transforms,
                     keep_original=config.DATA_AUGMENT_KEEP_ORIGINAL,

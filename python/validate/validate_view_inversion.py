@@ -37,13 +37,16 @@ import banqi_4x8 as b  # pyo3 绑定（Rust 井字棋 / 暗棋环境 + 泛型 MC
 import validate_common  # noqa: F401
 from validate_common import Reporter, run_part, require
 
-from constant import (
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    TOTAL_INPUT_CHANNELS,
-)
-from nn_model import BanqiNet, load_model_weights
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet, load_model_weights
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 
 DEVICE = "cpu"
 MODEL_PATH = os.path.abspath(os.path.join(
@@ -58,7 +61,7 @@ NUM_POSITIONS = 30
 def load_real_model() -> BanqiNet:
     """加载真实暗棋网络权重到 BanqiNet（TorchScript / state_dict 自动识别）。"""
     require(os.path.exists(MODEL_PATH), f"模型文件不存在: {MODEL_PATH}")
-    model = BanqiNet()
+    model = BanqiNet(VARIANT)
     load_model_weights(model, MODEL_PATH, torch.device(DEVICE))
     model.eval()
     return model

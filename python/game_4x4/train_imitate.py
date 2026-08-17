@@ -28,8 +28,12 @@ torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 import banqi_4x8
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
-from nn_model import Banqi4x4Net, load_model_weights
+from banqi.variant import get_variant
+from banqi.nn_model import BanqiNet, load_model_weights
+
+VARIANT = get_variant("4x4")
 from training_service import train_step, save_checkpoint, _resolve_device
 from storage import (
     save_episodes_to_archive, load_jsonl_episodes, episode_dict_to_samples,
@@ -194,7 +198,7 @@ def main():
     args = ap.parse_args()
 
     # 统一初始化：模型/优化器/buffer
-    model = Banqi4x4Net().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     if args.fresh:
         print("[Imitation] 随机初始化", flush=True)
     else:

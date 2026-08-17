@@ -27,16 +27,26 @@ except ImportError:  # pragma: no cover
 
 import banqi_4x8
 
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+import os as _os
+import sys as _sys
+_sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from config import config
-from constant import ACTION_SPACE_SIZE
-from nn_model import Banqi4x4Net, load_model_weights
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet, load_model_weights
 from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
+
+VARIANT = get_variant("4x4")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
 
 
 class Predictor4x4:
     """4x4 推理端：eval/inference_mode + 分块推理，匹配 py_evaluator.rs 契约。"""
 
-    def __init__(self, model: "Banqi4x4Net", device: "torch.device", model_path: str | None) -> None:
+    def __init__(self, model: "BanqiNet", device: "torch.device", model_path: str | None) -> None:
         self.model = model.to(device)
         self.device = device
         self.model_path: str | None = model_path
@@ -207,7 +217,7 @@ def build_predictor4x4(model_path: str | None, device_str: str = "cpu") -> Tuple
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device_str == "auto" else torch.device(device_str)
     print(f"[SelfPlay4x4] device = {device}")
-    model = Banqi4x4Net()
+    model = BanqiNet(VARIANT)
     if HAS_TORCH:
         model = model.to(device)
     predictor = Predictor4x4(model, device, model_path)

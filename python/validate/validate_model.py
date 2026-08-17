@@ -22,19 +22,22 @@ import torch
 import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, run_part
 
-from constant import (
-    ACTION_SPACE_SIZE,
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    TOTAL_INPUT_CHANNELS,
-)
-from nn_model import BanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 
 
 def test_shapes() -> None:
     rep = Reporter("model shapes")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     model.eval()
 
     for batch in [1, 4, 33, 64]:  # 含 > PREDICT_BATCH=32 的 batch
@@ -62,7 +65,7 @@ def test_shapes() -> None:
 
 def test_value_range() -> None:
     rep = Reporter("model value range")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     model.eval()
     rng = np.random.default_rng(1)
     board = torch.from_numpy(
@@ -82,7 +85,7 @@ def test_value_range() -> None:
 
 def test_scalar_concat() -> None:
     rep = Reporter("scalar concat dimension")
-    model = BanqiNet()
+    model = BanqiNet(VARIANT)
     policy_flat = model.policy_flat_size
     value_flat = model.value_flat_size
     rep.check(policy_flat == 4 * BOARD_ROWS * BOARD_COLS,
@@ -103,7 +106,7 @@ def test_scalar_concat() -> None:
 
 def test_backward_gradients() -> None:
     rep = Reporter("backward gradients")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     model.train()
     rng = np.random.default_rng(2)
     batch = 8
@@ -141,7 +144,7 @@ def test_backward_gradients() -> None:
 def test_batch_chunk_consistency() -> None:
     """分块推理结果与整批推理一致（对应 Predictor 的 chunk 逻辑）。"""
     rep = Reporter("batch chunk consistency")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     model.eval()
     rng = np.random.default_rng(3)
     batch = 37

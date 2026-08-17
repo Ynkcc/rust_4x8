@@ -3,15 +3,20 @@ import os, sys
 import numpy as np
 import torch
 torch.set_num_threads(2)
-sys.path.insert(0, "/root/rust_4x8/python/game_4x4")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+sys.path.append(os.path.dirname(_HERE))
 
 import banqi_4x8
 from config import config
-from nn_model import Banqi4x4Net, load_model_weights
+from banqi.variant import get_variant
+from banqi.nn_model import BanqiNet, load_model_weights
 from verify_vs_heuristic_mcts import ModelPredictor
 
+VARIANT = get_variant("4x4")
 device = torch.device("cpu")
-model = Banqi4x4Net().to(device).eval()
+model = BanqiNet(VARIANT).to(device).eval()
 load_model_weights(model, config.MODEL_PATH, device)
 pred = ModelPredictor(model, device)
 

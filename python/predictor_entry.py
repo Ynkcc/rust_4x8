@@ -31,16 +31,21 @@ try:
 except ImportError:  # pragma: no cover
     HAS_TORCH = False
 
-from constant import (
-    ACTION_SPACE_SIZE,
-    BOARD_CHANNELS,
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    TOTAL_INPUT_CHANNELS,
-)
-from nn_model import BanqiNet, load_model_weights
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet, load_model_weights
 from storage import to_json_safe
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_CHANNELS = C.BOARD_CHANNELS
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
+NUM_PIECE_TYPES = C.NUM_PIECE_TYPES
+TOTAL_PIECES_PER_PLAYER = C.TOTAL_PIECES_PER_PLAYER
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +78,7 @@ def _reload_if_updated() -> None:
             _MODEL_MTIME = mtime
 
     if _MODEL is None:
-        _MODEL = BanqiNet().to(_DEVICE)
+        _MODEL = BanqiNet(VARIANT).to(_DEVICE)
         print(f"[predictor_entry] Initialized new BanqiNet on {_DEVICE}")
 
     if need_load and model_path and os.path.exists(model_path):
@@ -200,8 +205,6 @@ def _count_lines(path: str) -> int:
 
 from dataclasses import dataclass, field
 from typing import List, Tuple
-
-from constant import NUM_PIECE_TYPES, TOTAL_PIECES_PER_PLAYER
 
 
 MAX_STEPS_PER_EPISODE = 100

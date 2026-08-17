@@ -27,8 +27,19 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import banqi_4x8
-from constant_mini import ACTION_SPACE_SIZE
-from nn_model_mini import MiniBanqiNet, load_model_weights
+
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+import os as _os
+import sys as _sys
+_sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet, load_model_weights
+
+VARIANT = get_variant("4x2")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 NUM_GAMES = int(os.getenv("MINI_VERIFY_GAMES", "60"))
@@ -39,9 +50,9 @@ STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", os.path.join(_HERE, "banqi_m
 
 
 class ModelPredictor:
-    """把训练好的 MiniBanqiNet 封装成 mcts_search_action 需要的 (boards, scalars)->(logits, values) 回调。"""
+    """把训练好的 BanqiNet 封装成 mcts_search_action 需要的 (boards, scalars)->(logits, values) 回调。"""
 
-    def __init__(self, model: MiniBanqiNet, device: "torch.device"):
+    def __init__(self, model: BanqiNet, device: "torch.device"):
         self.model = model.to(device).eval()
         self.device = device
 
@@ -55,7 +66,7 @@ class ModelPredictor:
 
 def load_model() -> ModelPredictor:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MiniBanqiNet()
+    model = BanqiNet(VARIANT)
     if os.path.exists(MODEL_PATH):
         load_model_weights(model, MODEL_PATH, device)
         print(f"[Verify] 已加载 TorchScript 模型: {MODEL_PATH}")

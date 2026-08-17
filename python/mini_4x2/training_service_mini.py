@@ -1,7 +1,7 @@
 """
 training_service_mini.py — 4x2 迷你暗棋的训练消费者
 
-从数据队列消费自对弈 episode，填充向量化 replay buffer，迭代训练 MiniBanqiNet，
+从数据队列消费自对弈 episode，填充向量化 replay buffer，迭代训练 BanqiNet，
 周期性导出 checkpoint（.pt 供推理 / .pth 供训练恢复）。CPU 训练。
 """
 from __future__ import annotations
@@ -18,15 +18,23 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+import os as _os
+import sys as _sys
+_sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from config_mini import config
-from constant_mini import (
-    TOTAL_INPUT_CHANNELS,
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    ACTION_SPACE_SIZE,
-)
-from nn_model_mini import MiniBanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
+
+VARIANT = get_variant("4x2")
+C = build_constants(VARIANT)
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
 
 
 def _resolve_device(spec: str) -> "torch.device":
@@ -224,11 +232,11 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs):
 
 
 class TrainWorker(threading.Thread):
-    def __init__(self, data_q: "queue.Queue", stop_flag: "List[bool]", model: Optional[MiniBanqiNet] = None):
+    def __init__(self, data_q: "queue.Queue", stop_flag: "List[bool]", model: Optional[BanqiNet] = None):
         super().__init__(name="TrainWorkerMini", daemon=True)
         self.data_q = data_q
         self.stop_flag = stop_flag
-        self.model = model if model is not None else MiniBanqiNet().to(DEVICE)
+        self.model = model if model is not None else BanqiNet(VARIANT).to(DEVICE)
         self.optimizer = optim.Adam(self.model.parameters(), lr=config.LEARNING_RATE)
         self.scheduler = lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=config.LR_DECAY_STEPS, eta_min=config.MIN_LR,

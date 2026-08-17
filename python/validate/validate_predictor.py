@@ -23,9 +23,18 @@ import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, run_part
 
 from config import config
-from constant import ACTION_SPACE_SIZE, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, TOTAL_INPUT_CHANNELS
-from nn_model import BanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
 from self_play import Predictor
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 
 
 def _dummy_inputs(batch: int, seed: int = 0):
@@ -37,7 +46,7 @@ def _dummy_inputs(batch: int, seed: int = 0):
 
 def test_shapes_and_range() -> None:
     rep = Reporter("Predictor shapes/range")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     pred = Predictor(model, DEVICE, model_path=None)
     for batch in [1, 4, 33, 64]:
         board, scalars = _dummy_inputs(batch)
@@ -53,7 +62,7 @@ def test_shapes_and_range() -> None:
 
 def test_chunk_consistency() -> None:
     rep = Reporter("Predictor chunk consistency")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     pred = Predictor(model, DEVICE, model_path=None)
     batch = 70  # > PREDICT_BATCH=32，且不能被整除
     board, scalars = _dummy_inputs(batch, seed=1)
@@ -85,20 +94,20 @@ def test_hot_reload() -> None:
     model_path = os.path.join(tmp_dir, "weights.pth")
     try:
         # 初始权重
-        model_a = BanqiNet().to(DEVICE)
+        model_a = BanqiNet(VARIANT).to(DEVICE)
         with torch.no_grad():
             for p in model_a.parameters():
                 p.fill_(0.01)
         torch.save(model_a.state_dict(), model_path)
 
         # 构建 Predictor，加载模型 a
-        pred_model = BanqiNet().to(DEVICE)
+        pred_model = BanqiNet(VARIANT).to(DEVICE)
         pred = Predictor(pred_model, DEVICE, model_path=model_path)
         board, scalars = _dummy_inputs(4, seed=3)
 
         # 更新文件（改变权重）并强制 mtime 不同
         time.sleep(0.05)
-        model_b = BanqiNet().to(DEVICE)
+        model_b = BanqiNet(VARIANT).to(DEVICE)
         with torch.no_grad():
             for p in model_b.parameters():
                 p.fill_(0.99)
@@ -139,7 +148,7 @@ def test_hot_reload_torchscript() -> None:
     model_path = os.path.join(tmp_dir, "weights.pt")
     try:
         # 用与 training_service 相同的方式生成 TorchScript 归档
-        model_a = BanqiNet().to(DEVICE)
+        model_a = BanqiNet(VARIANT).to(DEVICE)
         with torch.no_grad():
             for p in model_a.parameters():
                 p.fill_(0.01)
@@ -149,7 +158,7 @@ def test_hot_reload_torchscript() -> None:
         traced = torch.jit.trace(model_a, (ex_board, ex_scalars))
         traced.save(model_path)
 
-        pred_model = BanqiNet().to(DEVICE)
+        pred_model = BanqiNet(VARIANT).to(DEVICE)
         pred = Predictor(pred_model, DEVICE, model_path=model_path)
         board, scalars = _dummy_inputs(4, seed=7)
         logits, _ = pred(board, scalars)
@@ -175,7 +184,7 @@ def test_degraded_no_torch() -> None:
     """验证无 torch 时的退化路径（均匀 logits + 0 值）——通过 monkeypatch 模拟。"""
     rep = Reporter("Predictor degraded (no torch)")
     import unittest.mock as mock
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     pred = Predictor(model, DEVICE, model_path=None)
     board, scalars = _dummy_inputs(4, seed=4)
     with mock.patch("self_play.HAS_TORCH", False):

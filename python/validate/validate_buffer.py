@@ -19,7 +19,16 @@ import numpy as np
 import validate_common  # noqa: F401  (设置 sys.path)
 from validate_common import Reporter, make_episode, run_part
 
-from constant import ACTION_SPACE_SIZE, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, TOTAL_INPUT_CHANNELS
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 from training_service import DataBuffer, episode_to_samples
 
 

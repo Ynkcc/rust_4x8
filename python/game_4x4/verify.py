@@ -1,7 +1,7 @@
 """
 verify.py — 4x4 暗棋模型对战验证
 
-加载训练好的 Banqi4x4Net，分别与：
+加载训练好的 BanqiNet，分别与：
   - 随机基线对局（验证模型已学会基本策略）
   - Rust minimax(alpha-beta) 对局（搜索强度标尺）
 交替先手统计胜率。
@@ -29,9 +29,22 @@ import torch
 
 import banqi_4x8
 
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+import os as _os
+import sys as _sys
+_sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from config import config
-from constant import ACTION_SPACE_SIZE, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT
-from nn_model import Banqi4x4Net, load_model_weights
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet, load_model_weights
+
+VARIANT = get_variant("4x4")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
 
 NUM_GAMES = int(os.getenv("G4X4_GAMES", "40"))
 MM_DEPTH = int(os.getenv("G4X4_MM_DEPTH", "3"))
@@ -42,7 +55,7 @@ STATE_DICT_PATH = config.STATE_DICT_PATH
 
 
 class ModelPredictor:
-    def __init__(self, model: Banqi4x4Net, device: "torch.device"):
+    def __init__(self, model: BanqiNet, device: "torch.device"):
         self.model = model.to(device).eval()
         self.device = device
 
@@ -56,7 +69,7 @@ class ModelPredictor:
 
 def load_model() -> ModelPredictor:
     device = torch.device("cpu")
-    model = Banqi4x4Net()
+    model = BanqiNet(VARIANT)
     if os.path.exists(MODEL_PATH):
         load_model_weights(model, MODEL_PATH, device)
         print(f"[Verify4x4] 已加载模型: {MODEL_PATH}")

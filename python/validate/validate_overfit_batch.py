@@ -42,14 +42,17 @@ import torch
 import validate_common  # noqa: F401  （设置 sys.path，可 import 生产模块）
 from validate_common import Reporter, run_part, require
 
-from constant import (
-    ACTION_SPACE_SIZE,
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    TOTAL_INPUT_CHANNELS,
-)
-from nn_model import BanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 from training_service import train_step  # 生产损失：masked policy CE + value MSE + grad clip
 
 DEVICE = "cpu"
@@ -152,7 +155,7 @@ def test_overfit_batch() -> None:
         policies[i, chosen] = 1.0
 
     # 4) 过拟合训练（生产 BanqiNet + 生产 train_step）
-    overfit_net = BanqiNet()
+    overfit_net = BanqiNet(VARIANT)
     optimizer = torch.optim.Adam(overfit_net.parameters(), lr=LEARNING_RATE)
 
     initial_total, _, _ = full_batch_metrics(

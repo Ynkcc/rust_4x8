@@ -25,10 +25,14 @@ verify_vs_heuristic_mcts.py 的 0.25/1.0 相反），导致同一模型测出 35
 from __future__ import annotations
 
 import argparse
+import os as _os
 import sys
 from typing import List, Optional, Tuple
 
 import numpy as np
+
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 # 评估常量（唯一权威定义处，与 verify_vs_heuristic_mcts.py 默认一致）
 EVAL_SIMS = 64
@@ -145,11 +149,12 @@ def report(predictor, tag: str, n: int = 100, model_sims: int = EVAL_SIMS,
 def load_predictor(model_path: Optional[str] = None, device=None):
     import torch
     from config import config
-    from nn_model import Banqi4x4Net, load_model_weights
+    from banqi.variant import get_variant
+    from banqi.nn_model import BanqiNet, load_model_weights
     from verify_vs_heuristic_mcts import ModelPredictor
     if device is None:
         device = torch.device("cpu")
-    model = Banqi4x4Net().to(device).eval()
+    model = BanqiNet(get_variant("4x4")).to(device).eval()
     load_model_weights(model, model_path or config.MODEL_PATH, device)
     return ModelPredictor(model, device)
 

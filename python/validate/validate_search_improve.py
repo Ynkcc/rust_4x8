@@ -32,8 +32,10 @@ import banqi_4x8 as b  # pyo3 绑定（Rust 暗棋环境 + MCTS）
 import validate_common  # noqa: F401
 from validate_common import Reporter, run_part, require
 
-from nn_model import BanqiNet, load_model_weights
+from banqi.variant import get_variant
+from banqi.nn_model import BanqiNet, load_model_weights
 
+VARIANT = get_variant("4x8")
 DEVICE = "cpu"
 MODEL_PATH = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "banqi_model_latest.pt"
@@ -49,7 +51,7 @@ MAX_STEPS_PER_GAME = 200  # 防死循环保护
 
 def load_real_model() -> BanqiNet:
     require(os.path.exists(MODEL_PATH), f"模型文件不存在: {MODEL_PATH}")
-    model = BanqiNet()
+    model = BanqiNet(VARIANT)
     load_model_weights(model, MODEL_PATH, torch.device(DEVICE))
     model.eval()
     return model

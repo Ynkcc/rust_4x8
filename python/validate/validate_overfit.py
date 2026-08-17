@@ -19,8 +19,17 @@ import torch
 import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, assert_converged, run_part
 
-from constant import ACTION_SPACE_SIZE, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, TOTAL_INPUT_CHANNELS
-from nn_model import BanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 from training_service import DataBuffer, episode_to_samples, train_step
 
 
@@ -74,7 +83,7 @@ def test_overfit() -> None:
     rng = np.random.default_rng(123)
     buf = _build_fixed_dataset()
 
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-3)
 
     initial_total, _, _ = _full_batch_metrics(model, buf)

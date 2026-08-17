@@ -34,9 +34,14 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from config import config
-from constant import ACTION_SPACE_SIZE
-from nn_model import BanqiNet, load_model_weights
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet, load_model_weights
 from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
 
 
 # ============================================================================
@@ -54,6 +59,8 @@ class Predictor:
     """
 
     def __init__(self, model: "BanqiNet", device: "torch.device", model_path: str | None) -> None:
+        if isinstance(device, str):
+            device = torch.device(device)
         self.model = model.to(device)
         self.device = device
         self.model_path: str | None = model_path
@@ -376,7 +383,7 @@ def build_predictor(model_path: str | None, device_str: str = "auto") -> Tuple[P
         )
     print(f"[SelfPlay] device = {device}")
 
-    model = BanqiNet()
+    model = BanqiNet(VARIANT)
     if HAS_TORCH:
         model = model.to(device)
     predictor = Predictor(model, device, model_path)
@@ -419,11 +426,11 @@ def build_mixed_predictor(
         f"[SelfPlay] 启用 GPU+CPU 混合推理: GPU={device}, "
         f"CPU线程={cpu_workers}, CPU比例={cpu_fraction:.2f}"
     )
-    gpu_model = BanqiNet().to(device)
+    gpu_model = BanqiNet(VARIANT).to(device)
     gpu_predictor = Predictor(gpu_model, device, model_path)
 
     cpu_device = torch.device("cpu")
-    cpu_model = BanqiNet().to(cpu_device)
+    cpu_model = BanqiNet(VARIANT).to(cpu_device)
     cpu_predictor = Predictor(cpu_model, cpu_device, model_path)
 
     return (

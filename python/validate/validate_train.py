@@ -20,8 +20,17 @@ import torch.nn.functional as F
 import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, run_part
 
-from constant import ACTION_SPACE_SIZE, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, TOTAL_INPUT_CHANNELS
-from nn_model import BanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 from training_service import train_step
 
 
@@ -47,7 +56,7 @@ def _make_batch_data(batch: int, rng: np.random.Generator, legal_frac: float = 0
 
 def test_train_step_loss() -> None:
     rep = Reporter("train_step loss")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     rng = np.random.default_rng(0)
     batch = _make_batch_data(8, rng)
@@ -63,7 +72,7 @@ def test_train_step_loss() -> None:
 def test_mask_blocks_illegal() -> None:
     """验证 mask 让非法动作在 softmax 后概率≈0，合法动作概率与被屏蔽前不同。"""
     rep = Reporter("mask blocks illegal actions")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     rng = np.random.default_rng(1)
     boards, scalars, probs, vals, masks = _make_batch_data(8, rng, legal_frac=0.2)
@@ -89,7 +98,7 @@ def test_mask_blocks_illegal() -> None:
 
 def test_parameter_update() -> None:
     rep = Reporter("parameter update")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     rng = np.random.default_rng(2)
     batch = _make_batch_data(8, rng)
@@ -109,7 +118,7 @@ def test_parameter_update() -> None:
 def test_grad_clip() -> None:
     """验证 clip_grad_norm 后梯度范数 ≤ max_norm(=1.0)。"""
     rep = Reporter("grad clip")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
     rng = np.random.default_rng(3)
     batch = _make_batch_data(4, rng)

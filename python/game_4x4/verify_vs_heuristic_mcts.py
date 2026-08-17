@@ -2,7 +2,7 @@
 verify_vs_heuristic_mcts.py — 4x4 暗棋：训练模型 vs 纯计算启发式 Gumbel MCTS
 
 对局双方：
-  - 模型方（Banqi4x4Net）：Gumbel MCTS（网络先验 + 网络价值）
+  - 模型方（BanqiNet）：Gumbel MCTS（网络先验 + 网络价值）
   - 启发式方（Rust `Game4x4.heuristic_mcts_action`）：纯计算启发式 Gumbel MCTS
     （规则先验 logits + 多特征启发式价值，无需 torch，见 src/ai/heuristic_mcts.rs）
 
@@ -33,9 +33,17 @@ torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 
 import banqi_4x8
 
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+import os as _os
+import sys as _sys
+_sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from config import config
 from eval_common import play_one, play_match, report as eval_report
-from nn_model import Banqi4x4Net, load_model_weights
+from banqi.variant import get_variant
+from banqi.nn_model import BanqiNet, load_model_weights
+
+VARIANT = get_variant("4x4")
 
 NUM_GAMES = int(os.getenv("G4X4_HM_GAMES", "40"))
 HM_SIMS = int(os.getenv("G4X4_HM_SIMS", "64"))
@@ -46,7 +54,7 @@ STATE_DICT_PATH = config.STATE_DICT_PATH
 
 
 class ModelPredictor:
-    def __init__(self, model: Banqi4x4Net, device: "torch.device"):
+    def __init__(self, model: BanqiNet, device: "torch.device"):
         self.model = model.to(device).eval()
         self.device = device
 
@@ -60,7 +68,7 @@ class ModelPredictor:
 
 def load_model() -> ModelPredictor:
     device = torch.device("cpu")
-    model = Banqi4x4Net()
+    model = BanqiNet(VARIANT)
     if os.path.exists(MODEL_PATH):
         load_model_weights(model, MODEL_PATH, device)
         print(f"[HM] 已加载模型: {MODEL_PATH}")

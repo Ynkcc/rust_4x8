@@ -30,8 +30,13 @@ import numpy as np
 import banqi_4x8
 
 from config import config
-from constant import ACTION_SPACE_SIZE
+from banqi.variant import get_variant
+from banqi.constants import build_constants
 from self_play import build_self_play_config
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
 
 
 # ============================================================================

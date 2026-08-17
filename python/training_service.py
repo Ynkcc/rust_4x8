@@ -22,22 +22,21 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
 from config import config
-from constant import (
-    TOTAL_INPUT_CHANNELS,
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    ACTION_SPACE_SIZE,
-)
-from nn_model import BanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
+from banqi.data_augmentation import make_augmentor
 from tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 
-# 训练数据对称增强（仅训练侧；冷存储归档不应用，见 run_training.py 队列拆分）
-try:
-    from data_augmentation import augment_samples
-    HAS_AUGMENT = True
-except ImportError:  # pragma: no cover
-    HAS_AUGMENT = False
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+AUG = make_augmentor(VARIANT)
+HAS_AUGMENT = True
 
 def _resolve_device(spec: str) -> "torch.device":
     """按 config.TRAIN_DEVICE 解析训练设备；auto = CUDA 可用则用 CUDA。"""
@@ -310,7 +309,7 @@ class TrainWorker(threading.Thread):
         super().__init__(name="TrainWorker", daemon=True)
         self.data_q = data_q
         self.stop_flag = stop_flag
-        self.model = model if model is not None else BanqiNet().to(DEVICE)
+        self.model = model if model is not None else BanqiNet(VARIANT).to(DEVICE)
 
         # 模型 + 优化器 + 调度器
         self.optimizer = optim.Adam(self.model.parameters(), lr=config.LEARNING_RATE)
@@ -377,7 +376,7 @@ class TrainWorker(threading.Thread):
             if HAS_AUGMENT and config.DATA_AUGMENT_ENABLED and train_samples:
                 transforms = [t.strip() for t in config.DATA_AUGMENT_TRANSFORMS.split(",") if t.strip()]
                 raw_count = len(train_samples)
-                train_samples = augment_samples(
+                train_samples = AUG.augment_samples(
                     train_samples,
                     transforms=transforms,
                     keep_original=config.DATA_AUGMENT_KEEP_ORIGINAL,

@@ -3,7 +3,7 @@ run_training_mini.py — 4x2 迷你暗棋 自对弈 + 训练闭环入口
 
 单进程双线程模型：
   - SelfPlayWorkerMini（生产者）：调用 run_mini_* 生成 episode，压入数据队列
-  - TrainWorker（消费者）：从数据队列消费，填充 replay buffer 并训练 MiniBanqiNet
+  - TrainWorker（消费者）：从数据队列消费，填充 replay buffer 并训练 BanqiNet
 
 运行到 config_mini.MAX_RUNTIME_SECONDS 后自动优雅停止并落盘 checkpoint，
 预期约 20 分钟内收敛（loss 下降 + 对随机基线胜率提升）。

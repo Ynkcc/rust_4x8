@@ -35,10 +35,18 @@ import torch
 
 import banqi_4x8
 
+# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
+import os as _os
+import sys as _sys
+_sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from config_mini import config
 from self_play_mini import SelfPlayWorkerMini, build_predictor_mini, build_self_play_config
 from training_service_mini import TrainWorker
-from nn_model_mini import MiniBanqiNet, load_model_weights
+from banqi.variant import get_variant
+from banqi.nn_model import BanqiNet, load_model_weights
+
+VARIANT = get_variant("4x2")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 MINIMAX_DEPTH = int(os.getenv("MINI_MM_DEPTH", "4"))
@@ -54,7 +62,7 @@ STATE_DICT_PATH = os.getenv("MINI_STATE_DICT_PATH", os.path.join(_HERE, "banqi_m
 class EvalPredictor:
     """从磁盘 checkpoint 加载的评估用 Predictor（与 verify_mini_vs_minimax 一致）。"""
 
-    def __init__(self, model: MiniBanqiNet, device: "torch.device"):
+    def __init__(self, model: BanqiNet, device: "torch.device"):
         self.model = model.to(device).eval()
         self.device = device
 
@@ -68,7 +76,7 @@ class EvalPredictor:
 
 def load_disk_model() -> EvalPredictor:
     device = torch.device("cpu")
-    model = MiniBanqiNet()
+    model = BanqiNet(VARIANT)
     if os.path.exists(MODEL_PATH):
         load_model_weights(model, MODEL_PATH, device)
     elif os.path.exists(STATE_DICT_PATH):

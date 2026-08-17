@@ -35,7 +35,12 @@ except ImportError as exc:  # pragma: no cover
         "无法导入 banqi_4x8，请先执行: maturin develop --features pyo3"
     ) from exc
 
-from data_augmentation import SYMMETRY_TRANSFORMS, transform_episode
+from banqi.variant import get_variant
+from banqi.data_augmentation import make_augmentor
+
+AUG = make_augmentor(get_variant("4x8"))
+SYMMETRY_TRANSFORMS = AUG.SYMMETRY_TRANSFORMS
+transform_episode = AUG.transform_episode
 
 
 def make_random_game(num_games: int = 1) -> dict:

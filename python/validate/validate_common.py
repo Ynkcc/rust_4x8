@@ -24,13 +24,16 @@ _PARENT = __file__.rsplit("/", 2)[0]
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from constant import (  # noqa: E402
-    ACTION_SPACE_SIZE,
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    TOTAL_INPUT_CHANNELS,
-)
+from banqi.variant import get_variant  # noqa: E402
+from banqi.constants import build_constants  # noqa: E402
+
+VARIANT = get_variant("4x8")  # noqa: E402
+C = build_constants(VARIANT)  # noqa: E402
+ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 
 # 强制 CPU，保证可复现
 DEVICE = "cpu"

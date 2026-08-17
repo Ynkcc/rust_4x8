@@ -26,9 +26,17 @@ import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, run_part
 
 from config import config
-from constant import BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, TOTAL_INPUT_CHANNELS
-from nn_model import BanqiNet
+from banqi.variant import get_variant
+from banqi.constants import build_constants
+from banqi.nn_model import BanqiNet
 from training_service import load_checkpoint, save_checkpoint
+
+VARIANT = get_variant("4x8")
+C = build_constants(VARIANT)
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 
 
 def _rand_weights(rng: np.random.Generator):
@@ -67,7 +75,7 @@ def test_files_created() -> None:
         if os.path.exists(f):
             os.remove(f)
 
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     opt = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=100, eta_min=1e-6)
     save_checkpoint(model, opt, sched)
@@ -81,7 +89,7 @@ def test_files_created() -> None:
 
 def test_state_dict_roundtrip() -> None:
     rep = Reporter("state_dict roundtrip")
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     opt = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=100, eta_min=1e-6)
 
@@ -94,7 +102,7 @@ def test_state_dict_roundtrip() -> None:
     save_checkpoint(model, opt, sched)
 
     # 新模型 + 清空优化器后加载
-    model2 = BanqiNet().to(DEVICE)
+    model2 = BanqiNet(VARIANT).to(DEVICE)
     opt2 = torch.optim.Adam(model2.parameters(), lr=config.LEARNING_RATE)
     sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=100, eta_min=1e-6)
     load_checkpoint(model2, opt2, sched2)
@@ -113,7 +121,7 @@ def test_torchscript_loadable() -> None:
     rep = Reporter("TorchScript loadable")
     pt = config.MODEL_PATH
     # 加载参考 Python 模型
-    ref_model = BanqiNet().to(DEVICE)
+    ref_model = BanqiNet(VARIANT).to(DEVICE)
     load_checkpoint(ref_model, torch.optim.Adam(ref_model.parameters()),
                     torch.optim.lr_scheduler.CosineAnnealingLR(
                         torch.optim.Adam(ref_model.parameters()), T_max=100))
@@ -147,7 +155,7 @@ def test_torchscript_loadable() -> None:
 def test_optimizer_scheduler_restored() -> None:
     rep = Reporter("optimizer/scheduler restored")
     # 构造一个已训练的模型 + 优化器状态
-    model = BanqiNet().to(DEVICE)
+    model = BanqiNet(VARIANT).to(DEVICE)
     opt = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=100, eta_min=1e-6)
     # 走几步让 optimizer/scheduler 内部状态变化
@@ -167,7 +175,7 @@ def test_optimizer_scheduler_restored() -> None:
     save_checkpoint(model, opt, sched)
 
     # 恢复
-    model2 = BanqiNet().to(DEVICE)
+    model2 = BanqiNet(VARIANT).to(DEVICE)
     opt2 = torch.optim.Adam(model2.parameters(), lr=config.LEARNING_RATE)
     sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=100, eta_min=1e-6)
     load_checkpoint(model2, opt2, sched2)

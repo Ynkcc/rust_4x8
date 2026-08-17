@@ -3,7 +3,7 @@ validate_view_inversion_mini.py — 4x2 迷你暗棋模型 视角与标签反转
 
 与 validate_view_inversion.py（4x8 暗棋）完全同构，但针对迷你环境/网络：
   - 环境：Rust `banqi_4x8.MiniDarkChess`（board 10 通道 / 4x2 / scalars 11）
-  - 网络：`MiniBanqiNet`，直接加载已训练权重 `banqi_mini_model_latest.pt`
+  - 网络：`BanqiNet`，直接加载已训练权重 `banqi_mini_model_latest.pt`
     （不重新训练）
 
 Part A：Rust 环境 `switch_player()` 视角切换编码正确性（确定性断言）。
@@ -41,13 +41,16 @@ if _VALIDATE_DIR not in sys.path:
 import validate_common  # noqa: F401, E402
 from validate_common import Reporter, run_part, require  # noqa: E402
 
-from constant_mini import (  # noqa: E402
-    BOARD_ROWS,
-    BOARD_COLS,
-    SCALAR_FEATURE_COUNT,
-    TOTAL_INPUT_CHANNELS,
-)
-from nn_model_mini import MiniBanqiNet, load_model_weights  # noqa: E402
+from banqi.variant import get_variant  # noqa: E402
+from banqi.constants import build_constants  # noqa: E402
+from banqi.nn_model import BanqiNet, load_model_weights  # noqa: E402
+
+VARIANT = get_variant("4x2")
+C = build_constants(VARIANT)
+BOARD_ROWS = C.BOARD_ROWS
+BOARD_COLS = C.BOARD_COLS
+SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
+TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
 
 DEVICE = "cpu"
 MODEL_PATH = os.path.join(_HERE, "banqi_mini_model_latest.pt")
@@ -57,10 +60,10 @@ WALK_STEPS = 20
 NUM_POSITIONS = 30
 
 
-def load_real_model() -> MiniBanqiNet:
-    """加载真实迷你暗棋网络权重到 MiniBanqiNet（TorchScript / state_dict 自动识别）。"""
+def load_real_model() -> BanqiNet:
+    """加载真实迷你暗棋网络权重到 BanqiNet（TorchScript / state_dict 自动识别）。"""
     require(os.path.exists(MODEL_PATH), f"模型文件不存在: {MODEL_PATH}")
-    model = MiniBanqiNet()
+    model = BanqiNet(VARIANT)
     load_model_weights(model, MODEL_PATH, torch.device(DEVICE))
     model.eval()
     return model
