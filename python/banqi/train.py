@@ -42,6 +42,7 @@ except ImportError as exc:  # pragma: no cover
 
 from banqi.archiver import ArchiverWorker
 from banqi.config import Config, make_config
+from banqi.memory_guard import start_memory_guard
 from banqi.self_play import (
     SelfPlayWorker,
     build_mixed_predictor,
@@ -110,6 +111,9 @@ def main(variant_id: str) -> None:
     if config.MAX_RUNTIME_SECONDS > 0:
         print(f"  运行时限        = {config.MAX_RUNTIME_SECONDS}s")
     print("=" * 56)
+
+    # ---- 内存看门守护线程（超限主动终止，防止长时间卡死 / 拖垮整机）----
+    start_memory_guard()
 
     # ---- 优雅退出标志 ----
     stop_flag: List[bool] = [False]
