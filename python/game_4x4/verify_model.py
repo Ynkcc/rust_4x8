@@ -16,11 +16,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # python/
 import torch
 
 torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 
-from eval_common import load_predictor, report
+from banqi.eval import load_predictor, report
 
 
 def main():

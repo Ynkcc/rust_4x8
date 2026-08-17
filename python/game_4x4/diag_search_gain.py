@@ -1,4 +1,4 @@
-"""诊断：模型的搜索增益（统一评估协议，见 eval_common）。
+"""诊断：模型的搜索增益（统一评估协议，见 banqi.eval）。
 
 用法：python diag_search_gain.py [model.pt] [n]
 """
@@ -6,11 +6,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # python/
 import torch
 
 torch.set_num_threads(int(os.getenv("G4X4_TORCH_THREADS", "2")))
 
-from eval_common import (
+from banqi.eval import (
     load_predictor, play_match, model_mcts_action, heuristic_action,
     EVAL_SIMS,
 )

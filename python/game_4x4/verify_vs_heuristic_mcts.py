@@ -39,7 +39,7 @@ import sys as _sys
 _sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 from config import config
-from eval_common import play_one, play_match, report as eval_report
+from banqi.eval import play_one, play_match, report as eval_report
 from banqi.variant import get_variant
 from banqi.nn_model import BanqiNet, load_model_weights
 

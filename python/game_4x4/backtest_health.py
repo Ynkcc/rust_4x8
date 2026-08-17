@@ -258,7 +258,7 @@ class PredictorCompat:
 
 
 def eval_strength(model_path, tag, games, device, sims=64):
-    from eval_common import report, report_vs
+    from banqi.eval import report, report_vs
     import banqi_4x8  # noqa: F401
     model, arch = load_model_any(model_path, device)
     pred = PredictorCompat(model, device)
@@ -270,7 +270,7 @@ def eval_strength(model_path, tag, games, device, sims=64):
 
 
 def eval_head_to_head(base_model_path, health_model_path, games, device, sims=64):
-    from eval_common import report_vs
+    from banqi.eval import report_vs
     import banqi_4x8  # noqa: F401
     m_base, _ = load_model_any(base_model_path, device)
     m_health, _ = load_model_any(health_model_path, device)

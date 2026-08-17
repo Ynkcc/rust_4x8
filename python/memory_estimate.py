@@ -9,7 +9,7 @@ memory_estimate.py — ReplayBuffer 最大内存占用估算（无 CLI 参数）
 - DataBuffer 每个字段用 Python list 存储，元素为独立 numpy 数组
   (boards / scalars / probs / masks) 或 Python 标量 (values / root_visits)，
   因此必须计入 numpy 数组对象头、Python 浮点/整型对象与 list 指针开销。
-- 复用 predictor_entry._sizeof_fmt 做人类可读格式化；基础维度取自 constant。
+- 复用 banqi.memory_estimate._sizeof_fmt 做人类可读格式化；基础维度取自 constant。
 
 用法：
     python python/memory_estimate.py
@@ -33,7 +33,7 @@ BOARD_COLS = C.BOARD_COLS
 BOARD_ROWS = C.BOARD_ROWS
 SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
 TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
-from predictor_entry import (
+from banqi.memory_estimate import (
     MAX_STEPS_PER_EPISODE,
     _sizeof_fmt,
     estimate_memory_bytes,
@@ -180,7 +180,7 @@ def estimate_suspended_game(
     估算挂起一个 self_play 对局所需预留的内存。
 
     一个挂起的对局 = 游戏环境状态 + 单次 MCTS 搜索树 (+ 整局训练数据存储)。
-    复用 predictor_entry.estimate_single_game_suspended（明细）与
+    复用 banqi.memory_estimate.estimate_single_game_suspended（明细）与
     estimate_memory_bytes（含安全余量的字节数）。
 
     返回 dict:
@@ -209,8 +209,8 @@ def estimate_suspended_game(
 
 
 def estimate_episode_storage_for_suspended(steps: int) -> int:
-    """挂起对局中 GameEpisode 训练数据存储部分的字节数（复用 predictor_entry）。"""
-    from predictor_entry import estimate_episode_storage
+    """挂起对局中 GameEpisode 训练数据存储部分的字节数（复用 banqi.memory_estimate）。"""
+    from banqi.memory_estimate import estimate_episode_storage
     return estimate_episode_storage(steps).total_bytes
 
 
@@ -250,7 +250,7 @@ def main() -> None:
     )
     print(
         "  挂起对局 = 游戏环境状态 + 单次 MCTS 搜索树 (+ 整局训练数据存储)，"
-        "明细复用 predictor_entry\n"
+        "明细复用 banqi.memory_estimate\n"
     )
     suspended = estimate_suspended_game()
     suspended["est"].print_report(

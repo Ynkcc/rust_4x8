@@ -598,7 +598,7 @@ fn build_episode_dict<'py>(
 
 fn main() -> Result<()> {
     let python_module = env::var("PY_PREDICTOR_MODULE")
-        .unwrap_or_else(|_| "./python/predictor_entry.py".to_string());
+        .unwrap_or_else(|_| "./python/banqi/predictor.py".to_string());
     let predict_func = env::var("PY_PREDICT_FUNC").unwrap_or_else(|_| "predict".to_string());
     let save_func = env::var("PY_SAVE_FUNC").unwrap_or_else(|_| "save_episodes".to_string());
 

@@ -123,9 +123,9 @@ def episodes_to_dicts(eps, tag: str):
 
 
 def eval_strength(model, tag, n=8):
-    """快速评估（统一协议，见 eval_common）。"""
+    """快速评估（统一协议，见 banqi.eval）。"""
     from verify_vs_heuristic_mcts import ModelPredictor
-    from eval_common import model_mcts_action, heuristic_action
+    from banqi.eval import model_mcts_action, heuristic_action
     pred = ModelPredictor(model, DEVICE)
 
     def obs_of(env):

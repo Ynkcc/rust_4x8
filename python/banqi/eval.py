@@ -1,6 +1,6 @@
-"""
-eval_common.py — 统一评估协议（单一入口）
+"""banqi/eval.py — 统一评估协议（单一入口，4x2 / 4x4 / 4x8 公共）
 
+由原 python/game_4x4/eval_common.py 拆分而来，参数化为任意变体。
 所有 diag/verify/train 脚本复用本模块的评估函数，避免"同一模型同一协议
 测出 35%/60%"这类 n 太小导致的不可信结论。
 
@@ -18,21 +18,16 @@ eval_common.py — 统一评估协议（单一入口）
 
 判定规则：主指标 vs minimax(d3) 取 n=100（SE≈3.4%），差异 <10pp 不下结论。
 
-警告：此前的 diag/verify 脚本曾误用 c_scale=1.0, gumbel_scale=0.25（与官方
-verify_vs_heuristic_mcts.py 的 0.25/1.0 相反），导致同一模型测出 35% vs 60%
-的假差异。所有评估必须统一走本模块。
+警告：所有评估必须统一走本模块。
 """
 from __future__ import annotations
 
 import argparse
-import os as _os
-import sys
 from typing import List, Optional, Tuple
 
 import numpy as np
 
-# 使 python/（banqi 共享包所在目录）可导入；append 避免遮蔽本目录同名模块
-sys.path.append(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from banqi.variant import Variant, get_variant
 
 # 评估常量（唯一权威定义处，与 verify_vs_heuristic_mcts.py 默认一致）
 EVAL_SIMS = 64
@@ -48,6 +43,42 @@ OPP_MINIMAX3 = "minimax3"
 OPP_HEURISTIC64 = "heuristic64"
 OPPONENTS = (OPP_MINIMAX3, OPP_HEURISTIC64)
 
+
+# ---------------------------------------------------------------------------
+# Rust 绑定环境类分派（按 variant.rust_prefix）
+# ---------------------------------------------------------------------------
+
+# rust_prefix -> banqi_4x8 模块中的 pyclass 名
+_ENV_CLASS_NAMES = {
+    "": "DarkChess",          # 4x8
+    "game4x4": "Game4x4",     # 4x4
+    "mini": "MiniDarkChess",  # 4x2
+}
+
+_env_class_cache: dict = {}
+
+
+def get_env_class(variant_id: str = "4x4"):
+    """返回指定变体的 Rust 绑定环境类（延迟 import banqi_4x8）。"""
+    if variant_id in _env_class_cache:
+        return _env_class_cache[variant_id]
+    variant: Variant = get_variant(variant_id)
+    class_name = _ENV_CLASS_NAMES.get(variant.rust_prefix)
+    if class_name is None:
+        raise ValueError(
+            f"未知 rust_prefix {variant.rust_prefix!r}（变体 {variant_id}），"
+            f"可选: {sorted(_ENV_CLASS_NAMES)}"
+        )
+    import banqi_4x8  # 延迟导入，避免评估前强制加载 Rust 绑定
+
+    cls = getattr(banqi_4x8, class_name)
+    _env_class_cache[variant_id] = cls
+    return cls
+
+
+# ---------------------------------------------------------------------------
+# 动作选择
+# ---------------------------------------------------------------------------
 
 def model_mcts_action(env, predictor, sims: int = EVAL_SIMS,
                       max_actions: int = EVAL_MAX_ACTIONS,
@@ -76,12 +107,16 @@ def opponent_action(env, opponent: str, sims: int = HM_SIMS,
     raise ValueError(f"未知对手: {opponent}（可选 {OPPONENTS}）")
 
 
+# ---------------------------------------------------------------------------
+# 单局 / 多局对战
+# ---------------------------------------------------------------------------
+
 def play_one(predictor, model_is_red: bool, max_moves: int = 400,
              model_sims: int = EVAL_SIMS,
-             opponent: str = OPP_MINIMAX3) -> int:
+             opponent: str = OPP_MINIMAX3,
+             variant_id: str = "4x4") -> int:
     """单局：模型 vs 指定对手。返回 (红视角) 1/0/-1。"""
-    import banqi_4x8
-    env = banqi_4x8.Game4x4()
+    env = get_env_class(variant_id)()
     moves = 0
     while not env.terminated():
         if env.winner() is not None:
@@ -103,7 +138,8 @@ def play_one(predictor, model_is_red: bool, max_moves: int = 400,
 
 def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
                progress: bool = False,
-               opponent: str = OPP_MINIMAX3) -> Tuple[int, int, int, List[float]]:
+               opponent: str = OPP_MINIMAX3,
+               variant_id: str = "4x4") -> Tuple[int, int, int, List[float]]:
     """n 局分块对战，返回 (wins, draws, losses, block_wr)。
 
     wins/draws/losses 均为模型视角（交替先后手，模型既当红也当黑）。
@@ -115,7 +151,8 @@ def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
     model_is_red = True
     blk_w = blk_tot = 0
     for i in range(n):
-        r = play_one(predictor, model_is_red, model_sims=model_sims, opponent=opponent)
+        r = play_one(predictor, model_is_red, model_sims=model_sims,
+                     opponent=opponent, variant_id=variant_id)
         if r == 0:
             draws += 1
         elif r == 1:
@@ -134,10 +171,11 @@ def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
 
 
 def report(predictor, tag: str, n: int = 100, model_sims: int = EVAL_SIMS,
-           opponent: str = OPP_MINIMAX3) -> Tuple[int, int, int, List[float]]:
+           opponent: str = OPP_MINIMAX3,
+           variant_id: str = "4x4") -> Tuple[int, int, int, List[float]]:
     """统一打印评估报告：胜/平/负 + 分块均值±std。"""
     wins, draws, losses, blk = play_match(predictor, n=n, model_sims=model_sims,
-                                          opponent=opponent)
+                                          opponent=opponent, variant_id=variant_id)
     mean = float(np.mean(blk)) if blk else 0.0
     std = float(np.std(blk)) if blk else 0.0
     print(f"[Eval:{tag}] 对手={opponent} 胜{wins} 平{draws} 负{losses} "
@@ -145,25 +183,54 @@ def report(predictor, tag: str, n: int = 100, model_sims: int = EVAL_SIMS,
     return wins, draws, losses, blk
 
 
+# ---------------------------------------------------------------------------
 # 便捷：构建 Predictor（兼容 verify_vs_heuristic_mcts.ModelPredictor）
-def load_predictor(model_path: Optional[str] = None, device=None):
+# ---------------------------------------------------------------------------
+
+class ModelPredictor:
+    """包装 BanqiNet 为 eval 约定：__call__(boards, scalars) -> (logits, values)。"""
+
+    def __init__(self, model, device) -> None:
+        self.model = model.to(device).eval()
+        self.device = device
+
+    def __call__(self, boards: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        import torch
+
+        with torch.inference_mode():
+            b = torch.from_numpy(np.ascontiguousarray(boards)).to(self.device)
+            s = torch.from_numpy(np.ascontiguousarray(scalars)).to(self.device)
+            logits, value = self.model(b, s)
+            return (
+                logits.cpu().numpy().astype(np.float32),
+                value.cpu().numpy().reshape(-1).astype(np.float32),
+            )
+
+
+def load_predictor(model_path: Optional[str] = None, device=None,
+                   variant_id: str = "4x4") -> ModelPredictor:
     import torch
-    from config import config
-    from banqi.variant import get_variant
+    from banqi.config import make_config
     from banqi.nn_model import BanqiNet, load_model_weights
-    from verify_vs_heuristic_mcts import ModelPredictor
+
     if device is None:
         device = torch.device("cpu")
-    model = BanqiNet(get_variant("4x4")).to(device).eval()
-    load_model_weights(model, model_path or config.MODEL_PATH, device)
+    model = BanqiNet(get_variant(variant_id)).to(device).eval()
+    if model_path is None:
+        model_path = make_config(variant_id).MODEL_PATH
+    load_model_weights(model, model_path, device)
     return ModelPredictor(model, device)
 
 
+# ---------------------------------------------------------------------------
+# 对头评估：模型 A vs 模型 B
+# ---------------------------------------------------------------------------
+
 def play_one_vs_model(predictor_a, predictor_b, model_a_is_red: bool, max_moves: int = 400,
-                      model_sims: int = EVAL_SIMS) -> int:
+                      model_sims: int = EVAL_SIMS,
+                      variant_id: str = "4x4") -> int:
     """单局对头：模型 A vs 模型 B。返回 A 视角 1/0/-1。"""
-    import banqi_4x8
-    env = banqi_4x8.Game4x4()
+    env = get_env_class(variant_id)()
     moves = 0
     while not env.terminated():
         if env.winner() is not None:
@@ -184,7 +251,8 @@ def play_one_vs_model(predictor_a, predictor_b, model_a_is_red: bool, max_moves:
 
 
 def play_match_vs(predictor_a, predictor_b, n: int = 50, model_sims: int = EVAL_SIMS,
-                  progress: bool = False) -> Tuple[int, int, int, List[float]]:
+                  progress: bool = False,
+                  variant_id: str = "4x4") -> Tuple[int, int, int, List[float]]:
     """n 局对头分块对战（模型 A vs 模型 B），返回 A 视角 (wins, draws, losses, block_wr)。"""
     block = 10
     wins = draws = losses = 0
@@ -192,7 +260,8 @@ def play_match_vs(predictor_a, predictor_b, n: int = 50, model_sims: int = EVAL_
     a_is_red = True
     blk_w = blk_tot = 0
     for i in range(n):
-        r = play_one_vs_model(predictor_a, predictor_b, a_is_red, model_sims=model_sims)
+        r = play_one_vs_model(predictor_a, predictor_b, a_is_red,
+                              model_sims=model_sims, variant_id=variant_id)
         if r == 0:
             draws += 1
         elif r == 1:
@@ -211,9 +280,12 @@ def play_match_vs(predictor_a, predictor_b, n: int = 50, model_sims: int = EVAL_
 
 
 def report_vs(predictor_a, predictor_b, tag: str, n: int = 50,
-              model_sims: int = EVAL_SIMS) -> Tuple[int, int, int, List[float]]:
+              model_sims: int = EVAL_SIMS,
+              variant_id: str = "4x4") -> Tuple[int, int, int, List[float]]:
     """对头评估报告：A 视角 胜/平/负 + 分块均值±std。"""
-    wins, draws, losses, blk = play_match_vs(predictor_a, predictor_b, n=n, model_sims=model_sims)
+    wins, draws, losses, blk = play_match_vs(
+        predictor_a, predictor_b, n=n, model_sims=model_sims, variant_id=variant_id
+    )
     mean = float(np.mean(blk)) if blk else 0.0
     std = float(np.std(blk)) if blk else 0.0
     print(f"[EvalVs:{tag}] 胜{wins} 平{draws} 负{losses} "
@@ -222,18 +294,21 @@ def report_vs(predictor_a, predictor_b, tag: str, n: int = 50,
 
 
 if __name__ == "__main__":
-    # CLI: python eval_common.py [model.pt] [n] [--opponent minimax3|heuristic64]
-    #      python eval_common.py [model.pt] [n] --vs <ckpt.pt>   (对头评估)
-    ap = argparse.ArgumentParser(description="4x4 模型统一评估（主对手 minimax(d3)）")
+    # CLI: python -m banqi.eval [model.pt] [n] [--opponent minimax3|heuristic64]
+    #      python -m banqi.eval [model.pt] [n] --vs <ckpt.pt>   (对头评估)
+    ap = argparse.ArgumentParser(description="暗棋模型统一评估（主对手 minimax(d3)）")
     ap.add_argument("model_path", nargs="?", default=None, help="模型权重路径（默认 config.MODEL_PATH）")
     ap.add_argument("n", nargs="?", type=int, default=100, help="评估局数（默认 100）")
+    ap.add_argument("--variant", default="4x4", choices=("4x2", "4x4", "4x8"),
+                    help="棋盘变体（默认 4x4）")
     ap.add_argument("--opponent", choices=OPPONENTS, default=OPP_MINIMAX3,
                     help=f"对手类型（默认 {OPP_MINIMAX3}；与 --vs 互斥）")
     ap.add_argument("--vs", default=None, help="对头评估：对方模型权重路径（覆盖 --opponent）")
     args = ap.parse_args()
-    p = load_predictor(args.model_path)
+    p = load_predictor(args.model_path, variant_id=args.variant)
     if args.vs:
-        pb = load_predictor(args.vs)
-        report_vs(p, pb, "main", n=args.n)
+        pb = load_predictor(args.vs, variant_id=args.variant)
+        report_vs(p, pb, "main", n=args.n, variant_id=args.variant)
     else:
-        report(p, "main", n=args.n, opponent=args.opponent)
+        report(p, "main", n=args.n, opponent=args.opponent,
+               variant_id=args.variant)
