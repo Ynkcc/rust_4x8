@@ -486,27 +486,86 @@ window.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
-  // 绑定 MCTS+DL 控件 (暂时禁用)
+  // 绑定 MCTS+DL 控件（模型加载 / 列表 / 搜索次数）
   const refreshBtn = document.getElementById('btn-refresh-models');
   const loadBtn = document.getElementById('btn-load-model');
   const modelSelect = document.getElementById('model-select');
   const applyItersBtn = document.getElementById('btn-apply-iters');
   const itersInput = document.getElementById('mcts-iters');
+  const modelPathInput = document.getElementById('model-path-input');
 
   async function refreshModels() {
-    // 模型功能暂时禁用
-    console.log('模型功能暂时禁用');
-    if (modelSelect) {
-      modelSelect.innerHTML = '<option value="">模型功能暂时禁用</option>';
+    if (!modelSelect) return;
+    try {
+      const models = await invoke('list_models');
+      modelSelect.innerHTML = '';
+      if (!models || models.length === 0) {
+        modelSelect.innerHTML = '<option value="">未找到 .pt 模型</option>';
+        return;
+      }
+      models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.path;
+        opt.textContent = m.name;
+        modelSelect.appendChild(opt);
+      });
+    } catch (e) {
+      console.error('list_models failed:', e);
+      modelSelect.innerHTML = '<option value="">加载模型列表失败</option>';
     }
+  }
+
+  // 手动输入模型路径（用于 list_models 未覆盖的路径，如 python/game_4x4/ 子目录）
+  if (modelPathInput) {
+    modelPathInput.addEventListener('input', () => {
+      if (modelPathInput.value.trim()) {
+        // 输入框非空时以输入路径优先
+        modelPathInput.dataset.manual = '1';
+      } else {
+        delete modelPathInput.dataset.manual;
+      }
+    });
+  }
+
+  function resolveModelPath() {
+    // 手动输入的路径优先；否则用下拉框选中的路径
+    if (modelPathInput && modelPathInput.value.trim()) {
+      return modelPathInput.value.trim();
+    }
+    return modelSelect ? modelSelect.value : '';
   }
 
   if (refreshBtn) refreshBtn.onclick = refreshModels;
   if (loadBtn) loadBtn.onclick = async () => {
-    alert('模型功能暂时禁用');
+    const path = resolveModelPath();
+    if (!path) {
+      alert('请先选择模型（或手动输入模型路径）');
+      return;
+    }
+    try {
+      const result = await invoke('load_model', { path });
+      alert('模型加载成功：' + result);
+      // 自动切换到 MCTS+DL 对手并提示
+      const oppSel = document.getElementById('opponent-select');
+      if (oppSel) oppSel.value = 'MctsDL';
+      updateAiSettingsVisibility();
+    } catch (e) {
+      alert('模型加载失败：' + e);
+    }
   };
   if (applyItersBtn) applyItersBtn.onclick = async () => {
-    alert('模型功能暂时禁用');
+    const iters = itersInput ? parseInt(itersInput.value, 10) : NaN;
+    if (!Number.isFinite(iters) || iters < 1) {
+      alert('搜索次数必须是大于 0 的整数');
+      return;
+    }
+    try {
+      const result = await invoke('set_mcts_iterations', { iters });
+      if (itersInput) itersInput.value = String(result);
+      alert('MCTS 搜索次数已设置为 ' + result);
+    } catch (e) {
+      alert('设置失败：' + e);
+    }
   };
 
   // 绑定 Minimax 深度设置

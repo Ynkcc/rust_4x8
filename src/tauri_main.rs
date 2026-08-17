@@ -64,9 +64,9 @@ struct AppState {
     // 已加载的模型（可在选择 MctsDL 时构建策略）
     #[cfg(feature = "torch")]
     model: Mutex<Option<Arc<ModelWrapper>>>,
-    // MCTS+DL 策略
+    // MCTS+DL 策略（基于 DarkChessEnv，4x8/4x4/4x2 共用）
     #[cfg(feature = "torch")]
-    mcts_policy: Mutex<Option<MctsDlPolicy>>,
+    mcts_policy: Mutex<Option<MctsDlPolicy<DarkChessEnv>>>,
 }
 
 // Tauri 命令：重置游戏
@@ -352,33 +352,45 @@ struct ModelEntry {
     path: String,
 }
 
-/// 列出当前目录下的 .pt 模型
-#[tauri::command]
-fn list_models() -> Vec<ModelEntry> {
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(".") {
-        for e in entries.flatten() {
-            if let Ok(ft) = e.file_type() {
-                if ft.is_file() {
-                    if let Some(ext) = e.path().extension() {
-                        if ext == "pt" {
-                            let path = e.path();
-                            let name = path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
-                            out.push(ModelEntry {
-                                name,
-                                path: path.to_string_lossy().to_string(),
-                            });
-                        }
-                    }
-                }
+/// 递归收集目录下的 .pt 模型（忽略隐藏目录 / node_modules / target 等）。
+fn collect_pt_models(dir: &std::path::Path, depth: usize, out: &mut Vec<ModelEntry>) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_dir() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || name == "node_modules" || name == "target" {
+                continue;
+            }
+            collect_pt_models(&path, depth + 1, out);
+        } else if ft.is_file() {
+            if path.extension().map(|x| x == "pt").unwrap_or(false) {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                out.push(ModelEntry {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                });
             }
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+/// 列出项目内（含子目录）的 .pt 模型
+#[tauri::command]
+fn list_models() -> Vec<ModelEntry> {
+    let mut out = Vec::new();
+    collect_pt_models(std::path::Path::new("."), 0, &mut out);
+    out.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }
 

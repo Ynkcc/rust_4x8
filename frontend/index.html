@@ -81,13 +81,17 @@
             <button id="btn-load-model">加载模型</button>
           </div>
           <div class="status-row">
+            <label>模型路径:</label>
+            <input id="model-path-input" type="text" placeholder="或手动输入 .pt 路径，如 python/game_4x4/banqi4x4_model_latest.pt" style="width:60%;" />
+          </div>
+          <div class="status-row">
             <label>搜索次数:</label>
             <input id="mcts-iters" type="number" min="1" value="200" style="width:60%;" />
           </div>
           <div style="display:flex; gap:8px; margin:6px 0;">
             <button id="btn-apply-iters">应用搜索次数</button>
           </div>
-          <small>提示：先加载模型，再选择“电脑 (MCTS+DL)”开始新游戏。</small>
+          <small>提示：先加载模型，再选择“电脑 (MCTS+DL)”开始新游戏。可手动输入模型路径以加载子目录中的模型。</small>
         </div>
         <div class="status-row">
           <label>当前玩家:</label>

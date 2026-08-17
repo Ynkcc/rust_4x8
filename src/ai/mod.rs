@@ -31,7 +31,7 @@ pub use minimax::{
 };
 
 #[cfg(feature = "torch")]
-pub use mcts_dl::{MctsDlPolicy, ModelWrapper};
+pub use mcts_dl::{MctsDlPolicy, ModelWrapper, TchEvaluator};
 pub use random::RandomPolicy;
 pub use reveal_first::RevealFirstPolicy;
 

@@ -1,22 +1,22 @@
 // src/ai/mcts_dl.rs
-//! MCTS + 深度学习策略（支持搜索树复用）- 同步版本
+//! MCTS + 深度学习策略（支持搜索树复用）- 同步版本，基于 `GameConfig` 泛化。
 //!
-//! 提供 `MctsDlPolicy`：
-//! - 维持一个持久的 `GumbelMCTS` 实例
-//! - 可动态调整模拟次数
-//! - 基于已加载的 `BanqiNet` 模型做策略+价值评估
-//! - 在每个外部动作后调用 `advance(action, env)` 来复用搜索树
+//! 通过 `GameEnv` trait 的关联常量（棋盘通道/尺寸/标量数）与 `action_space_size()`
+//! 适配任意变体（4x8 / 4x4 / 4x2），使同一份 TorchScript 推理代码服务所有棋盘。
+//!
+//! 提供：
+//! - `ModelWrapper`：加载 TorchScript `.pt` 模型（`CModule`）
+//! - `TchEvaluator<G>`：实现 `Evaluator<G>`，批量前向 `(board, scalars) -> (logits, value)`
+//! - `MctsDlPolicy<G>`：基于 Gumbel MCTS 的落子策略
 //!
 //! 使用流程：
 //! 1. 加载模型 -> `ModelWrapper::load_from_file`
-//! 2. 创建策略 -> `MctsDlPolicy::new(model, &env, sims)`
-//! 3. 每当玩家或 AI 执行动作后调用 `advance`
-//! 4. 需要选择动作时调用 `choose_action(&env)`
+//! 2. 创建策略 -> `MctsDlPolicy::<G>::new(model, &env, sims)`
+//! 3. 需要选择动作时调用 `choose_action(&env)`
 
-use crate::game_env::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
-};
+use crate::game_env::GameEnv;
 use crate::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tch::{CModule, Device, Tensor};
 
@@ -48,30 +48,46 @@ impl ModelWrapper {
 unsafe impl Send for ModelWrapper {}
 unsafe impl Sync for ModelWrapper {}
 
-// ---------------- Evaluator (同步版本) ----------------
+// ---------------- Evaluator (泛型，基于 GameEnv) ----------------
 
-pub struct TchEvaluator {
+/// 基于 `GameEnv` 关联常量适配任意变体的批量评估器。
+pub struct TchEvaluator<G: GameEnv> {
     pub model: Arc<ModelWrapper>,
+    pub _marker: PhantomData<G>,
 }
 
-impl TchEvaluator {
+impl<G: GameEnv> TchEvaluator<G> {
     pub fn new(model: Arc<ModelWrapper>) -> Self {
-        Self { model }
+        Self {
+            model,
+            _marker: PhantomData,
+        }
     }
 }
 
-impl Evaluator<DarkChessEnv> for TchEvaluator {
-    fn evaluate(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+impl<G: GameEnv> Evaluator<G> for TchEvaluator<G> {
+    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
         if envs.is_empty() {
             return (Vec::new(), Vec::new());
         }
 
+        // 动作空间由环境类型决定（4x8/4x4/4x2 各自的 GameEnv 关联常量）。
+        let action_space = G::action_space_size();
+
         let _guard = self.model.gate.lock().unwrap();
         tch::no_grad(|| {
             let batch_size = envs.len();
+
+            // 从首个环境运行时观测推导特征维度（由 config 驱动，适配任意变体）。
+            let ref_obs = envs[0].get_state();
+            let board_channels = ref_obs.board.shape()[0];
+            let board_rows = ref_obs.board.shape()[1];
+            let board_cols = ref_obs.board.shape()[2];
+            let scalar_count = ref_obs.scalars.len();
+
             let mut board_flat: Vec<f32> =
-                Vec::with_capacity(batch_size * BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS);
-            let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * SCALAR_FEATURE_COUNT);
+                Vec::with_capacity(batch_size * board_channels * board_rows * board_cols);
+            let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * scalar_count);
 
             for env in envs {
                 let obs = env.get_state();
@@ -83,14 +99,14 @@ impl Evaluator<DarkChessEnv> for TchEvaluator {
                 .to_device(self.model.device)
                 .view([
                     batch_size as i64,
-                    BOARD_CHANNELS as i64,
-                    BOARD_ROWS as i64,
-                    BOARD_COLS as i64,
+                    board_channels as i64,
+                    board_rows as i64,
+                    board_cols as i64,
                 ]);
 
             let scalars_t = Tensor::from_slice(&scalars_flat)
                 .to_device(self.model.device)
-                .view([batch_size as i64, SCALAR_FEATURE_COUNT as i64]);
+                .view([batch_size as i64, scalar_count as i64]);
 
             let board_ivalue = tch::IValue::Tensor(board_t);
             let scalars_ivalue = tch::IValue::Tensor(scalars_t);
@@ -115,13 +131,24 @@ impl Evaluator<DarkChessEnv> for TchEvaluator {
                 _ => panic!("Expected tuple of 2 tensors from model"),
             };
 
-            let mut logits_flat = vec![0.0f32; batch_size * ACTION_SPACE_SIZE];
-            let logits_len = logits_flat.len();
+            // 模型输出的策略 logits 长度即该模型的动作空间；若小于环境动作空间
+            // （例如 4x4 模型 112 vs DarkChessEnv 关联常量 192），不足部分补 -inf，
+            // 它们在合法动作掩码下无效，不影响搜索。
+            let model_action = policy_logits.size()[1] as usize;
+            let mut raw_flat = vec![0.0f32; batch_size * model_action];
+            let raw_len = raw_flat.len();
             policy_logits
                 .to_device(Device::Cpu)
-                .copy_data(&mut logits_flat, logits_len);
+                .copy_data(&mut raw_flat, raw_len);
+
+            let mut logits_flat = vec![f32::NEG_INFINITY; batch_size * action_space];
+            let copy_n = model_action.min(action_space);
+            for b in 0..batch_size {
+                let dst = &mut logits_flat[b * action_space..b * action_space + copy_n];
+                dst.copy_from_slice(&raw_flat[b * model_action..b * model_action + copy_n]);
+            }
             let logits_vec: Vec<Vec<f32>> = logits_flat
-                .chunks(ACTION_SPACE_SIZE)
+                .chunks(action_space)
                 .map(|chunk| chunk.to_vec())
                 .collect();
 
@@ -136,27 +163,29 @@ impl Evaluator<DarkChessEnv> for TchEvaluator {
         })
     }
 
-    fn evaluate_logits(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate_logits(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
         self.evaluate(envs)
     }
 }
 
-// ---------------- 策略对象（简化版：每次创建新 MCTS）----------------
+// ---------------- 策略对象（泛型，每次创建新 MCTS）----------------
 
 /// MCTS + 深度学习策略
 ///
 /// 为了避免生命周期问题，每次调用 choose_action 时创建新的 MCTS 实例
 /// 虽然失去了搜索树复用的优势，但实现更简单可靠
-pub struct MctsDlPolicy {
+pub struct MctsDlPolicy<G: GameEnv> {
     model: Arc<ModelWrapper>,
     num_simulations: usize,
+    _marker: PhantomData<G>,
 }
 
-impl MctsDlPolicy {
-    pub fn new(model: Arc<ModelWrapper>, _env: &DarkChessEnv, num_simulations: usize) -> Self {
+impl<G: GameEnv> MctsDlPolicy<G> {
+    pub fn new(model: Arc<ModelWrapper>, _env: &G, num_simulations: usize) -> Self {
         Self {
             model,
             num_simulations,
+            _marker: PhantomData,
         }
     }
 
@@ -165,7 +194,7 @@ impl MctsDlPolicy {
     }
 
     /// 选择动作（每次创建新 MCTS）
-    pub fn choose_action(&self, env: &DarkChessEnv) -> Option<usize> {
+    pub fn choose_action(&self, env: &G) -> Option<usize> {
         choose_action_once(&self.model, env, self.num_simulations)
     }
 }
@@ -173,12 +202,12 @@ impl MctsDlPolicy {
 // ---------------- 简化的一次性策略 ----------------
 
 /// 为给定环境选择最佳动作（每次创建新 MCTS）
-pub fn choose_action_once(
+pub fn choose_action_once<G: GameEnv>(
     model: &Arc<ModelWrapper>,
-    env: &DarkChessEnv,
+    env: &G,
     num_simulations: usize,
 ) -> Option<usize> {
-    let evaluator = TchEvaluator::new(model.clone());
+    let evaluator = TchEvaluator::<G>::new(model.clone());
     let config = GumbelConfig {
         num_simulations,
         max_considered_actions: 16,

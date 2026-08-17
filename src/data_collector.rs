@@ -9,6 +9,7 @@
 use anyhow::Result;
 use banqi_4x8::local_evaluator::LocalEvaluator;
 use banqi_4x8::mongodb_storage::MongoStorage;
+use banqi_4x8::DarkChessEnv;
 use banqi_4x8::self_play::{ScenarioType, SelfPlayConfig, run_self_play};
 
 use std::env;

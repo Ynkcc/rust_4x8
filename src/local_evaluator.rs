@@ -3,10 +3,10 @@
 // 本地模型评估器 - 独立模块
 
 use anyhow::Result;
-use banqi_4x8::game_env::{
+use crate::game_env::{
     ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, DarkChessEnv, SCALAR_FEATURE_COUNT,
 };
-use banqi_4x8::mcts::Evaluator;
+use crate::mcts::Evaluator;
 use tch::{CModule, Device, Kind, Tensor};
 
 // ============================================================================
