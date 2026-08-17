@@ -480,6 +480,70 @@ def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
 
 
 # ============================================================================
+# Rust 持有模型的 Torch 收集器（可选，需 maturin 以 torch+pyo3 双 feature 构建）
+# ============================================================================
+#
+# 背景：`run_*_self_play_with_predictor` 把 Python `predict_fn` 传给 Rust，MCTS 评估
+# 时通过 GIL 调 Python 推理 → 即使 Rust 侧多线程，推理仍被 GIL 串行化；若改用
+# multiprocessing(spawn) 绕开 GIL，每个子进程又重复加载一份 libtorch + 权重。
+#
+# 解法：`banqi_4x8.RustTorchCollector` 在 Rust 侧用 tch-rs 一次性加载 TorchScript
+# 模型（模型留在 Rust，推理不经过 GIL），跨线程共享单份模型。这里提供便捷工厂与
+# 一个「生产一批 episode 并带权重热更新」的辅助函数，作为 python 回调方案的替代。
+#
+# 需同时启用 torch + pyo3 feature 构建（见 Cargo.toml `rust-torch-collector`）。
+
+_RUST_COLLECTOR_AVAILABLE = hasattr(banqi_4x8, "RustTorchCollector")
+
+
+def build_rust_collector(
+    variant: Variant,
+    model_path: Optional[str] = None,
+    device: Optional[str] = None,
+):
+    """构建 Rust 侧持有模型的收集器（模型只加载一份，推理不经过 GIL）。
+
+    返回 `banqi_4x8.RustTorchCollector`；若当前 wheel 未启用 torch 侧绑定
+    （`rust-torch-collector` feature 未开），返回 None。
+    """
+    if not _RUST_COLLECTOR_AVAILABLE:
+        print(
+            f"[SP-{variant.id}] 未检测到 RustTorchCollector。若需要 Rust 持有模型、"
+            f"免 GIL 的数据收集，请用 maturin build --features torch,pyo3-extension 构建。"
+        )
+        return None
+    cfg = make_config(variant.id)
+    path = model_path or cfg.MODEL_PATH
+    dev = device or cfg.INFER_DEVICE
+    print(f"[SP-{variant.id}] 构建 RustTorchCollector: model={path} device={dev}")
+    return banqi_4x8.RustTorchCollector(path, variant.id, dev)
+
+
+def rust_collector_run_batch(
+    collector,
+    variant: Variant,
+    sp_cfg,
+    num_games: int,
+    concurrency: int,
+    worker_id: int = 0,
+) -> List:
+    """用 Rust 持有模型的收集器批量生成一局，返回 episode 对象列表。
+
+    `collector`：`build_rust_collector` 的返回值（None 时回退 None）。
+    """
+    if collector is None:
+        return []
+    return list(
+        collector.run_batched(
+            config=sp_cfg,
+            num_games=num_games,
+            concurrency=concurrency,
+            worker_id=worker_id,
+        )
+    )
+
+
+# ============================================================================
 # 多进程自对弈子进程入口（spawn 模式，独立 GIL + 独立 CUDA context）
 # ============================================================================
 
