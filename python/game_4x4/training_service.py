@@ -141,7 +141,6 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
             "root_visit_count": int(root_visit),
             "game_result_value": float(game_result),
             "action_mask": mask,
-            "step_in_game": step_idx,
         })
     return samples
 

@@ -119,9 +119,9 @@ def test_mongo_doc_structure() -> None:
     s0 = samples[0]
     for key in ["board_state", "scalar_state", "policy_probs", "mcts_value",
                 "completed_q", "root_visit_count", "game_result_value",
-                "action_mask", "step_in_game"]:
+                "action_mask", "health_diff"]:
         rep.check(key in s0, f"sample key present: {key}")
-    rep.check(s0["step_in_game"] == 0, "sample step_in_game")
+    rep.check("step_in_game" not in s0, "sample step_in_game removed")
     rep.summary()
 
 

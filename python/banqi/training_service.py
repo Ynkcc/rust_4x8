@@ -119,11 +119,10 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
     """
     把一个 episode dict（来自 self_play 队列）转换为 DataBuffer 可消费的
     sample dict 列表，字段与 Mongo GameDocument.samples 一致
-    （含 step_in_game / health_diff，与归档数据同步）。
+    （含 health_diff，与归档数据同步）。
     """
     samples = []
     n = len(episode_dict["boards"])
-    step_ids = episode_dict.get("step_in_game") or list(range(n))
     health_diffs = episode_dict.get("health_diffs") or [0.0] * n
     for step_idx, (board, scalar, policy, mcts_val, completed_q,
                     root_visit, game_result, mask) in enumerate(zip(
@@ -141,7 +140,6 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
             "root_visit_count": int(root_visit),
             "game_result_value": float(game_result),
             "action_mask": mask,
-            "step_in_game": int(step_ids[step_idx]),
             "health_diff": float(health_diffs[step_idx]),
         })
     return samples

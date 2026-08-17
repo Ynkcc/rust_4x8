@@ -182,7 +182,6 @@ fn episode_to_dict_with_shapes<'py>(
     dict.set_item("game_length", episode.game_length)?;
     dict.set_item("winner", episode.winner)?;
     dict.set_item("num_samples", n)?;
-    dict.set_item("step_in_game", (0..n).collect::<Vec<usize>>())?;
     dict.set_item("boards", boards)?;
     dict.set_item("scalars", scalars)?;
     dict.set_item("policies", policies)?;

@@ -44,10 +44,11 @@ def test_episode_to_samples_mapping() -> None:
     required_keys = {
         "board_state", "scalar_state", "policy_probs", "mcts_value",
         "completed_q", "root_visit_count", "game_result_value", "action_mask",
-        "step_in_game",
+        "health_diff",
     }
     rep.check(required_keys <= set(samples[0].keys()),
               f"all required keys present: {sorted(required_keys)}")
+    rep.check("step_in_game" not in samples[0], "sample step_in_game removed")
 
     # 逐样本核对与源 episode 的一致性
     ok = True
@@ -60,7 +61,6 @@ def test_episode_to_samples_mapping() -> None:
         ok &= (abs(s["completed_q"] - ep["completed_qs"][idx]) < 1e-9)
         ok &= (s["root_visit_count"] == ep["root_visits"][idx])
         ok &= (abs(s["game_result_value"] - ep["game_results"][idx]) < 1e-9)
-        ok &= (s["step_in_game"] == idx)
     rep.check(ok, "each sample field matches source episode")
     # 形状
     rep.check(np.asarray(samples[0]["board_state"]).shape ==
@@ -109,7 +109,7 @@ def test_data_buffer_fifo_trim() -> None:
 
     rep.check(len(buf) == cap, f"buffer trimmed to capacity {cap} (got {len(buf)})")
 
-    # FIFO：最早加入的样本应被淘汰。首局 ep 的两步 step_in_game=0,1 应最先被移除。
+    # FIFO：最早加入的样本应被淘汰。首局 ep 的两步应最先被移除。
     # 裁剪 excess=2，淘汰 ep 的 step0 和 step1。
     boards, scalars, probs, values, masks = buf.get_batch(list(range(cap)))
     # 剩余应为：ep2 step0, ep2 step1, ep3 step0, ep3 step1

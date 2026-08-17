@@ -124,7 +124,6 @@ class MongoSaver:
         documents: List[Dict] = []
         for ep in episode_dicts:
             samples = []
-            step_ids = ep.get("step_in_game") or list(range(len(ep["boards"])))
             health_diffs = ep.get("health_diffs") or [0.0] * len(ep["boards"])
             for step_idx, (board, scalar, policy, mcts_val, completed_q,
                             root_visit, game_result, mask) in enumerate(zip(
@@ -141,7 +140,6 @@ class MongoSaver:
                     "root_visit_count": int(root_visit),
                     "game_result_value": float(game_result),
                     "action_mask": list(mask),
-                    "step_in_game": int(step_ids[step_idx]),
                     "health_diff": float(health_diffs[step_idx]),
                 })
             documents.append({
