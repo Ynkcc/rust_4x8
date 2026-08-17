@@ -43,6 +43,7 @@ class Variant:
     symmetries: Tuple[str, ...]            # 该棋盘合法的空间对称（含 identity）
     rust_prefix: str                       # "" | "mini" | "game4x4" → 绑定函数名前缀
     env_const_prefix: str                  # "" | "MINI_" | "GAME4X4_" → banqi_4x8 常量名前缀
+    env_prefix: str                        # "" | "G4X4_" | "MINI_" → 环境变量前缀
     model_basename: str                    # banqi_model_latest / banqi4x4_model_latest / banqi_mini_model_latest
     archive_dir: str | None                # 冷存储本地目录；None=该变体不归档
     tb_dir: str                            # TensorBoard runs 目录
@@ -112,6 +113,7 @@ VARIANTS: Dict[str, Variant] = {
         symmetries=_sym("identity", "hflip", "vflip", "rot180"),
         rust_prefix="",
         env_const_prefix="",
+        env_prefix="",
         model_basename="banqi_model_latest",
         archive_dir="./training_data/archive",
         tb_dir="runs",
@@ -134,6 +136,7 @@ VARIANTS: Dict[str, Variant] = {
         ),
         rust_prefix="game4x4",
         env_const_prefix="GAME4X4_",
+        env_prefix="G4X4_",
         model_basename="banqi4x4_model_latest",
         archive_dir="./training_data/archive_4x4",
         tb_dir="runs_4x4",
@@ -154,6 +157,7 @@ VARIANTS: Dict[str, Variant] = {
         symmetries=_sym("identity", "hflip", "vflip", "rot180"),
         rust_prefix="mini",
         env_const_prefix="MINI_",
+        env_prefix="MINI_",
         model_basename="banqi_mini_model_latest",
         archive_dir=None,                # mini 无归档线程
         tb_dir="runs_mini",
