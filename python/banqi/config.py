@@ -104,6 +104,7 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "MIN_LR": 5e-6,
         "LR_DECAY_STEPS": 60000,
         "TRAIN_EPOCHS_PER_ROUND": 3,
+        "WEIGHT_DECAY": 1e-4,
         "MAX_SAMPLE_BUFFER_SIZE": 100000,
         "MIN_SAMPLES_TO_START": 1000,
         "QUEUE_FETCH_BATCH": 8,
@@ -158,6 +159,7 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "MIN_LR": 1e-5,
         "LR_DECAY_STEPS": 300000,
         "TRAIN_EPOCHS_PER_ROUND": 2,
+        "WEIGHT_DECAY": 1e-4,
         "MAX_SAMPLE_BUFFER_SIZE": 16000,
         "MIN_SAMPLES_TO_START": 128,
         "QUEUE_FETCH_BATCH": 8,
@@ -212,6 +214,7 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "MIN_LR": 1e-5,
         "LR_DECAY_STEPS": 12000,
         "TRAIN_EPOCHS_PER_ROUND": 8,
+        "WEIGHT_DECAY": 1e-4,
         "MAX_SAMPLE_BUFFER_SIZE": 4000,
         "MIN_SAMPLES_TO_START": 256,
         "QUEUE_FETCH_BATCH": 8,
@@ -270,6 +273,7 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "MIN_LR": _cast_float,
     "LR_DECAY_STEPS": _cast_int,
     "TRAIN_EPOCHS_PER_ROUND": _cast_int,
+    "WEIGHT_DECAY": _cast_float,
     "MAX_SAMPLE_BUFFER_SIZE": _cast_int,
     "MIN_SAMPLES_TO_START": _cast_int,
     "QUEUE_FETCH_BATCH": _cast_int,
@@ -354,6 +358,7 @@ class Config:
     MIN_LR: float = 1e-5
     LR_DECAY_STEPS: int = 60000
     TRAIN_EPOCHS_PER_ROUND: int = 3
+    WEIGHT_DECAY: float = 1e-4
     MAX_SAMPLE_BUFFER_SIZE: int = 100000
     MIN_SAMPLES_TO_START: int = 1000
     QUEUE_FETCH_BATCH: int = 8
