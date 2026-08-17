@@ -101,7 +101,7 @@ def episodes_to_samples(eps):
     samples = []
     for e in eps:
         (boards, scalars, policies, mcts_values, completed_qs,
-         root_visits, game_results, action_masks, actions) = e.get_samples()
+         root_visits, game_results, action_masks, actions, health_diffs) = e.get_samples()
         for board, scalar, policy, mv, mask in zip(
                 boards, scalars, policies, mcts_values, action_masks):
             samples.append({
@@ -237,7 +237,7 @@ def main():
         n_new = 0
         for e in eps:
             (boards, scalars, policies, mcts_values, completed_qs,
-             root_visits, game_results, action_masks, actions) = e.get_samples()
+             root_visits, game_results, action_masks, actions, health_diffs) = e.get_samples()
             batch_samples = []
             for board, scalar, policy, mv, mask in zip(
                     boards, scalars, policies, mcts_values, action_masks):

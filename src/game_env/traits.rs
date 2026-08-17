@@ -82,6 +82,18 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     fn step_outcome_id(&self, _action: usize) -> Option<usize> {
         None
     }
+
+    // ------------------------------------------------------------------------
+    // 终局血量差（训练/归档辅助数据）
+    // ------------------------------------------------------------------------
+
+    /// 终局归一化血量差（红方视角为正）。
+    ///
+    /// 公式：`(红方HP - 黑方HP) / (初始总HP + 最大子力分值)`，大致落在 [-1, 1]。
+    /// 在终局（与获取游戏真实结果同一时机）调用。无血量机制的游戏（如井字棋）返回 None。
+    fn terminal_health_diff_red(&self) -> Option<f32> {
+        None
+    }
 }
 
 // ============================================================================
@@ -149,6 +161,16 @@ impl GameEnv for DarkChessEnv {
     fn step_outcome_id(&self, action: usize) -> Option<usize> {
         DarkChessEnv::step_outcome_id(self, action)
     }
+
+    fn terminal_health_diff_red(&self) -> Option<f32> {
+        let denom = self.config.initial_health as f32
+            + self.config.piece_values.iter().copied().max().unwrap_or(0) as f32;
+        if denom <= 0.0 {
+            None
+        } else {
+            Some((self.get_hp(Player::Red) - self.get_hp(Player::Black)) as f32 / denom)
+        }
+    }
 }
 
 // ============================================================================
@@ -207,6 +229,10 @@ impl GameEnv for Game4x4Env {
     fn step_outcome_id(&self, action: usize) -> Option<usize> {
         Game4x4Env::step_outcome_id(self, action)
     }
+
+    fn terminal_health_diff_red(&self) -> Option<f32> {
+        self.inner.terminal_health_diff_red()
+    }
 }
 
 // ============================================================================
@@ -264,5 +290,9 @@ impl GameEnv for MiniDarkChessEnv {
 
     fn step_outcome_id(&self, action: usize) -> Option<usize> {
         MiniDarkChessEnv::step_outcome_id(self, action)
+    }
+
+    fn terminal_health_diff_red(&self) -> Option<f32> {
+        self.inner.terminal_health_diff_red()
     }
 }

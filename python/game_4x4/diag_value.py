@@ -34,7 +34,7 @@ all_mv = []
 all_gr = []
 for e in eps:
     (boards, scalars, policies, mcts_values, completed_qs,
-     root_visits, game_results, action_masks, actions) = e.get_samples()
+     root_visits, game_results, action_masks, actions, health_diffs) = e.get_samples()
     all_mv.extend(mcts_values)
     all_gr.extend(game_results)
 
@@ -59,7 +59,7 @@ print(f"  {time.time()-t0:.1f}s", flush=True)
 mv2, gr2 = [], []
 for e in eps2:
     (boards, scalars, policies, mcts_values, completed_qs,
-     root_visits, game_results, action_masks, actions) = e.get_samples()
+     root_visits, game_results, action_masks, actions, health_diffs) = e.get_samples()
     mv2.extend(mcts_values); gr2.extend(game_results)
 mv2 = np.array(mv2); gr2 = np.array(gr2)
 print(f"[DiagValue] 启发式 corr={np.corrcoef(mv2,gr2)[0,1]:.3f}")

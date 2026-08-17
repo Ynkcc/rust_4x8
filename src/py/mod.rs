@@ -64,7 +64,7 @@ impl PyGameEpisode {
     }
 
     #[allow(clippy::type_complexity)]
-    fn get_samples(slf: PyRef<'_, Self>) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<u32>, Vec<f32>, Vec<Vec<i32>>, Vec<usize>) {
+    fn get_samples(slf: PyRef<'_, Self>) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<u32>, Vec<f32>, Vec<Vec<i32>>, Vec<usize>, Vec<f32>) {
         let n = slf.inner.samples.len();
         let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);
         let mut scalars: Vec<Vec<f32>> = Vec::with_capacity(n);
@@ -75,8 +75,9 @@ impl PyGameEpisode {
         let mut game_results: Vec<f32> = Vec::with_capacity(n);
         let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
         let mut actions: Vec<usize> = Vec::with_capacity(n);
+        let mut health_diffs: Vec<f32> = Vec::with_capacity(n);
 
-        for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action) in &slf.inner.samples {
+        for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action, health_diff) in &slf.inner.samples {
             boards.push(obs.board.as_slice().unwrap().to_vec());
             scalars.push(obs.scalars.as_slice().unwrap().to_vec());
             policies.push(policy.clone());
@@ -86,6 +87,7 @@ impl PyGameEpisode {
             game_results.push(*game_result);
             action_masks.push(mask.clone());
             actions.push(*action);
+            health_diffs.push(*health_diff);
         }
 
         (
@@ -98,6 +100,7 @@ impl PyGameEpisode {
             game_results,
             action_masks,
             actions,
+            health_diffs,
         )
     }
 
@@ -160,8 +163,9 @@ fn episode_to_dict_with_shapes<'py>(
     let mut game_results: Vec<f32> = Vec::with_capacity(n);
     let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
     let mut actions: Vec<usize> = Vec::with_capacity(n);
+    let mut health_diffs: Vec<f32> = Vec::with_capacity(n);
 
-    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action) in &episode.samples {
+    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action, health_diff) in &episode.samples {
         boards.push(obs.board.as_slice().unwrap().to_vec());
         scalars.push(obs.scalars.as_slice().unwrap().to_vec());
         policies.push(policy.clone());
@@ -171,12 +175,14 @@ fn episode_to_dict_with_shapes<'py>(
         game_results.push(*game_result);
         action_masks.push(mask.clone());
         actions.push(*action);
+        health_diffs.push(*health_diff);
     }
 
     let dict = PyDict::new(py);
     dict.set_item("game_length", episode.game_length)?;
     dict.set_item("winner", episode.winner)?;
     dict.set_item("num_samples", n)?;
+    dict.set_item("step_in_game", (0..n).collect::<Vec<usize>>())?;
     dict.set_item("boards", boards)?;
     dict.set_item("scalars", scalars)?;
     dict.set_item("policies", policies)?;
@@ -184,8 +190,10 @@ fn episode_to_dict_with_shapes<'py>(
     dict.set_item("completed_qs", completed_qs)?;
     dict.set_item("root_visits", root_visits)?;
     dict.set_item("game_results", game_results)?;
+    dict.set_item("health_diffs", health_diffs)?;
     dict.set_item("action_masks", action_masks)?;
     dict.set_item("actions", actions)?;
+    dict.set_item("health_diff_red", episode.health_diff_red)?;
     dict.set_item("board_shape", vec![bc, br, bcol])?;
     dict.set_item("scalar_shape", vec![sc])?;
     dict.set_item("action_space", ac)?;
@@ -626,7 +634,7 @@ fn minimax_self_play_one(
             Some(r) => r,
             None => {
                 let (_, _, winner) = env.check_game_over_conditions();
-                return finalize_episode(episode_data, winner);
+                return finalize_episode(episode_data, winner, env.terminal_health_diff_red());
             }
         };
         // 温度采样：τ=1 时按价值加权探索，τ→0 时 argmax
@@ -648,17 +656,22 @@ fn minimax_self_play_one(
             Ok((_, _, terminated, truncated, winner)) => {
                 mcts.step_next(&env, action);
                 if terminated || truncated {
-                    return finalize_episode(episode_data, winner);
+                    return finalize_episode(episode_data, winner, env.terminal_health_diff_red());
                 }
             }
             Err(e) => {
                 eprintln!("⚠️ minimax 教师自对弈 step 错误: {}", e);
-                return GameEpisode { samples: Vec::new(), game_length: step, winner: None };
+                return GameEpisode {
+                    samples: Vec::new(),
+                    game_length: step,
+                    winner: None,
+                    health_diff_red: env.terminal_health_diff_red(),
+                };
             }
         }
         step += 1;
         if step >= Game4x4Env::max_steps() {
-            return finalize_episode(episode_data, Some(0));
+            return finalize_episode(episode_data, Some(0), env.terminal_health_diff_red());
         }
     }
 }

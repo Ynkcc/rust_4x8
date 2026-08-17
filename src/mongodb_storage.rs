@@ -33,6 +33,8 @@ pub struct SampleDocument {
     /// 实际选择的动作（action 空间索引）
     pub action: usize,
     pub step_in_game: usize,
+    /// 终局归一化血量差（该样本玩家视角，红方为正）：(红HP-黑HP)/(总HP+最大子力分值)
+    pub health_diff: f32,
 }
 
 /// 整局游戏的数据结构
@@ -138,7 +140,7 @@ impl MongoStorage {
 
             for (
                 step_idx,
-                (obs, probs, mcts_val, completed_q, root_visit_count, game_result_val, mask, action),
+                (obs, probs, mcts_val, completed_q, root_visit_count, game_result_val, mask, action, health_diff),
             ) in episode.samples.iter().enumerate()
             {
                 let board_state: Vec<f32> = obs.board.as_slice().unwrap().to_vec();
@@ -155,6 +157,7 @@ impl MongoStorage {
                     action_mask: mask.clone(),
                     action: *action,
                     step_in_game: step_idx,
+                    health_diff: *health_diff,
                 });
             }
 

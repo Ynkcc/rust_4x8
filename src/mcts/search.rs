@@ -109,6 +109,11 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         }
     }
 
+    /// 当前根节点持有的环境引用（终局血量差等终局信息使用）。
+    pub fn root_env(&self) -> Option<&G> {
+        self.arena.get(self.root_idx).env.as_ref()
+    }
+
     /// 将搜索树移动到下一个状态
     ///
     /// 当环境发生实际变动（例如玩家采取了某个动作）时调用。

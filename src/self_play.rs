@@ -34,12 +34,15 @@ pub struct GameStats {
 /// 因此 `GameEpisode` 本身不携带游戏泛型参数。
 #[derive(Debug, Clone)]
 pub struct GameEpisode {
-    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码, 实际动作)
-    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>, usize)>,
+    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码, 实际动作, 终局归一化血量差)
+    /// 最后一项 health_diff 为终局血量差按该样本玩家视角取号（红方视角为正）。
+    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>, usize, f32)>,
     /// 游戏总步数
     pub game_length: usize,
     /// 获胜方
     pub winner: Option<i32>,
+    /// 终局归一化血量差（红方视角为正）：(红HP-黑HP)/(初始总HP+最大子力分值)，大致落在 [-1,1]。
+    pub health_diff_red: Option<f32>,
 }
 
 // ================ 场景定义 ================
@@ -184,7 +187,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                     // mcts.run() 返回 None = 当前玩家无合法走法 → 该玩家判负。
                     // 调用环境终止条件获取真实 winner，回填正确的 ±1 胜负。
                     let (_, _, winner) = env.check_game_over_conditions();
-                    return finalize_episode(episode_data, winner);
+                    return finalize_episode(episode_data, winner, env.terminal_health_diff_red());
                 }
             };
 
@@ -220,7 +223,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
 
                     if terminated || truncated {
                         // --- 游戏结束处理：统一回填 ---
-                        return finalize_episode(episode_data, winner);
+                        return finalize_episode(episode_data, winner, env.terminal_health_diff_red());
                     }
                 }
                 Err(e) => {
@@ -229,6 +232,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                         samples: Vec::new(),
                         game_length: step,
                         winner: None,
+                        health_diff_red: env.terminal_health_diff_red(),
                     };
                 }
             }
@@ -238,7 +242,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
             if step >= G::max_steps() {
                 // 步数上限截断：环境视其为 truncated 平局 (winner=Some(0))，
                 // 与终局分支语义对齐，game_result 回填 0.0。
-                return finalize_episode(episode_data, Some(0));
+                return finalize_episode(episode_data, Some(0), env.terminal_health_diff_red());
             }
         }
     }
@@ -589,7 +593,15 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
                     continue;
                 }
                 let winner = trees[i].step_outcome.2;
-                episodes.push(finalize_episode(std::mem::take(&mut episode_data[i]), winner));
+                let health_diff_red = trees[i]
+                    .tree
+                    .root_env()
+                    .and_then(|e| e.terminal_health_diff_red());
+                episodes.push(finalize_episode(
+                    std::mem::take(&mut episode_data[i]),
+                    winner,
+                    health_diff_red,
+                ));
                 done += 1;
                 if done >= num_games {
                     break;
@@ -618,6 +630,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
 pub(crate) fn finalize_episode(
     episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize)>,
     winner: Option<i32>,
+    health_diff_red: Option<f32>,
 ) -> GameEpisode {
     let game_length = episode_data.len();
     let reward_red: f32 = match winner {
@@ -633,6 +646,12 @@ pub(crate) fn finalize_episode(
             } else {
                 -reward_red
             };
+            // 血量差与 game_result 一致：按该样本玩家的视角取号（红方视角为正）。
+            let health_diff_val: f32 = match health_diff_red {
+                Some(d) if player.val() == 1 => d,
+                Some(d) => -d,
+                None => 0.0,
+            };
             (
                 obs,
                 p,
@@ -642,6 +661,7 @@ pub(crate) fn finalize_episode(
                 game_result_val,
                 mask,
                 action,
+                health_diff_val,
             )
         })
         .collect();
@@ -649,6 +669,7 @@ pub(crate) fn finalize_episode(
         samples,
         game_length,
         winner,
+        health_diff_red,
     }
 }
 

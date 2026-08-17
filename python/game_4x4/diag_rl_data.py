@@ -34,7 +34,7 @@ def analyze(eps, tag):
         else: results["平局"] += 1
         lens.append(e.game_length)
         (boards, scalars, policies, mcts_values, completed_qs,
-         root_visits, game_results, action_masks, actions) = e.get_samples()
+         root_visits, game_results, action_masks, actions, health_diffs) = e.get_samples()
         for p, mask, m, g in zip(policies, action_masks, mcts_values, game_results):
             mask = np.array(mask); p = np.array(p)
             v = p[mask == 1]; v = v / (v.sum() + 1e-9)
