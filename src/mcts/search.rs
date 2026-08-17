@@ -1141,7 +1141,20 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         }
 
         // 3. 计算 Softmax（带数值稳定性）
+        // 若所有合法动作的 score 均非有限（如网络输出 NaN/Inf logit），
+        // 直接回退到均匀分布，而不是返回全 0 policy：
+        //   - 全 0 policy 进入训练会让 policy_loss 变为 0（梯度消失，策略头退化）；
+        //   - 若与 -inf 的 log_softmax 相乘还会产生 NaN。
+        // 均匀回退至少保留一个合法归一化分布，避免训练目标被污染。
         if !max_score.is_finite() {
+            let count = masks.iter().sum::<i32>() as f32;
+            if count > 0.0 {
+                for i in 0..G::action_space_size() {
+                    if masks[i] == 1 {
+                        policy[i] = 1.0 / count;
+                    }
+                }
+            }
             return policy;
         }
 

@@ -71,20 +71,48 @@ class DataBuffer:
         self.root_visits: List[int] = []
 
     def add_samples(self, samples: List[Dict]) -> None:
+        dropped = 0
         for s in samples:
             board = np.array(s['board_state'], dtype=np.float32).reshape(
                 TOTAL_INPUT_CHANNELS, BOARD_ROWS, BOARD_COLS
             )
-            self.boards.append(board)
             scalar_arr = np.array(s['scalar_state'], dtype=np.float32)
             if scalar_arr.shape[0] > SCALAR_FEATURE_COUNT:
                 scalar_arr = scalar_arr[:SCALAR_FEATURE_COUNT]
-            self.scalars.append(scalar_arr)
-            self.probs.append(np.array(s['policy_probs'], dtype=np.float32))
+            probs = np.array(s['policy_probs'], dtype=np.float32)
+            mask = np.array(s['action_mask'], dtype=np.float32)
             val = s.get('game_result_value', s.get('mcts_value', 0.0))
-            self.values.append(val)
-            self.masks.append(np.array(s['action_mask'], dtype=np.float32))
+            val_f = float(val) if np.isfinite(val) else float('nan')
+
+            # ---- NaN/Inf 与非法策略/价值目标过滤（来源校验，防污染训练）----
+            # 丢弃含非有限值的 board/scalar/policy/mask/value，以及 policy 含
+            # 负值或行和≈0 的样本（此类样本会让 log_softmax/交叉熵产生 NaN 或
+            # 梯度消失）。value target 来自 mcts_value/game_result，若上游
+            # mcts_value 为 NaN（权重被污染的后遗症）应在此处拦截。
+            if (
+                not np.isfinite(board).all()
+                or not np.isfinite(scalar_arr).all()
+                or not np.isfinite(probs).all()
+                or not np.isfinite(mask).all()
+                or not np.isfinite(val_f)
+                or (probs < 0.0).any()
+                or probs.sum() <= 0.0
+            ):
+                dropped += 1
+                continue
+
+            self.boards.append(board)
+            self.scalars.append(scalar_arr)
+            self.probs.append(probs)
+            self.values.append(val_f)
+            self.masks.append(mask)
             self.root_visits.append(int(s.get('root_visit_count', 0)))
+
+        if dropped:
+            print(
+                f"[Training] ⚠️ DataBuffer 丢弃 {dropped} 个异常样本"
+                f"（NaN/Inf/非法策略）"
+            )
 
         if len(self.boards) > self.capacity:
             excess = len(self.boards) - self.capacity
@@ -233,17 +261,62 @@ def train_step(model, optimizer, batch_data, device):
     target_values_t = target_values_t.to(device, non_blocking=True).view(-1, 1)
     masks_t = masks_t.to(device, non_blocking=True)
 
+    # ---- 来源校验：输入/目标任何非有限都跳过该 batch（不更新权重）----
+    # 防止脏数据（NaN/Inf 的 board/scalar/policy/mask/value）进入前向传播，
+    # 进而在 backward 后经 clip_grad_norm_ + optimizer.step() 一次性污染整份权重。
+    finite_inputs = (
+        torch.isfinite(boards_t).all()
+        and torch.isfinite(scalars_t).all()
+        and torch.isfinite(target_probs_t).all()
+        and torch.isfinite(target_values_t).all()
+        and torch.isfinite(masks_t).all()
+    )
+    # 每行 target 策略和 > 0 且非负（0*-inf 或全 0 target 会导致 NaN/梯度消失）
+    valid_target = bool((target_probs_t >= 0.0).all()) and bool(
+        target_probs_t.sum(dim=1).min() > 0.0
+    )
+    if not finite_inputs or not valid_target:
+        print(
+            "[Training] ⚠️ 跳过 1 个异常 batch（输入/策略目标非有限或非法）"
+        )
+        # 返回一个有限的占位 loss，避免上层把 NaN 累进统计/日志
+        return 0.0, 0.0, 0.0
+
     optimizer.zero_grad()
     logits, values = model(boards_t, scalars_t)
 
-    masked_logits = logits + (masks_t - 1.0) * 1e9
+    # ---- 安全 mask：用 -1e9 屏蔽非法动作（替代 (mask-1)*1e9）----
+    # 原实现 logits + (mask-1)*1e9 在 logits 含 +inf 时会产生 inf -> log_softmax
+    # 得到 NaN（inf-inf）。改用 masked_fill 只把非法位置置为极大负值，
+    # 配合下方梯度有限性检查，从源头杜绝 NaN 传播。
+    masked_logits = logits.masked_fill(masks_t < 0.5, -1e9)
     log_probs = F.log_softmax(masked_logits, dim=1)
     policy_loss = -torch.sum(target_probs_t * log_probs, dim=1).mean()
 
     value_loss = F.mse_loss(values, target_values_t)
     total_loss = policy_loss + value_loss
 
+    # ---- 数值安全：loss / 前向输出非有限则跳过，不污染权重 ----
+    if not torch.isfinite(total_loss):
+        print(
+            f"[Training] ⚠️ 跳过 1 个异常 batch（loss 非有限: "
+            f"policy={float(policy_loss):.4f} value={float(value_loss):.4f}），"
+            f"不更新权重"
+        )
+        optimizer.zero_grad()
+        return 0.0, 0.0, 0.0
+
     total_loss.backward()
+    # ---- 梯度有限性检查：NaN/Inf 梯度静默放行是权重被污染的主通道 ----
+    # 一旦出现非有限梯度，clip_grad_norm_ 返回 NaN 且 optimizer.step() 会把
+    # 整份权重写成 NaN。故在 clip 前显式检测并跳过该 batch。
+    grad_ok = all(
+        p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters()
+    )
+    if not grad_ok:
+        print("[Training] ⚠️ 跳过 1 个异常 batch（检测到非有限梯度），不更新权重")
+        optimizer.zero_grad()
+        return 0.0, 0.0, 0.0
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
 
