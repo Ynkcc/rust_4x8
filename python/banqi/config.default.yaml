@@ -19,52 +19,41 @@
 #   绝对路径也可直接用。
 #   其余字段（TENSORBOARD_LOG_DIR 等）保持相对进程工作目录。
 #
-# 变体结构：每个变体一个顶层键（4x8 / 4x4 / 4x2），键下为字段名 -> 值。
-# 每个变体都必须提供全部字段（缺少任一字段，make_config 会报错）。
+# 变体结构（两段式）：
+#   common: 与模型变体无关的公共配置（设备 / 基础设施 / 通用超参等），
+#           三变体取值一致。设备相关参数一律留空，强制按实际硬件手动填写。
+#   4x8 / 4x4 / 4x2：仅保留「真正因变体而异」的字段（MCTS_SIMS / 学习率 /
+#           模型路径 / DB_NAME / 数据增强变换 等）。
+#   运行时 make_config 会把 common 与所选变体字段合并，变体字段覆盖 common。
+#   因此每个变体在合并后都必须提供全部字段（缺少任一字段会报错）。
 # =============================================================================
 
-4x8:
-  # ---------------- 自对弈 ----------------
-  PREDICT_BATCH: 128            # 批量推理 batch 大小
-  MCTS_SIMS: 128                # 每次走子的 MCTS 模拟次数
-  MAX_CONSIDERED_ACTIONS: 24    # 候选动作数上限
-  TEMPERATURE_STEPS: 16         # 温度退火步数
-  GAMES_PER_ITER: 100           # 每轮迭代对局数
-  NUM_WORKERS: 2                # 自对弈 worker 数
-  GAMES_PER_WORKER: 50          # 每个 worker 的对局数
-  SELF_PLAY_PROCESSES: 2        # 自对弈进程数
-  USE_BATCHED_SELF_PLAY: false  # 是否使用 batched 自对弈（GPU 下 batch 更大更占优）
-  BATCH_CONCURRENCY: 8          # batched 自对弈并发度（仅 USE_BATCHED_SELF_PLAY=True 生效）
+# ---------------------------------------------------------------------------
+# 公共配置：与模型变体无关，三变体共用
+# ---------------------------------------------------------------------------
+common:
+  # ---------------- 设备 ----------------
+  # 注意：设备相关参数一律留空，强制你按实际硬件手动填写后再运行。
+  # INFER_DEVICE / TRAIN_DEVICE：cpu | cuda:0 | auto（auto=可用 CUDA 则用）
+  # INFER_CPU_AUX_WORKERS：CPU 辅助推理线程数（0=关闭混合推理）
+  # INFER_CPU_FRACTION：每批拆分给 CPU 推理的比例（0~1）
+  # INFER_MIN_SPLIT_BATCH：batch 小于该值时不拆分，直接走主设备
+  INFER_DEVICE: ""              # 推理设备
+  TRAIN_DEVICE: ""              # 训练设备
+  INFER_CPU_AUX_WORKERS: ""     # CPU 推理线程数
+  INFER_CPU_FRACTION: ""        # CPU 推理线程占比
+  INFER_MIN_SPLIT_BATCH: ""     # 拆分 batch 的最小规模
 
-  # ---------------- 训练 ----------------
-  TRAIN_BATCH: 64               # 训练 batch 大小
-  LEARNING_RATE: 2.0e-4         # 初始学习率
-  MIN_LR: 5.0e-6                # 学习率下限
-  LR_DECAY_STEPS: 60000         # 学习率衰减步数
-  TRAIN_EPOCHS_PER_ROUND: 3     # 每轮迭代训练 epoch 数
-  WEIGHT_DECAY: 1.0e-4          # 权重衰减
-  MAX_SAMPLE_BUFFER_SIZE: 100000  # 样本缓冲池大小
-  MIN_SAMPLES_TO_START: 1000    # 开始训练所需最少样本数
+  # ---------------- 自对弈（公共） ----------------
+  SELF_PLAY_PROCESSES: 2        # 自对弈进程数（spawn 子进程，独立 GIL/CUDA）
   QUEUE_FETCH_BATCH: 8          # 队列批量抓取大小
 
-  # ---------------- 数据增强 ----------------
+  # ---------------- 训练（公共） ----------------
+  WEIGHT_DECAY: 1.0e-4          # 权重衰减（轻正则化）
   DATA_AUGMENT_ENABLED: true    # 是否启用数据增强
   DATA_AUGMENT_KEEP_ORIGINAL: true  # 增强时是否保留原始样本
-  DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180"  # 增强变换列表
-
-  # ---------------- 模型与路径 ----------------
-  MODEL_PATH: "banqi_model_latest.pt"     # 相对 python/ 目录
-  STATE_DICT_PATH: "banqi_model_latest.pth"
-
-  # ---------------- 设备 ----------------
-  INFER_DEVICE: "cpu"           # 推理设备（cpu / cuda:0 / auto）
-  TRAIN_DEVICE: "auto"          # 训练设备（cpu / cuda:0 / auto）
-  INFER_CPU_AUX_WORKERS: 0      # CPU 辅助推理线程数
-  INFER_CPU_FRACTION: 0.3       # CPU 推理线程占比
-  INFER_MIN_SPLIT_BATCH: 16     # 拆分 batch 的最小规模
 
   # ---------------- 队列 ----------------
-  DATA_QUEUE_MAXSIZE: 128       # 训练数据队列容量
   ARCHIVE_QUEUE_MAXSIZE: 256    # 归档队列容量
 
   # ---------------- 检查点 ----------------
@@ -78,30 +67,97 @@
 
   # ---------------- TensorBoard ----------------
   TENSORBOARD_ENABLED: true     # 是否启用 TensorBoard
-  TENSORBOARD_LOG_DIR: "runs"   # 日志目录（相对工作目录）
   TENSORBOARD_LOG_SYS: true     # 是否记录系统指标
 
-  # ---------------- Mongo 归档 ----------------
-  MONGO_URI: "mongodb://localhost:27017"
-  DB_NAME: "banqi_training"
-  COLLECTION: "games"
+  # ---------------- Mongo 归档（公共） ----------------
+  MONGO_URI: "mongodb://localhost:27017"  # Mongo 连接串
+  COLLECTION: "games"           # 归档集合名
   ARCHIVE_BATCH: 32             # 归档批量大小
   ARCHIVE_POLL_INTERVAL: 1.0    # 归档轮询间隔（秒）
   ARCHIVE_ENABLED: true         # 是否启用 Mongo 归档
-  ARCHIVE_PREFILL_GAMES: 0      # 预填充归档对局数（0=不预填充）
   ARCHIVE_PREFILL_DIR: ""       # 预填充数据目录（空=不预填充）
+
+  # ---------------- 价值目标（公共） ----------------
+  VALUE_TARGET_MODE: "mcts"     # 价值目标模式（mcts / ...）
+  VALUE_ANNEAL_START: 0.2       # 价值退火起始系数
+  VALUE_ANNEAL_INCREMENT: 0.2   # 价值退火增量
+  VALUE_ANNEAL_STEP_ROUNDS: 10  # 价值退火步进轮数
+
+  # ---------------- 训练模式（TRAIN_MODE 分流，公共） ----------------
+  # TRAIN_MODE: selfplay（标准模型自对弈闭环，默认）
+  #           | archive（仅从归档数据训练，不启动自对弈）
+  #           | rule_selfplay（纯规则 minimax/heuristic 自对弈生成数据训练）
+  TRAIN_MODE: "selfplay"
+  # ---- 归档训练（TRAIN_MODE="archive"）----
+  ARCHIVE_TRAIN_DIR: ""          # 归档数据目录；空=自动探测 variant.archive_dir
+  ARCHIVE_TRAIN_GAMES: 0         # 从归档加载多少局（0=全部）
+  ARCHIVE_TRAIN_ROUNDS: 100      # 归档训练总轮数
+  # ---- 纯规则自对弈训练（TRAIN_MODE="rule_selfplay"）----
+  RULE_SELFPLAY_TYPE: "heuristic"  # 规则类型：minimax | heuristic
+  RULE_SELFPLAY_DEPTH: 3           # minimax 搜索深度（仅 minimax）
+  RULE_SELFPLAY_SIMS: 64           # 启发式 MCTS 模拟数（仅 heuristic）
+  RULE_SELFPLAY_GAMES: 500         # 每轮生成局数
+  RULE_SELFPLAY_ROUNDS: 20         # 纯规则自对弈训练总轮数
+  RULE_SELFPLAY_CONCURRENCY: 8     # 生成并发 worker 数（线程或进程，见 BACKEND）
+  RULE_SELFPLAY_TEMPERATURE: 0.5   # 走子温度（0=贪心，越高越随机）
+  # RULE_SELFPLAY_BACKEND: 并发后端：
+  #   thread  : 多线程（默认）。同一进程内多个生成线程，共享 GIL 但可并行 Rust 绑定
+  #             调用（Rust 释放 GIL）。轻量、无需 spawn 子进程，适合 4x2 等小变体。
+  #   process : 多进程（spawn 子进程）。每个 worker 独立 GIL / 进程，彻底并行，
+  #             适合吃满多核；代价是启动开销与额外内存。
+  RULE_SELFPLAY_BACKEND: "thread"
+
+# ---------------------------------------------------------------------------
+# 4x8 变体：仅变体相关字段
+# ---------------------------------------------------------------------------
+4x8:
+  # ---------------- 自对弈 ----------------
+  PREDICT_BATCH: 128            # 批量推理 batch 大小
+  MCTS_SIMS: 128                # 每次走子的 MCTS 模拟次数
+  MAX_CONSIDERED_ACTIONS: 24    # 候选动作数上限
+  TEMPERATURE_STEPS: 16         # 温度退火步数
+  GAMES_PER_ITER: 100           # 每轮迭代对局数
+  NUM_WORKERS: 2                # 自对弈 worker 数
+  GAMES_PER_WORKER: 50          # 每个 worker 的对局数
+  USE_BATCHED_SELF_PLAY: false  # 是否使用 batched 自对弈（GPU 下 batch 更大更占优）
+  BATCH_CONCURRENCY: 8          # batched 自对弈并发度（仅 USE_BATCHED_SELF_PLAY=True 生效）
+
+  # ---------------- 训练 ----------------
+  TRAIN_BATCH: 64               # 训练 batch 大小
+  LEARNING_RATE: 2.0e-4         # 初始学习率
+  MIN_LR: 5.0e-6                # 学习率下限
+  LR_DECAY_STEPS: 60000         # 学习率衰减步数
+  TRAIN_EPOCHS_PER_ROUND: 3     # 每轮迭代训练 epoch 数
+  MAX_SAMPLE_BUFFER_SIZE: 100000  # 样本缓冲池大小
+  MIN_SAMPLES_TO_START: 1000    # 开始训练所需最少样本数
+
+  # ---------------- 数据增强 ----------------
+  DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180"  # 增强变换列表
+
+  # ---------------- 模型与路径 ----------------
+  MODEL_PATH: "banqi_model_latest.pt"     # 相对 python/ 目录
+  STATE_DICT_PATH: "banqi_model_latest.pth"
+
+  # ---------------- 队列 ----------------
+  DATA_QUEUE_MAXSIZE: 128       # 训练数据队列容量
+
+  # ---------------- TensorBoard ----------------
+  TENSORBOARD_LOG_DIR: "runs"   # 日志目录（相对工作目录）
+
+  # ---------------- Mongo 归档 ----------------
+  DB_NAME: "banqi_training"     # Mongo 库名
+  ARCHIVE_PREFILL_GAMES: 0      # 预填充归档对局数（0=不预填充）
 
   # ---------------- 运行时限 ----------------
   MAX_RUNTIME_SECONDS: 0        # 单次运行时限（秒），0 = 不限时
 
   # ---------------- 价值目标 ----------------
-  VALUE_TARGET_MODE: "mcts"     # 价值目标模式（mcts / ...）
-  VALUE_ANNEAL_START: 0.2       # 价值退火起始系数
-  VALUE_ANNEAL_INCREMENT: 0.2   # 价值退火增量
-  VALUE_ANNEAL_STEP_ROUNDS: 10  # 价值退火步进轮数
   VALUE_DRIFT_EVAL_ROUNDS: 0    # 价值漂移评估轮数（0=关闭）
   VALUE_DRIFT_NUM_POSITIONS: 0  # 价值漂移评估位置数
 
+# ---------------------------------------------------------------------------
+# 4x4 变体：仅变体相关字段
+# ---------------------------------------------------------------------------
 4x4:
   PREDICT_BATCH: 256
   MCTS_SIMS: 256
@@ -110,7 +166,6 @@
   GAMES_PER_ITER: 40
   NUM_WORKERS: 4
   GAMES_PER_WORKER: 10
-  SELF_PLAY_PROCESSES: 2
   USE_BATCHED_SELF_PLAY: true
   BATCH_CONCURRENCY: 16
   TRAIN_BATCH: 128
@@ -118,46 +173,22 @@
   MIN_LR: 1.0e-5
   LR_DECAY_STEPS: 300000
   TRAIN_EPOCHS_PER_ROUND: 2
-  WEIGHT_DECAY: 1.0e-4
   MAX_SAMPLE_BUFFER_SIZE: 16000
   MIN_SAMPLES_TO_START: 128
-  QUEUE_FETCH_BATCH: 8
-  DATA_AUGMENT_ENABLED: true
-  DATA_AUGMENT_KEEP_ORIGINAL: true
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180,rot90,rot270,diag,anti_diag"
   MODEL_PATH: "game_4x4/banqi4x4_model_latest.pt"
   STATE_DICT_PATH: "game_4x4/banqi4x4_model_latest.pth"
-  INFER_DEVICE: "cuda:0"
-  TRAIN_DEVICE: "cuda:0"
-  INFER_CPU_AUX_WORKERS: 0
-  INFER_CPU_FRACTION: 0.3
-  INFER_MIN_SPLIT_BATCH: 16
   DATA_QUEUE_MAXSIZE: 256
-  ARCHIVE_QUEUE_MAXSIZE: 256
-  CHECKPOINT_EVERY_N_ROUNDS: 2
-  MONITOR_ENABLED: true
-  MONITOR_INTERVAL: 10.0
-  MONITOR_PER_CORE: false
-  MONITOR_CSV_PATH: null
-  TENSORBOARD_ENABLED: true
   TENSORBOARD_LOG_DIR: "runs_4x4"
-  TENSORBOARD_LOG_SYS: true
-  MONGO_URI: "mongodb://localhost:27017"
   DB_NAME: "banqi_4x4"
-  COLLECTION: "games"
-  ARCHIVE_BATCH: 32
-  ARCHIVE_POLL_INTERVAL: 1.0
-  ARCHIVE_ENABLED: true
   ARCHIVE_PREFILL_GAMES: 400
-  ARCHIVE_PREFILL_DIR: ""
   MAX_RUNTIME_SECONDS: 3600     # 1 小时
-  VALUE_TARGET_MODE: "mcts"
-  VALUE_ANNEAL_START: 0.2
-  VALUE_ANNEAL_INCREMENT: 0.2
-  VALUE_ANNEAL_STEP_ROUNDS: 10
   VALUE_DRIFT_EVAL_ROUNDS: 5
   VALUE_DRIFT_NUM_POSITIONS: 500
 
+# ---------------------------------------------------------------------------
+# 4x2 变体：仅变体相关字段
+# ---------------------------------------------------------------------------
 4x2:
   PREDICT_BATCH: 64
   MCTS_SIMS: 64                 # 128 -> 64（4x2 动作空间极小，64 足够）
@@ -166,7 +197,6 @@
   GAMES_PER_ITER: 60
   NUM_WORKERS: 4
   GAMES_PER_WORKER: 15
-  SELF_PLAY_PROCESSES: 2        # 4 -> 2（防 OOM，对齐 4x4 经验）
   USE_BATCHED_SELF_PLAY: true   # false -> true（提升吞吐）
   BATCH_CONCURRENCY: 16         # 4 -> 16（对齐 4x4）
   TRAIN_BATCH: 32
@@ -174,42 +204,15 @@
   MIN_LR: 1.0e-5
   LR_DECAY_STEPS: 30000         # 12000 -> 30000（避免过早触底）
   TRAIN_EPOCHS_PER_ROUND: 3     # 8 -> 3（防小 buffer 过拟合）
-  WEIGHT_DECAY: 1.0e-4
   MAX_SAMPLE_BUFFER_SIZE: 8000  # 4000 -> 8000（增多样性）
   MIN_SAMPLES_TO_START: 256
-  QUEUE_FETCH_BATCH: 8
-  DATA_AUGMENT_ENABLED: true
-  DATA_AUGMENT_KEEP_ORIGINAL: true
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180"  # 仅 hflip -> 全对称增广
   MODEL_PATH: "mini_4x2/banqi_mini_model_latest.pt"
   STATE_DICT_PATH: "mini_4x2/banqi_mini_model_latest.pth"
-  INFER_DEVICE: "cuda:0"
-  TRAIN_DEVICE: "cuda:0"
-  INFER_CPU_AUX_WORKERS: 0
-  INFER_CPU_FRACTION: 0.3
-  INFER_MIN_SPLIT_BATCH: 16
   DATA_QUEUE_MAXSIZE: 256
-  ARCHIVE_QUEUE_MAXSIZE: 256
-  CHECKPOINT_EVERY_N_ROUNDS: 2
-  MONITOR_ENABLED: true          # false -> true（便于排查资源）
-  MONITOR_INTERVAL: 10.0
-  MONITOR_PER_CORE: false
-  MONITOR_CSV_PATH: null
-  TENSORBOARD_ENABLED: true      # false -> true（诊断价值高）
   TENSORBOARD_LOG_DIR: "runs_mini"
-  TENSORBOARD_LOG_SYS: true
-  MONGO_URI: "mongodb://localhost:27017"
   DB_NAME: "banqi_mini"
-  COLLECTION: "games"
-  ARCHIVE_BATCH: 32
-  ARCHIVE_POLL_INTERVAL: 1.0
-  ARCHIVE_ENABLED: true
   ARCHIVE_PREFILL_GAMES: 0
-  ARCHIVE_PREFILL_DIR: ""
   MAX_RUNTIME_SECONDS: 1080     # 18 分钟
-  VALUE_TARGET_MODE: "mcts"
-  VALUE_ANNEAL_START: 0.2
-  VALUE_ANNEAL_INCREMENT: 0.2
-  VALUE_ANNEAL_STEP_ROUNDS: 10
-  VALUE_DRIFT_EVAL_ROUNDS: 5     # 0 -> 5（监控价值头漂移）
+  VALUE_DRIFT_EVAL_ROUNDS: 5    # 0 -> 5（监控价值头漂移）
   VALUE_DRIFT_NUM_POSITIONS: 0

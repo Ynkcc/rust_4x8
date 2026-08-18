@@ -3,6 +3,12 @@
 把原先三份 config.py（4x8 顶层 / game_4x4 / mini_4x2）合并为一份 Config，
 字段为三者并集；所有配置值一律来自本地配置文件，源码内不内嵌任何默认值。
 
+配置文件采用「两段式」结构（config.default.yaml 模板）：
+  common:  与模型变体无关的公共配置（设备 / 基础设施 / 通用超参），三变体共用。
+  4x8/4x4/4x2: 仅保留真正因变体而异的字段。
+运行时 make_config 会把 common 与所选变体的字段合并（变体字段覆盖 common），
+合并后每个变体都必须覆盖全部字段，否则报错。
+
 配置来源（优先级从低到高）：
   1. 本地配置文件 config.local.yaml（也可用环境变量 BANQI_CONFIG 指定
      其他 YAML 文件）。该文件为必需：缺失时 make_config 直接报错，
@@ -78,6 +84,19 @@ _LEGACY_ENV: Dict[str, List[str]] = {
     "VALUE_DRIFT_NUM_POSITIONS": ["VALUE_DRIFT_NUM_POSITIONS", "G4X4_VALUE_DRIFT_N"],
     "ARCHIVE_PREFILL_GAMES": ["ARCHIVE_PREFILL_GAMES", "G4X4_ARCHIVE_PREFILL"],
     "ARCHIVE_PREFILL_DIR": ["ARCHIVE_PREFILL_DIR", "G4X4_ARCHIVE_PREFILL_DIR"],
+    # ---- 训练模式（TRAIN_MODE 分流） ----
+    "TRAIN_MODE": ["TRAIN_MODE", "G4X4_TRAIN_MODE", "MINI_TRAIN_MODE"],
+    "ARCHIVE_TRAIN_DIR": ["ARCHIVE_TRAIN_DIR", "G4X4_ARCHIVE_TRAIN_DIR", "MINI_ARCHIVE_TRAIN_DIR"],
+    "ARCHIVE_TRAIN_GAMES": ["ARCHIVE_TRAIN_GAMES", "G4X4_ARCHIVE_TRAIN_GAMES", "MINI_ARCHIVE_TRAIN_GAMES"],
+    "ARCHIVE_TRAIN_ROUNDS": ["ARCHIVE_TRAIN_ROUNDS", "G4X4_ARCHIVE_TRAIN_ROUNDS", "MINI_ARCHIVE_TRAIN_ROUNDS"],
+    "RULE_SELFPLAY_TYPE": ["RULE_SELFPLAY_TYPE", "G4X4_RULE_SELFPLAY_TYPE", "MINI_RULE_SELFPLAY_TYPE"],
+    "RULE_SELFPLAY_DEPTH": ["RULE_SELFPLAY_DEPTH", "G4X4_RULE_SELFPLAY_DEPTH", "MINI_RULE_SELFPLAY_DEPTH"],
+    "RULE_SELFPLAY_SIMS": ["RULE_SELFPLAY_SIMS", "G4X4_RULE_SELFPLAY_SIMS", "MINI_RULE_SELFPLAY_SIMS"],
+    "RULE_SELFPLAY_GAMES": ["RULE_SELFPLAY_GAMES", "G4X4_RULE_SELFPLAY_GAMES", "MINI_RULE_SELFPLAY_GAMES"],
+    "RULE_SELFPLAY_ROUNDS": ["RULE_SELFPLAY_ROUNDS", "G4X4_RULE_SELFPLAY_ROUNDS", "MINI_RULE_SELFPLAY_ROUNDS"],
+    "RULE_SELFPLAY_CONCURRENCY": ["RULE_SELFPLAY_CONCURRENCY", "G4X4_RULE_SELFPLAY_CONCURRENCY", "MINI_RULE_SELFPLAY_CONCURRENCY"],
+    "RULE_SELFPLAY_TEMPERATURE": ["RULE_SELFPLAY_TEMPERATURE", "G4X4_RULE_SELFPLAY_TEMPERATURE", "MINI_RULE_SELFPLAY_TEMPERATURE"],
+    "RULE_SELFPLAY_BACKEND": ["RULE_SELFPLAY_BACKEND", "G4X4_RULE_SELFPLAY_BACKEND", "MINI_RULE_SELFPLAY_BACKEND"],
 }
 
 
@@ -158,6 +177,18 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "VALUE_ANNEAL_STEP_ROUNDS": _cast_int,
     "VALUE_DRIFT_EVAL_ROUNDS": _cast_int,
     "VALUE_DRIFT_NUM_POSITIONS": _cast_int,
+    "TRAIN_MODE": _cast_str,
+    "ARCHIVE_TRAIN_DIR": _cast_str,
+    "ARCHIVE_TRAIN_GAMES": _cast_int,
+    "ARCHIVE_TRAIN_ROUNDS": _cast_int,
+    "RULE_SELFPLAY_TYPE": _cast_str,
+    "RULE_SELFPLAY_DEPTH": _cast_int,
+    "RULE_SELFPLAY_SIMS": _cast_int,
+    "RULE_SELFPLAY_GAMES": _cast_int,
+    "RULE_SELFPLAY_ROUNDS": _cast_int,
+    "RULE_SELFPLAY_CONCURRENCY": _cast_int,
+    "RULE_SELFPLAY_TEMPERATURE": _cast_float,
+    "RULE_SELFPLAY_BACKEND": _cast_str,
 }
 
 
@@ -191,9 +222,18 @@ def _load_yaml(path: str) -> Optional[Dict[str, Any]]:
 _config_data: Optional[Dict[str, Dict[str, Any]]] = None
 _config_path: Optional[str] = None
 
+# 顶层公共配置区块：与模型变体无关，三变体共用，变体字段覆盖之
+_COMMON_KEY = "common"
+
 
 def _get_config_data() -> Dict[str, Dict[str, Any]]:
-    """惰性加载本地配置文件（首次 make_config 时）。缺失则报错，绝不兜底。"""
+    """惰性加载本地配置文件（首次 make_config 时）。缺失则报错，绝不兜底。
+
+    配置文件采用「两段式」结构：
+      common:  公共配置（与变体无关），作为所有变体的基础；
+      4x8/4x4/4x2: 变体相关字段，覆盖 common 中的同名项。
+    common 区块为必需，缺失直接报错。
+    """
     global _config_data, _config_path
     if _config_data is not None:
         return _config_data
@@ -207,18 +247,39 @@ def _get_config_data() -> Dict[str, Dict[str, Any]]:
             f"  生成 config.local.yaml，再修改其中的参数。"
         )
     known = set(Config.__dataclass_fields__) - {"variant_id"}
-    cleaned: Dict[str, Dict[str, Any]] = {}
-    for vid, fields in data.items():
-        if not isinstance(fields, dict):
-            _warn_unknown(f"变体 {vid!r} 的配置必须是字段字典")
-            continue
+
+    def _clean_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
         kept: Dict[str, Any] = {}
-        for k, v in fields.items():
+        for k, v in raw.items():
             if k in known:
                 kept[k] = v
             else:
                 _warn_unknown(k)
-        cleaned[vid] = kept
+        return kept
+
+    # 公共配置为必需
+    if _COMMON_KEY not in data:
+        raise RuntimeError(
+            f"[banqi.config] 配置文件 {path} 缺少 {_COMMON_KEY!r} 区块\n"
+            f"  请重新生成 config.local.yaml（python -m banqi.config --write-template）。"
+        )
+    if not isinstance(data[_COMMON_KEY], dict):
+        raise RuntimeError(
+            f"[banqi.config] 配置文件 {path} 中 {_COMMON_KEY!r} 必须是字段字典"
+        )
+    common_fields = _clean_fields(data[_COMMON_KEY])
+
+    cleaned: Dict[str, Dict[str, Any]] = {}
+    for vid, fields in data.items():
+        if vid == _COMMON_KEY:
+            continue
+        if not isinstance(fields, dict):
+            _warn_unknown(f"变体 {vid!r} 的配置必须是字段字典")
+            continue
+        # 合并：common 为基础，变体字段覆盖之
+        merged = dict(common_fields)
+        merged.update(_clean_fields(fields))
+        cleaned[vid] = merged
     _config_data = cleaned
     _config_path = path
     return cleaned
@@ -313,6 +374,25 @@ class Config:
     VALUE_ANNEAL_STEP_ROUNDS: int
     VALUE_DRIFT_EVAL_ROUNDS: int
     VALUE_DRIFT_NUM_POSITIONS: int
+    # ============ 训练模式（TRAIN_MODE 分流） ============
+    # TRAIN_MODE: 标准模型自对弈闭环 / 归档训练 / 纯规则自对弈训练
+    #   - "selfplay"   : 默认。模型 MCTS 自对弈生成数据 + 训练（现有闭环）
+    #   - "archive"    : 仅从冷存储归档数据训练，不启动模型自对弈
+    #   - "rule_selfplay": 用纯规则（minimax/heuristic）自对弈生成数据训练，不依赖模型
+    TRAIN_MODE: str
+    # ---- 归档训练（TRAIN_MODE="archive"）----
+    ARCHIVE_TRAIN_DIR: str            # 归档数据目录；空=自动探测 variant.archive_dir
+    ARCHIVE_TRAIN_GAMES: int          # 从归档加载多少局用于训练（0=全部）
+    ARCHIVE_TRAIN_ROUNDS: int         # 归档训练总轮数
+    # ---- 纯规则自对弈训练（TRAIN_MODE="rule_selfplay"）----
+    RULE_SELFPLAY_TYPE: str           # 规则类型：minimax | heuristic
+    RULE_SELFPLAY_DEPTH: int          # minimax 搜索深度（仅 RULE_SELFPLAY_TYPE="minimax"）
+    RULE_SELFPLAY_SIMS: int           # 启发式 MCTS 模拟数（仅 RULE_SELFPLAY_TYPE="heuristic"）
+    RULE_SELFPLAY_GAMES: int          # 每轮生成局数
+    RULE_SELFPLAY_ROUNDS: int         # 纯规则自对弈训练总轮数
+    RULE_SELFPLAY_CONCURRENCY: int    # 纯规则自对弈生成并发 worker 数（线程或进程，见 BACKEND）
+    RULE_SELFPLAY_TEMPERATURE: float  # 走子温度（温度越高越随机；0=贪心）
+    RULE_SELFPLAY_BACKEND: str        # 并发后端：thread（多线程，默认）| process（多进程 spawn）
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
