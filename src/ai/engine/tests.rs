@@ -1,7 +1,6 @@
 //! 纯计算引擎单元测试。
 
-use crate::DarkChessEnv;
-use crate::ai::engine::{EngineConfig, best_move};
+use super::*;
 
 #[test]
 fn engine_returns_legal_action() {

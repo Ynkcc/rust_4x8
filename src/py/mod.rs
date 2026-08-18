@@ -17,7 +17,7 @@ mod episode;
 mod self_play;
 
 #[cfg(feature = "pyo3")]
-mod py_evaluator;
+pub mod py_evaluator;
 
 #[cfg(feature = "pyo3")]
 pub mod chess_env;

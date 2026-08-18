@@ -627,7 +627,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
 ///
 /// 该函数同时被三条终止路径调用：MCTS None 分支（无合法走法判负）、
 /// 终局分支（terminated/truncated）、步数上限分支。
-pub(crate) fn finalize_episode(
+pub fn finalize_episode(
     episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize)>,
     winner: Option<i32>,
     health_diff_red: Option<f32>,

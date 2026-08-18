@@ -16,7 +16,7 @@ pub mod engine;
 pub mod eval;
 pub mod heuristic_mcts;
 pub mod minimax;
-pub(crate) mod movegen;
+pub mod movegen;
 mod random;
 mod reveal_first;
 
