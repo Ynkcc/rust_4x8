@@ -7,6 +7,7 @@ Rust 绑定前缀 / 模型文件名」，其余所有派生量（通道数、标
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Dict, Tuple
@@ -84,6 +85,23 @@ class Variant:
         return total
 
     @cached_property
+    def base_output_dir(self) -> str:
+        """变体输出根目录：python/outputs/{id} 的绝对路径。"""
+        import os
+        py_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(py_dir, "outputs", self.id)
+
+    @cached_property
+    def checkpoints_dir(self) -> str:
+        """变体模型/检查点目录。"""
+        return os.path.join(self.base_output_dir, "checkpoints")
+
+    @cached_property
+    def logs_dir(self) -> str:
+        """变体运行日志目录。"""
+        return os.path.join(self.base_output_dir, "logs")
+
+    @cached_property
     def non_identity_transforms(self) -> Tuple[str, ...]:
         return tuple(t for t in self.symmetries if t != "identity")
 
@@ -115,8 +133,8 @@ VARIANTS: Dict[str, Variant] = {
         env_const_prefix="",
         env_prefix="",
         model_basename="banqi_model_latest",
-        archive_dir="./training_data/archive",
-        tb_dir="runs",
+        archive_dir="outputs/4x8/archive",
+        tb_dir="outputs/4x8/tensorboard",
     ),
     "4x4": Variant(
         id="4x4",
@@ -138,8 +156,8 @@ VARIANTS: Dict[str, Variant] = {
         env_const_prefix="GAME4X4_",
         env_prefix="G4X4_",
         model_basename="banqi4x4_model_latest",
-        archive_dir="./training_data/archive_4x4",
-        tb_dir="runs_4x4",
+        archive_dir="outputs/4x4/archive",
+        tb_dir="outputs/4x4/tensorboard",
     ),
     "4x2": Variant(
         id="4x2",
@@ -159,8 +177,8 @@ VARIANTS: Dict[str, Variant] = {
         env_const_prefix="MINI_",
         env_prefix="MINI_",
         model_basename="banqi_mini_model_latest",
-        archive_dir="./training_data/archive_mini",
-        tb_dir="runs_mini",
+        archive_dir="outputs/4x2/archive",
+        tb_dir="outputs/4x2/tensorboard",
     ),
 }
 

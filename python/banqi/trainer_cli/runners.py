@@ -281,11 +281,28 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
     train_mode = "archive"      -> 仅消费归档数据（Mongo GameDocument.samples + 本地 JSONL）
     train_mode = "rule_selfplay"-> 启动纯规则（minimax/heuristic）自对弈生成数据（不调 MCTS 模型），
                                    写入训练队列 + 可选归档。
-    """
+def setup_variant_logging(variant: Variant) -> str:
+    """初始化变体运行日志：在 variant.logs_dir 中创建日志文件并添加 FileHandler。"""
+    import logging
+    os.makedirs(variant.logs_dir, exist_ok=True)
+    log_file = os.path.join(variant.logs_dir, f"train_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    root_logger = logging.getLogger()
+    handler = logging.FileHandler(log_file, encoding="utf-8")
+    formatter = logging.Formatter("[%(asctime)s][%(levelname)s] %(message)s")
+    handler.setFormatter(formatter)
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+    return log_file
+
+
+def _run_offline(variant_id: str, train_mode: str) -> None:
     variant = get_variant(variant_id)
     config: Config = make_config(variant_id)
     config._variant = variant
     tag = f"[{variant.id}]"
+
+    log_file = setup_variant_logging(variant)
+    print(f"{tag} 📝 运行日志记录至: {log_file}")
 
     if HAS_TORCH:
         threads_env = os.getenv(variant.env_prefix + "TORCH_THREADS")
@@ -476,6 +493,9 @@ def _run_selfplay(variant_id: str) -> None:
     config: Config = make_config(variant_id)
     config._variant = variant
     tag = f"[{variant.id}]"
+
+    log_file = setup_variant_logging(variant)
+    print(f"{tag} 📝 运行日志记录至: {log_file}")
 
     if HAS_TORCH:
         threads_env = os.getenv(variant.env_prefix + "TORCH_THREADS")

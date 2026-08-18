@@ -49,6 +49,9 @@ def init_summary_writer(
         return False
     if _writer is not None:
         return True
+    if not os.path.isabs(log_dir):
+        py_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        log_dir = os.path.join(py_dir, log_dir)
     try:
         _writer = SummaryWriter(log_dir=log_dir, flush_secs=flush_secs)
         return True

@@ -42,9 +42,9 @@ class ArchiverWorker(threading.Thread):
         self.cfg = make_config(variant.id)
         self.mongo_uri = mongo_uri if mongo_uri is not None else self.cfg.MONGO_URI
         self.tag = f"[Archiver-{variant.id}]"
-        self.local_archive_dir = (
-            local_archive_dir or variant.archive_dir or "./training_data/archive"
-        )
+        _py_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        raw_dir = local_archive_dir or variant.archive_dir or os.path.join("outputs", variant.id, "archive")
+        self.local_archive_dir = raw_dir if os.path.isabs(raw_dir) else os.path.join(_py_dir, raw_dir)
 
         # 初始化保存器（Mongo 优先，失败降级本地）
         self.saver = self._init_saver()

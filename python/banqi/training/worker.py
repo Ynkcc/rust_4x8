@@ -90,7 +90,7 @@ class TrainWorker(threading.Thread):
         self.C = build_constants(variant)
         self.data_queue = data_queue
         self.stop_event = stop_event
-        self.ckpt_dir = ckpt_dir or os.path.join("checkpoints", variant.id)
+        self.ckpt_dir = ckpt_dir or variant.checkpoints_dir
         self.run_dir = run_dir
         self.device = device or _resolve_device(getattr(cfg, "TRAIN_DEVICE", "auto"))
         os.makedirs(self.ckpt_dir, exist_ok=True)

@@ -51,8 +51,16 @@ _CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_YAML = os.path.join(_CONFIG_DIR, "config.default.yaml")  # 仅作模板
 _LOCAL_YAML = os.path.join(_CONFIG_DIR, "config.local.yaml")      # 唯一运行时来源
 
-# 相对 python/ 目录解析的路径字段（兼容旧版 os.path.join(_PY_DIR, ...)）
-_PATH_FIELDS = ("MODEL_PATH", "STATE_DICT_PATH", "ONNX_PATH")
+# 相对 python/ 目录解析的路径字段（统一转换为绝对路径，避免依赖 CWD）
+_PATH_FIELDS = (
+    "MODEL_PATH",
+    "STATE_DICT_PATH",
+    "ONNX_PATH",
+    "TENSORBOARD_LOG_DIR",
+    "ARCHIVE_TRAIN_DIR",
+    "MONITOR_CSV_PATH",
+    "ARCHIVE_PREFILL_DIR",
+)
 
 # 历史环境变量别名：字段名 -> 依次尝试的旧变量名（保留既有脚本的 env 兼容）
 _LEGACY_ENV: Dict[str, List[str]] = {

@@ -154,15 +154,15 @@ common:
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180"  # 增强变换列表
 
   # ---------------- 模型与路径 ----------------
-  MODEL_PATH: "banqi_model_latest.pt"     # 相对 python/ 目录（TorchScript）
-  STATE_DICT_PATH: "banqi_model_latest.pth"
-  ONNX_PATH: "banqi_model_latest.onnx"    # ONNX 模型（MODEL_BACKEND="onnx" 时使用）
+  MODEL_PATH: "outputs/4x8/checkpoints/banqi_model_latest.pt"     # 相对 python/ 目录（TorchScript）
+  STATE_DICT_PATH: "outputs/4x8/checkpoints/banqi_model_latest.pth"
+  ONNX_PATH: "outputs/4x8/checkpoints/banqi_model_latest.onnx"    # ONNX 模型（MODEL_BACKEND="onnx" 时使用）
 
   # ---------------- 队列 ----------------
   DATA_QUEUE_MAXSIZE: 128       # 训练数据队列容量
 
   # ---------------- TensorBoard ----------------
-  TENSORBOARD_LOG_DIR: "runs"   # 日志目录（相对工作目录）
+  TENSORBOARD_LOG_DIR: "outputs/4x8/tensorboard"   # 日志目录（相对 python/ 目录）
 
   # ---------------- Mongo 归档 ----------------
   DB_NAME: "banqi_training"     # Mongo 库名
@@ -196,11 +196,11 @@ common:
   MAX_SAMPLE_BUFFER_SIZE: 16000
   MIN_SAMPLES_TO_START: 128
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180,rot90,rot270,diag,anti_diag"
-  MODEL_PATH: "game_4x4/banqi4x4_model_latest.pt"
-  STATE_DICT_PATH: "game_4x4/banqi4x4_model_latest.pth"
-  ONNX_PATH: "game_4x4/banqi4x4_model_latest.onnx"
+  MODEL_PATH: "outputs/4x4/checkpoints/banqi4x4_model_latest.pt"
+  STATE_DICT_PATH: "outputs/4x4/checkpoints/banqi4x4_model_latest.pth"
+  ONNX_PATH: "outputs/4x4/checkpoints/banqi4x4_model_latest.onnx"
   DATA_QUEUE_MAXSIZE: 256
-  TENSORBOARD_LOG_DIR: "runs_4x4"
+  TENSORBOARD_LOG_DIR: "outputs/4x4/tensorboard"
   DB_NAME: "banqi_4x4"
   ARCHIVE_PREFILL_GAMES: 400
   MAX_RUNTIME_SECONDS: 3600     # 1 小时
@@ -228,11 +228,11 @@ common:
   MAX_SAMPLE_BUFFER_SIZE: 8000  # 4000 -> 8000（增多样性）
   MIN_SAMPLES_TO_START: 256
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180"  # 仅 hflip -> 全对称增广
-  MODEL_PATH: "mini_4x2/banqi_mini_model_latest.pt"
-  STATE_DICT_PATH: "mini_4x2/banqi_mini_model_latest.pth"
-  ONNX_PATH: "mini_4x2/banqi_mini_model_latest.onnx"
+  MODEL_PATH: "outputs/4x2/checkpoints/banqi_mini_model_latest.pt"
+  STATE_DICT_PATH: "outputs/4x2/checkpoints/banqi_mini_model_latest.pth"
+  ONNX_PATH: "outputs/4x2/checkpoints/banqi_mini_model_latest.onnx"
   DATA_QUEUE_MAXSIZE: 256
-  TENSORBOARD_LOG_DIR: "runs_mini"
+  TENSORBOARD_LOG_DIR: "outputs/4x2/tensorboard"
   DB_NAME: "banqi_mini"
   ARCHIVE_PREFILL_GAMES: 0
   MAX_RUNTIME_SECONDS: 1080     # 18 分钟
