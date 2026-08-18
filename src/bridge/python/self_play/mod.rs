@@ -39,4 +39,8 @@ pub use batched::{
     run_mini_batched_self_play_with_predictor_impl,
 };
 #[cfg(feature = "pyo3")]
-pub use teacher::{run_game4x4_heuristic_self_play_impl, run_game4x4_minimax_self_play_impl};
+pub use teacher::{
+    run_game4x4_heuristic_self_play_impl, run_game4x4_minimax_self_play_impl,
+    run_heuristic_self_play_impl, run_mini_heuristic_self_play_impl, run_mini_minimax_self_play_impl,
+    run_minimax_self_play_impl,
+};

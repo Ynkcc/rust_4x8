@@ -9,6 +9,7 @@ pub mod config;
 pub mod constants;
 pub mod features;
 pub mod rules;
+pub mod symmetry;
 pub mod traits;
 pub mod types;
 pub mod variants;
@@ -22,6 +23,7 @@ pub use config::{
     GameConfig, MAX_PIECES_PER_PLAYER, MAX_POSITIONS, MAX_REVEAL_PROBABILITY_SIZE,
     NUM_PIECE_TYPES_MAX, compute_action_counts, darkchess_config, game_4x4_config, mini_config,
 };
+pub use symmetry::{Symmetry, action_permutation, sq_map, transform_action, transform_board_flat};
 pub use types::{Observation, Piece, PieceType, Player, Slot};
 pub use board::DarkChessEnv;
 pub use traits::GameEnv;

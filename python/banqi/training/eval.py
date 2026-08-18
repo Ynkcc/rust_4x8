@@ -87,7 +87,7 @@ def prefill_from_archive(buffer, variant: Variant, cfg) -> Optional[Dict]:
     n_games = cfg.ARCHIVE_PREFILL_GAMES
     if not n_games:
         return None
-    from banqi.archiver import load_jsonl_episodes
+    from banqi.storage import load_jsonl_episodes
     from banqi.training.buffer import episode_to_samples
 
     here = os.path.dirname(

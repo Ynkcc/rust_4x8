@@ -10,6 +10,8 @@
 //! - `rust_collector`: Rust 持有模型的 Torch 数据收集器（torch + pyo3）
 
 #[cfg(feature = "pyo3")]
+mod augment;
+#[cfg(feature = "pyo3")]
 mod decode;
 #[cfg(feature = "pyo3")]
 mod episode;
@@ -35,6 +37,8 @@ pub mod onnx_collector;
 #[cfg(feature = "pyo3")]
 pub use decode::{config_for_variant, decode_scalar_state, describe_record};
 #[cfg(feature = "pyo3")]
+pub use augment::register_augment_functions;
+#[cfg(feature = "pyo3")]
 pub use episode::{
     PyGameEpisode, episode_to_dict, episode_to_dict_darkchess,
 };
@@ -48,7 +52,9 @@ pub use self_play::{
     run_batched_self_play_with_predictor_impl, run_game4x4_batched_self_play_with_predictor_impl,
     run_game4x4_heuristic_self_play_impl, run_game4x4_minimax_self_play_impl,
     run_game4x4_parallel_self_play_with_predictor_impl,
-    run_game4x4_self_play_with_predictor_impl, run_mini_batched_self_play_with_predictor_impl,
-    run_mini_parallel_self_play_with_predictor_impl, run_mini_self_play_with_predictor_impl,
+    run_game4x4_self_play_with_predictor_impl, run_heuristic_self_play_impl,
+    run_mini_batched_self_play_with_predictor_impl, run_mini_heuristic_self_play_impl,
+    run_mini_minimax_self_play_impl, run_mini_parallel_self_play_with_predictor_impl,
+    run_mini_self_play_with_predictor_impl, run_minimax_self_play_impl,
     run_parallel_self_play_with_predictor_impl, run_self_play_with_predictor_impl,
 };

@@ -27,7 +27,7 @@ import banqi_4x8
 from banqi.archiver import ArchiverWorker
 from banqi.config import Config, make_config
 from banqi.memory_guard import start_memory_guard
-from banqi.rule_self_play import RuleSelfPlayWorker, rule_sp_worker_main
+from banqi.rule_teacher import RuleTeacherWorker, rule_teacher_worker_main
 from banqi.self_play import sp_worker_main
 from banqi.tb_logger import (
     add_hparams,
@@ -275,15 +275,6 @@ def _log_meta_tb(config: Config, variant_id: str, tb_log_dir: str) -> None:
     add_hparams({k: str(v) for k, v in hparams.items()}, {})
 
 
-def _run_offline(variant_id: str, train_mode: str) -> None:
-    """离线训练：从冷存储归档数据（MongoDB / 本地 JSONL）消费训练，无自对弈闭环。
-
-    train_mode = "archive"      -> 仅消费归档数据（Mongo GameDocument.samples + 本地 JSONL）
-    train_mode = "rule_selfplay"-> 启动纯规则（minimax/heuristic）自对弈生成数据（不调 MCTS 模型），
-                                   写入训练队列 + 可选归档。
-    """
-
-
 def setup_variant_logging(variant: Variant) -> str:
     """初始化变体运行日志：在 variant.logs_dir 中创建日志文件并添加 FileHandler。"""
     import logging
@@ -361,29 +352,29 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
 
     # ---- 数据生产者 ----
     producers: List[object] = []
-    use_mp = config.RULE_SELFPLAY_BACKEND == "multiprocess"
+    use_mp = config.RULE_SELFPLAY_BACKEND.strip().lower() == "process"
     if train_mode == "rule_selfplay":
         if use_mp:
             procs = [
                 ctx.Process(
-                    target=rule_sp_worker_main,
-                    args=(variant_id, wid, data_q, archive_q, stop_event),
-                    name=f"RuleSP-{wid}", daemon=True,
+                    target=rule_teacher_worker_main,
+                    args=(variant_id, wid, data_q, stop_event),
+                    name=f"RuleT-{wid}", daemon=True,
                 )
                 for wid in range(config.RULE_SELFPLAY_CONCURRENCY)
             ]
             for p in procs:
                 p.start()
             producers.extend(procs)
-            print(f"{tag} 🚀 规则自对弈子进程 × {len(procs)} 已启动")
+            print(f"{tag} 🚀 Rust 教师自对弈子进程 × {len(procs)} 已启动")
         else:
             concurrency = config.RULE_SELFPLAY_CONCURRENCY
             for wid in range(concurrency):
                 producers.append(
-                    RuleSelfPlayWorker(variant, data_q, lambda: stop_flag[0],
-                                       worker_id=wid)
+                    RuleTeacherWorker(variant, data_q, lambda: stop_flag[0],
+                                      worker_id=wid)
                 )
-            print(f"{tag} 🚀 纯规则自对弈线程 × {concurrency} 已创建"
+            print(f"{tag} 🚀 Rust 教师自对弈线程 × {concurrency} 已创建"
                   f"（RULE_SELFPLAY_BACKEND=thread）")
     else:
         producers.append(_ArchiveFeederWorker(variant, data_q, stop_flag))

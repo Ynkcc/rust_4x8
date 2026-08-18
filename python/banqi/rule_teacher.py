@@ -1,0 +1,247 @@
+"""banqi/rule_teacher.py — Rust 教师自对弈数据生产者（4x2 / 4x4 / 4x8 通用）。
+
+纯规则教师自对弈在 Rust 侧实现（src/bridge/python/self_play/teacher.rs），Python
+侧仅做编排：按变体分派到 Rust 导出的 `run_*_heuristic_self_play` /
+`run_*_minimax_self_play` 绑定，把返回的 `PyGameEpisode`（Rust 导出的 Episode
+格式）序列化为 dict 后压入训练队列，由 `TrainWorker` 消费训练。不依赖神经网络。
+
+用途：`TRAIN_MODE="rule_selfplay"` 时的数据源，用于：
+  - 模仿学习预热：让网络先学习强规则教师（minimax / 启发式）的走子与评估，
+    避免从随机自对弈冷启动时目标噪声过大。
+  - 数据增强：为模型自对弈补充高质量规则对局数据。
+
+并发后端（RULE_SELFPLAY_BACKEND）：
+  - "thread"  （默认）：多线程。启动 RULE_SELFPLAY_CONCURRENCY 个
+    `RuleTeacherWorker` 线程；Rust 绑定调用释放 GIL，可并行。
+  - "process"：多进程 spawn。每个 worker 独立进程 / GIL，彻底并行吃满多核。
+    通过 `rule_teacher_worker_main` 进程入口 + multiprocessing.Queue 通信。
+
+Episode 格式：Rust 导出的 `PyGameEpisode.to_dict()` 字段与 `TrainWorker` /
+`DataBuffer` 兼容（含 boards / scalars / policies / mcts_values / completed_qs /
+root_visits / game_results / health_diffs / action_masks / actions / game_length /
+winner / board_shape / scalar_shape / action_space 等）。策略头验证的 ground
+truth 采用 `actions`（教师实际走出的最优动作，见 training/buffer.py 的 fallback）。
+"""
+
+from __future__ import annotations
+
+import multiprocessing
+import queue
+import threading
+import time
+from typing import Callable, Dict, List, Optional
+
+try:
+    import banqi_4x8
+except ImportError as exc:  # pragma: no cover
+    raise SystemExit(
+        "无法导入 banqi_4x8。请先执行: maturin develop --features pyo3"
+    ) from exc
+
+from banqi.config import make_config
+from banqi.variant import Variant
+
+# Rust 绑定函数名分发表（按 variant.rust_prefix）：(启发式, minimax)
+_TEACHER_FNS: Dict[str, tuple] = {
+    "": ("run_heuristic_self_play", "run_minimax_self_play"),          # 4x8
+    "mini": ("run_mini_heuristic_self_play", "run_mini_minimax_self_play"),  # 4x2
+    "game4x4": ("run_game4x4_heuristic_self_play", "run_game4x4_minimax_self_play"),  # 4x4
+}
+
+
+def _teacher_fns(variant: Variant) -> tuple:
+    key = variant.rust_prefix
+    if key not in _TEACHER_FNS:
+        raise KeyError(f"未知 rust_prefix {key!r}，可选: {sorted(_TEACHER_FNS)}")
+    return _TEACHER_FNS[key]
+
+
+def build_teacher_config(variant: Variant, sims: int) -> "banqi_4x8.SelfPlayConfig":
+    """构建教师自对弈 SelfPlayConfig（启发式路径以 RULE_SELFPLAY_SIMS 作为 MCTS 模拟数）。"""
+    return banqi_4x8.SelfPlayConfig(
+        mcts_sims=sims,
+        max_considered_actions=16,
+        temperature_steps=0,  # 教师统一按温度采样（temperature 在 minimax 侧传入）
+        c_scale=1.0,
+        gumbel_scale=1.0,
+    )
+
+
+def _episode_to_dict(ep, iteration: int, worker_id: int) -> Dict:
+    """把 Rust 导出的 `PyGameEpisode` 序列化为与 `TrainWorker` 兼容的 episode dict。"""
+    d = dict(ep.to_dict())
+    d["iteration"] = iteration
+    d["worker_id"] = worker_id
+    return d
+
+
+def generate_teacher_batch(
+    variant: Variant,
+    rule_type: str,
+    depth: int,
+    sims: int,
+    temperature: float,
+    num_games: int,
+    concurrency: int,
+    worker_id: int,
+) -> List[Dict]:
+    """调用 Rust 教师绑定生成一批 episode dict。
+
+    `rule_type` : "minimax" | "heuristic"（由 config.RULE_SELFPLAY_TYPE 决定）
+    """
+    fn_heuristic, fn_minimax = _teacher_fns(variant)
+    if rule_type == "minimax":
+        episodes = getattr(banqi_4x8, fn_minimax)(
+            depth=depth, num_games=num_games,
+            concurrency=concurrency, temperature=temperature,
+        )
+    else:
+        cfg = build_teacher_config(variant, sims)
+        episodes = getattr(banqi_4x8, fn_heuristic)(
+            config=cfg, num_games=num_games,
+            concurrency=concurrency, worker_id=worker_id,
+        )
+    return list(episodes)
+
+
+# 停止信号统一抽象：线程模式传 `lambda: stop_flag[0]`，进程模式传 `stop_event.is_set`
+_StoppedFn = Callable[[], bool]
+
+
+class RuleTeacherWorker(threading.Thread):
+    """Rust 教师自对弈生产者线程（`TRAIN_MODE="rule_selfplay"` + `RULE_SELFPLAY_BACKEND="thread"`）。
+
+    用法与 `SelfPlayWorker` 一致：调用 Rust 教师绑定生成 episode dict 压入 `data_q`，
+    由 `TrainWorker` 消费训练。不依赖神经网络，只复用 `config` 的规则参数。
+    """
+
+    def __init__(
+        self,
+        variant: Variant,
+        data_q: "queue.Queue",
+        stopped: _StoppedFn,
+        worker_id: int = 0,
+    ) -> None:
+        super().__init__(
+            name=f"RuleTeacherWorker-{variant.id}-{worker_id}", daemon=True
+        )
+        self.variant = variant
+        self.cfg = make_config(variant.id)
+        self.tag = f"[RuleT-{variant.id}-{worker_id}]"
+        self.data_q = data_q
+        self.stopped = stopped
+        self.worker_id = worker_id
+        self.total_games = 0
+
+    def _put(self, item: Dict) -> None:
+        while not self.stopped():
+            try:
+                self.data_q.put(item, timeout=0.5)
+                return
+            except Exception:  # queue.Full
+                continue
+
+    def run(self) -> None:
+        cfg = self.cfg
+        rule_type = cfg.RULE_SELFPLAY_TYPE
+        depth = cfg.RULE_SELFPLAY_DEPTH
+        sims = cfg.RULE_SELFPLAY_SIMS
+        temperature = cfg.RULE_SELFPLAY_TEMPERATURE
+        concurrency = max(1, cfg.RULE_SELFPLAY_CONCURRENCY)
+        games_per_batch = max(1, cfg.RULE_SELFPLAY_GAMES)
+        print(f"{self.tag} 🚀 Rust 教师自对弈线程启动: rule={rule_type} "
+              f"depth={depth} sims={sims} temp={temperature} "
+              f"concurrency={concurrency} games/batch={games_per_batch}（不依赖神经网络）")
+        while not self.stopped():
+            t0 = time.time()
+            generated = 0
+            try:
+                eps = generate_teacher_batch(
+                    self.variant, rule_type, depth, sims, temperature,
+                    num_games=games_per_batch, concurrency=concurrency,
+                    worker_id=self.worker_id,
+                )
+            except Exception as exc:  # pragma: no cover
+                print(f"{self.tag} ⚠️ Rust 教师自对弈异常: {exc}")
+                time.sleep(0.5)
+                continue
+            for ep in eps:
+                if self.stopped():
+                    break
+                d = _episode_to_dict(ep, self.total_games // max(1, cfg.GAMES_PER_ITER),
+                                     self.worker_id)
+                if not d.get("num_samples", 0):
+                    continue
+                self._put(d)
+                self.total_games += 1
+                generated += 1
+            dur = time.time() - t0
+            if eps:
+                print(f"{self.tag} 📊 生成 {generated} 局（累计 {self.total_games}，"
+                      f"耗时 {dur:.1f}s），等待训练消费...")
+            # 让 TrainWorker 有时间消费与训练，避免压满队列
+            time.sleep(2.0)
+
+    def stats(self) -> Dict[str, int]:
+        return {
+            "total_games": self.total_games,
+        }
+
+
+def rule_teacher_worker_main(
+    variant_id: str,
+    worker_id: int,
+    data_q: "multiprocessing.Queue",
+    stop_event: "multiprocessing.Event",
+) -> None:
+    """多进程模式下的 Rust 教师自对弈生产者入口（spawn 子进程 target）。
+
+    每个 worker 独立进程，拥有独立 GIL，可彻底并行吃满多核。
+    与线程版共享 `generate_teacher_batch` 生成逻辑，通过 `data_q`（multiprocessing
+    队列）把 episode dict 传回主进程，由 `TrainWorker` 消费训练。
+    """
+    from banqi.variant import get_variant
+
+    variant = get_variant(variant_id)
+    cfg = make_config(variant_id)
+    tag = f"[RuleT-{variant_id}-{worker_id}]"
+    rule_type = cfg.RULE_SELFPLAY_TYPE
+    depth = cfg.RULE_SELFPLAY_DEPTH
+    sims = cfg.RULE_SELFPLAY_SIMS
+    temperature = cfg.RULE_SELFPLAY_TEMPERATURE
+    concurrency = max(1, cfg.RULE_SELFPLAY_CONCURRENCY)
+    games_per_batch = max(1, cfg.RULE_SELFPLAY_GAMES)
+    total_games = 0
+
+    print(f"{tag} 🚀 Rust 教师自对弈子进程启动: rule={rule_type} "
+          f"depth={depth} sims={sims} temp={temperature} "
+          f"concurrency={concurrency} games/batch={games_per_batch}（不依赖神经网络）")
+    while not stop_event.is_set():
+        t0 = time.time()
+        generated = 0
+        try:
+            eps = generate_teacher_batch(
+                variant, rule_type, depth, sims, temperature,
+                num_games=games_per_batch, concurrency=concurrency,
+                worker_id=worker_id,
+            )
+        except Exception as exc:  # pragma: no cover
+            print(f"{tag} ⚠️ Rust 教师自对弈异常: {exc}")
+            time.sleep(0.5)
+            continue
+        for ep in eps:
+            if stop_event.is_set():
+                break
+            d = _episode_to_dict(ep, total_games // max(1, cfg.GAMES_PER_ITER),
+                                 worker_id)
+            if not d.get("num_samples", 0):
+                continue
+            # multiprocessing.Queue.put 会阻塞（无 timeout），循环里已检查 stop_event
+            data_q.put(d)
+            total_games += 1
+            generated += 1
+        dur = time.time() - t0
+        if eps:
+            print(f"{tag} 📊 生成 {generated} 局（累计 {total_games}，"
+                  f"耗时 {dur:.1f}s），等待训练消费...")
+        time.sleep(2.0)

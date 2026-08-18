@@ -15,11 +15,14 @@ use pyo3::prelude::*;
 #[cfg(feature = "pyo3")]
 use crate::bridge::python::{
     PyGameEpisode, PySelfPlayConfig, describe_record, decode_scalar_state,
-    run_batched_self_play_with_predictor_impl, run_game4x4_batched_self_play_with_predictor_impl,
+    register_augment_functions, run_batched_self_play_with_predictor_impl,
+    run_game4x4_batched_self_play_with_predictor_impl,
     run_game4x4_heuristic_self_play_impl, run_game4x4_minimax_self_play_impl,
     run_game4x4_parallel_self_play_with_predictor_impl, run_game4x4_self_play_with_predictor_impl,
-    run_mini_batched_self_play_with_predictor_impl, run_mini_parallel_self_play_with_predictor_impl,
-    run_mini_self_play_with_predictor_impl, run_parallel_self_play_with_predictor_impl,
+    run_heuristic_self_play_impl, run_mini_batched_self_play_with_predictor_impl,
+    run_mini_heuristic_self_play_impl, run_mini_minimax_self_play_impl,
+    run_mini_parallel_self_play_with_predictor_impl, run_mini_self_play_with_predictor_impl,
+    run_minimax_self_play_impl, run_parallel_self_play_with_predictor_impl,
     run_self_play_with_predictor_impl,
 };
 #[cfg(feature = "pyo3")]
@@ -237,6 +240,78 @@ fn run_game4x4_batched_self_play_with_predictor(
     ))
 }
 
+// ---- 教师自对弈（4x8 启发式 / minimax） ----
+
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (config=None, num_games=1, concurrency=8, worker_id=0))]
+fn run_heuristic_self_play(
+    py: Python<'_>,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(run_heuristic_self_play_impl(
+        py, &cfg, num_games, concurrency, worker_id,
+    ))
+}
+
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (depth=2, num_games=1, concurrency=4, temperature=0.5))]
+fn run_minimax_self_play(
+    py: Python<'_>,
+    depth: usize,
+    num_games: usize,
+    concurrency: usize,
+    temperature: f32,
+) -> PyResult<Vec<PyGameEpisode>> {
+    Ok(run_minimax_self_play_impl(
+        py, depth, num_games, concurrency, temperature,
+    ))
+}
+
+// ---- 教师自对弈（4x2 迷你启发式 / minimax） ----
+
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (config=None, num_games=1, concurrency=8, worker_id=0))]
+fn run_mini_heuristic_self_play(
+    py: Python<'_>,
+    config: Option<PyRef<PySelfPlayConfig>>,
+    num_games: usize,
+    concurrency: usize,
+    worker_id: usize,
+) -> PyResult<Vec<PyGameEpisode>> {
+    let cfg: SelfPlayConfig = match config {
+        Some(c) => c.inner.clone(),
+        None => SelfPlayConfig::default(),
+    };
+    Ok(run_mini_heuristic_self_play_impl(
+        py, &cfg, num_games, concurrency, worker_id,
+    ))
+}
+
+#[cfg(feature = "pyo3")]
+#[pyfunction]
+#[pyo3(signature = (depth=2, num_games=1, concurrency=4, temperature=0.5))]
+fn run_mini_minimax_self_play(
+    py: Python<'_>,
+    depth: usize,
+    num_games: usize,
+    concurrency: usize,
+    temperature: f32,
+) -> PyResult<Vec<PyGameEpisode>> {
+    Ok(run_mini_minimax_self_play_impl(
+        py, depth, num_games, concurrency, temperature,
+    ))
+}
+
 // ---- 教师自对弈（4x4 启发式 / minimax） ----
 
 #[cfg(feature = "pyo3")]
@@ -296,8 +371,19 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_game4x4_heuristic_self_play, m)?)?;
     m.add_function(wrap_pyfunction!(run_game4x4_minimax_self_play, m)?)?;
 
+    // --- 教师自对弈（4x8 启发式 / minimax） ---
+    m.add_function(wrap_pyfunction!(run_heuristic_self_play, m)?)?;
+    m.add_function(wrap_pyfunction!(run_minimax_self_play, m)?)?;
+
+    // --- 教师自对弈（4x2 迷你启发式 / minimax） ---
+    m.add_function(wrap_pyfunction!(run_mini_heuristic_self_play, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mini_minimax_self_play, m)?)?;
+
     m.add_function(wrap_pyfunction!(describe_record, m)?)?;
     m.add_function(wrap_pyfunction!(decode_scalar_state, m)?)?;
+
+    // --- 数据空间对称增强（Data Augmentation，动作置换表/board 重排下沉 Rust） ---
+    register_augment_functions(m)?;
 
     // --- 井字棋绑定（验证逻辑复用） ---
     m.add_class::<crate::bridge::python::ttt::PyTicTacToe>()?;

@@ -8,12 +8,13 @@ DataBuffer，按 (new_samples/batch)×epochs 限制训练量（避免旧数据�
 from __future__ import annotations
 
 import os
+import random
 import time
 import copy
 import pickle
 import threading
 from collections import deque
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 import torch.optim as optim
@@ -22,6 +23,13 @@ import torch.optim.lr_scheduler as lr_scheduler
 from banqi.constants import build_constants
 from banqi.tb_logger import add_scalar
 from banqi.variant import Variant
+
+try:
+    import banqi_4x8
+except ImportError as exc:  # pragma: no cover
+    raise SystemExit(
+        "无法导入 banqi_4x8。请先执行: maturin develop --features pyo3"
+    ) from exc
 
 from .buffer import DataBuffer, episode_to_samples
 from .losses import run_training_epochs, _resolve_device
@@ -121,6 +129,8 @@ class TrainWorker(threading.Thread):
         self._raw_sample_pool: List[Dict] = []
         self._fixed_eval: Optional[Dict] = None
         self._prev_weights: Optional[Dict[str, torch.Tensor]] = None
+        # 动作置换表缓存（Rust 绑定导出），增强用
+        self._perm_cache: Dict[str, list] = {}
         self._init_model_and_checkpoint()
 
     def _init_model_and_checkpoint(self):
@@ -266,6 +276,70 @@ class TrainWorker(threading.Thread):
             self._fixed_eval = fixed
             self._raw_sample_pool = []
 
+    def _permutation(self, transform: str) -> list:
+        """获取 Rust 导出的动作置换表（new_policy = old_policy[perm]），带缓存。"""
+        perm = self._perm_cache.get(transform)
+        if perm is None:
+            perm = banqi_4x8.get_action_symmetry_table(
+                self.C.BOARD_ROWS, self.C.BOARD_COLS, transform
+            )
+            self._perm_cache[transform] = perm
+        return perm
+
+    def _transform_episode(self, episode_dict: Dict, transform: str) -> Dict:
+        """对一个 episode dict 做空间对称增强（全部由 Rust 绑定执行）。"""
+        out = dict(episode_dict)
+        perm = self._permutation(transform)
+        rows, cols = self.C.BOARD_ROWS, self.C.BOARD_COLS
+        channels = self.C.TOTAL_INPUT_CHANNELS
+        # board 特征空间重排（Rust）
+        out["boards"] = [
+            banqi_4x8.transform_board(
+                list(b), rows, cols, channels, transform
+            )
+            for b in out["boards"]
+        ]
+        # policy / action_mask 按置换表 gather（Rust 提供 gather）
+        def _gather(p):
+            return banqi_4x8.transform_policy(list(p), perm)
+        out["policies"] = [_gather(p) for p in out["policies"]]
+        out["action_masks"] = [_gather(m) for m in out["action_masks"]]
+        if out.get("actions"):
+            out["actions"] = [
+                int(banqi_4x8.transform_action(a, perm)) for a in out["actions"]
+            ]
+        return out
+
+    def _maybe_augment(self, episode_dict: Dict) -> List[Dict]:
+        """按 config 对 episode 做空间对称增强（动作置换表与 board 重排由 Rust 导出）。
+
+        返回用于训练的 episode dict 列表：
+          - DATA_AUGMENT_ENABLED=false：原样返回 [episode_dict]。
+          - 开启时：对每局按 DATA_AUGMENT_TRANSFORMS 随机抽一个非恒等变换，
+            生成增强副本；DATA_AUGMENT_KEEP_ORIGINAL=true 时保留原始局。
+        """
+        cfg = self.cfg
+        if not getattr(cfg, "DATA_AUGMENT_ENABLED", False):
+            return [episode_dict]
+        transforms = getattr(cfg, "DATA_AUGMENT_TRANSFORMS", "") or ""
+        if transforms:
+            transform_list = [
+                t.strip() for t in transforms.split(",") if t.strip()
+            ]
+        else:
+            transform_list = list(self.variant.non_identity_transforms)
+        # 只保留该变体合法的非恒等变换
+        valid = set(self.variant.non_identity_transforms)
+        transform_list = [t for t in transform_list if t in valid]
+        if not transform_list:
+            return [episode_dict]
+        keep = getattr(cfg, "DATA_AUGMENT_KEEP_ORIGINAL", True)
+        # 每局随机抽 1 个变换（训练侧增强多样性），并保留原始局
+        t = transform_list[random.randrange(len(transform_list))]
+        out = [episode_dict] if keep else []
+        out.append(self._transform_episode(episode_dict, t))
+        return out
+
     def _safe_qsize(self) -> int:
         """线程安全地读取数据队列积压。"""
         try:
@@ -290,7 +364,11 @@ class TrainWorker(threading.Thread):
                 break
 
             t0 = time.time()
-            samples = episode_to_samples(episode_dict)
+            # 空间对称增强（动作置换表由 Rust 导出）；关闭时原样返回
+            episode_dicts = self._maybe_augment(episode_dict)
+            samples: List[Dict] = []
+            for ed in episode_dicts:
+                samples.extend(episode_to_samples(ed))
             self._ensure_fixed_eval_from_selfplay(samples)
             self.buffer.add_samples(samples)
             new_samples = len(samples)
