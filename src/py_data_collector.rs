@@ -22,7 +22,7 @@ use pyo3::prelude::*;
 
 use banqi_4x8::ai::movegen::generate_moves;
 use banqi_4x8::game_env::types::Player;
-use banqi_4x8::game_env::{DarkChessEnv, GameEnv};
+use banqi_4x8::game_env::DarkChessEnv;
 use banqi_4x8::py::episode_to_dict_darkchess;
 use banqi_4x8::py::py_evaluator::PyEvaluator;
 use banqi_4x8::self_play::{SelfPlayConfig, run_self_play};

@@ -1,5 +1,6 @@
 //! 纯计算引擎单元测试。
 
+#[allow(unused_imports)]
 use super::*;
 
 #[test]

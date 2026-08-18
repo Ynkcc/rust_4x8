@@ -53,17 +53,6 @@ impl MemoryEstimate {
         self.total_mb = self.total_kb / 1024.0;
     }
 
-    pub fn add_subtotal(&mut self, item: &str, size_bytes: usize) {
-        self.breakdown.push(MemoryBreakdown {
-            item: format!("  ╚ {}", item),
-            size_bytes,
-            note: "subtotal".to_string(),
-        });
-        self.total_bytes += size_bytes;
-        self.total_kb = self.total_bytes as f64 / 1024.0;
-        self.total_mb = self.total_kb / 1024.0;
-    }
-
     /// 合并另一个 MemoryEstimate 的所有条目和总计到当前实例。
     pub fn merge(&mut self, other: MemoryEstimate) {
         for b in other.breakdown {
