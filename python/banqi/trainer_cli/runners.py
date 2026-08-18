@@ -281,6 +281,9 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
     train_mode = "archive"      -> 仅消费归档数据（Mongo GameDocument.samples + 本地 JSONL）
     train_mode = "rule_selfplay"-> 启动纯规则（minimax/heuristic）自对弈生成数据（不调 MCTS 模型），
                                    写入训练队列 + 可选归档。
+    """
+
+
 def setup_variant_logging(variant: Variant) -> str:
     """初始化变体运行日志：在 variant.logs_dir 中创建日志文件并添加 FileHandler。"""
     import logging

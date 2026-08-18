@@ -133,6 +133,7 @@ def generate_rule_episode(
     action_masks: List[List[int]] = []
     actions: List[int] = []
     teacher_actions: List[int] = []  # 温度采样前的启发式/规则最优动作（策略头验证 ground truth）
+    players: List[int] = []          # 每步的当前行动玩家（1=红/-1=黑），用于价值视角换算
     health_diffs: List[float] = []
 
     if max_moves is None:
@@ -179,6 +180,7 @@ def generate_rule_episode(
         action_masks.append(amask)
         actions.append(int(action))
         teacher_actions.append(teacher_action)
+        players.append(int(env.current_player()))
         health_diffs.append(0.0)
 
         env.step(int(action))
@@ -188,11 +190,20 @@ def generate_rule_episode(
 
     if winner is None:
         winner = env.winner() if env.winner() is not None else 0
-    game_result = 1.0 if winner == 1 else (-1.0 if winner == -1 else 0.0)
+    # 终局结果（红方视角：红胜=+1，黑胜=-1，平=0）
+    red_result = 1.0 if winner == 1 else (-1.0 if winner == -1 else 0.0)
+    # 关键：value 目标必须是「每个样本当前行动玩家」的视角（AlphaZero 约定），
+    # 而非固定红方视角。canonical 特征以当前行动方为己方，网络输出也是当前
+    # 行动方视角的价值；若用红方视角统一回填，则黑方样本的价值目标符号会反，
+    # 导致价值头在互相矛盾的目标间震荡、value loss 无法下降。
+    #   player=红(1): 红视角 = red_result
+    #   player=黑(-1): 黑视角 = -red_result（黑赢 red_result=-1 -> 黑视角+1）
     for i in range(len(game_results)):
-        game_results[i] = game_result
-        mcts_values[i] = game_result
-        completed_qs[i] = game_result
+        pl = players[i] if i < len(players) else 1
+        result_persp = red_result if pl == 1 else -red_result
+        game_results[i] = result_persp
+        mcts_values[i] = result_persp
+        completed_qs[i] = result_persp
 
     n = len(boards)
     return {

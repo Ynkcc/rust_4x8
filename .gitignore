@@ -30,6 +30,7 @@ config.local.yaml
 wandb/
 archive*/
 training_data*/
+python/outputs
 
 # ---- 编辑器/系统临时文件 ----
 .DS_Store
