@@ -12,23 +12,34 @@ import os
 import sys
 import time
 import signal
+import queue
+import threading
 import multiprocessing
-from typing import List
+from typing import Dict, List, Optional
 
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:  # pragma: no cover
+    HAS_TORCH = False
 
 import banqi_4x8
-from banqi.config import Config
-from banqi.variant import get_variant, Variant
-from banqi.tb_logger import (
-    init_summary_writer, close_summary_writer, _log_meta_tb,
-)
-from banqi.utils import (
-    start_memory_guard, SystemMonitor, HAS_MONITOR,
-)
-from banqi.training_service import TrainWorker
+from banqi.archiver import ArchiverWorker
+from banqi.config import Config, make_config
+from banqi.memory_guard import start_memory_guard
+from banqi.rule_self_play import RuleSelfPlayWorker, rule_sp_worker_main
 from banqi.self_play import sp_worker_main
-from banqi.archive import archiver_worker_factory, ArchiverWorker
+from banqi.tb_logger import close_summary_writer, init_summary_writer
+from banqi.training_service import TrainWorker
+from banqi.variant import Variant, get_variant
+
+# 系统资源监控（psutil + pynvml），缺失依赖时静默禁用
+try:
+    from banqi.system_monitor import SystemMonitor
+    HAS_MONITOR = True
+except ImportError:  # pragma: no cover
+    HAS_MONITOR = False
+    SystemMonitor = None  # type: ignore[assignment,misc]
 
 # 可选依赖
 try:
@@ -38,43 +49,40 @@ except Exception:
     pbt_enabled = lambda: False
 
 try:
-    from banqi.rule_self_play import rule_selfplay_spawn_main
-except Exception:
-    rule_selfplay_spawn_main = None
-
-try:
     import psutil
     HAS_PSUTIL = True
 except Exception:
     HAS_PSUTIL = False
 
-HAS_TORCH = torch is not None
-
 
 class _CountingQueue:
     """队列消费计数包装（观测自对弈吞吐）。"""
 
-    def __init__(self, q):
-        self.q = q
+    def __init__(self, q: "multiprocessing.Queue") -> None:
+        self._q = q
         self.consumed_games = 0
         self.consumed_samples = 0
 
-    def get(self, *a, **k):
-        item = self.q.get(*a, **k)
-        if isinstance(item, dict):
-            n = len(item.get("boards", []))
-            if n:
-                self.consumed_samples += n
-                self.consumed_games += 1
+    def get(self, *args, **kwargs):
+        item = self._q.get(*args, **kwargs)
+        if item is not None:
+            self.consumed_games += 1
+            self.consumed_samples += int(item.get("num_samples", 0))
         return item
 
-    def put(self, *a, **k):
-        return self.q.put(*a, **k)
+    def get_nowait(self, *args, **kwargs):
+        item = self._q.get_nowait(*args, **kwargs)
+        if item is not None:
+            self.consumed_games += 1
+            self.consumed_samples += int(item.get("num_samples", 0))
+        return item
+
+    def put(self, *args, **kwargs):
+        self._q.put(*args, **kwargs)
 
 
 def main(variant_id: str) -> None:
     """统一训练入口：按 config.TRAIN_MODE 分派训练模式。"""
-    from banqi.config import make_config
     config: Config = make_config(variant_id)
     train_mode = (config.TRAIN_MODE or "selfplay").strip().lower()
     if train_mode == "selfplay":
@@ -87,12 +95,142 @@ def main(variant_id: str) -> None:
         )
 
 
-def _run_offline(variant_id: str, mode: str) -> None:
-    """离线训练：从冷存储归档数据（MongoDB）消费训练，无自对弈闭环。
+class _ArchiveFeederWorker(threading.Thread):
+    """归档数据供给线程（`TRAIN_MODE="archive"` 的数据源）。
 
-    mode = "archive"      -> 仅消费归档数据（Mongo GameDocument.samples）
-    mode = "rule_selfplay"-> 启动纯规则自对弈进程生成数据（不调 MCTS 模型），
-                             写入训练队列 + 可选归档。
+    从冷存储（本地 JSONL 优先，Mongo 兜底）加载历史 episode，
+    周期性压入 data_q 供 `TrainWorker` 消费训练。不启动自对弈。
+    """
+
+    def __init__(
+        self,
+        variant: Variant,
+        data_q: "queue.Queue",
+        stop_flag: "List[bool]",
+    ) -> None:
+        super().__init__(name=f"ArchiveFeederWorker-{variant.id}", daemon=True)
+        self.variant = variant
+        self.cfg = make_config(variant.id)
+        self.tag = f"[ArchiveFeeder-{variant.id}]"
+        self.data_q = data_q
+        self.stop_flag = stop_flag
+        self.total_games = 0
+
+    def _resolve_archive_dir(self) -> Optional[str]:
+        """解析归档目录：优先 ARCHIVE_TRAIN_DIR，其次 variant.archive_dir。"""
+        from banqi.storage import list_jsonl_files
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cands = [
+            self.cfg.ARCHIVE_TRAIN_DIR or "",
+            self.variant.archive_dir or "",
+            os.path.join(here, "training_data", f"archive_{self.variant.id}"),
+            os.path.join(here, "training_data", f"archive_{self.variant.id}_imitate"),
+        ]
+        for d in cands:
+            if d and os.path.isdir(d) and list_jsonl_files(d):
+                return d
+        return None
+
+    def _load_from_mongo(self, limit_games: Optional[int]) -> List[Dict]:
+        """从 MongoDB 读取该变体归档局，转成与 `GameEpisode.to_dict()` 兼容的 episode dict。"""
+        try:
+            import pymongo
+            client = pymongo.MongoClient(self.cfg.MONGO_URI, serverSelectionTimeoutMS=5000)
+            client.admin.command("ping")
+            col = client[self.cfg.DB_NAME][self.cfg.COLLECTION]
+        except Exception as exc:  # pragma: no cover
+            print(f"{self.tag} ⚠️ MongoDB 不可用（归档兜底跳过）: {exc}")
+            return []
+
+        episodes: List[Dict] = []
+        try:
+            query: Dict = {}
+            cursor = col.find(query).limit(limit_games) if limit_games else col.find(query)
+            for doc in cursor:
+                samples = doc.get("samples") or []
+                if not samples:
+                    continue
+                ep = {
+                    "boards": [s["board_state"] for s in samples],
+                    "scalars": [s["scalar_state"] for s in samples],
+                    "policies": [s["policy_probs"] for s in samples],
+                    "mcts_values": [s.get("mcts_value", 0.0) for s in samples],
+                    "completed_qs": [s.get("completed_q", 0.0) for s in samples],
+                    "root_visits": [s.get("root_visit_count", 0) for s in samples],
+                    "game_results": [s.get("game_result_value", 0.0) for s in samples],
+                    "action_masks": [s["action_mask"] for s in samples],
+                    "health_diffs": [s.get("health_diff", 0.0) for s in samples],
+                    "game_length": int(doc.get("game_length", len(samples))),
+                    "winner": doc.get("winner"),
+                    "num_samples": len(samples),
+                }
+                episodes.append(ep)
+        finally:
+            client.close()
+        return episodes
+
+    def _put(self, item: Dict) -> None:
+        while not self.stop_flag[0]:
+            try:
+                self.data_q.put(item, timeout=0.5)
+                return
+            except Exception:  # queue.Full
+                continue
+
+    def run(self) -> None:
+        from banqi.storage import load_jsonl_episodes
+        archive_dir = self._resolve_archive_dir()
+
+        if archive_dir is None:
+            print(f"{self.tag} ⚠️ 未找到本地归档目录（{self.cfg.ARCHIVE_TRAIN_DIR or self.variant.archive_dir}），"
+                  f"将尝试从 MongoDB 读取（{self.cfg.DB_NAME}.{self.cfg.COLLECTION}）...")
+        else:
+            print(f"{self.tag} 🗃️ 使用本地归档目录: {archive_dir}")
+
+        limit_games = self.cfg.ARCHIVE_TRAIN_GAMES or None
+        total_rounds = max(1, self.cfg.ARCHIVE_TRAIN_ROUNDS)
+        poll = max(1.0, self.cfg.ARCHIVE_POLL_INTERVAL)
+
+        for r in range(total_rounds):
+            if self.stop_flag[0]:
+                break
+            try:
+                t0 = time.time()
+                if archive_dir is not None:
+                    episodes = load_jsonl_episodes(archive_dir, limit_games=limit_games)
+                else:
+                    episodes = self._load_from_mongo(limit_games)
+                if not episodes:
+                    print(f"{self.tag} ⚠️ 归档为空，等待新数据...")
+                    time.sleep(poll)
+                    continue
+                # 每次灌入全部（或限制量），并标记 round 号便于观测
+                for ep in episodes:
+                    if self.stop_flag[0]:
+                        break
+                    ep = dict(ep)
+                    ep.setdefault("num_samples", len(ep.get("boards") or []))
+                    ep.setdefault("iteration", r)
+                    self._put(ep)
+                    self.total_games += 1
+                print(f"{self.tag} 📦 第 {r + 1}/{total_rounds} 轮灌入 {len(episodes)} 局"
+                      f"（累计 {self.total_games}，耗时 {time.time() - t0:.1f}s）")
+            except Exception as exc:  # pragma: no cover
+                print(f"{self.tag} ⚠️ 归档加载失败: {exc}")
+            time.sleep(poll)
+
+        print(f"{self.tag} 归档供给完成，累计 {self.total_games} 局")
+
+    def stats(self) -> Dict[str, int]:
+        return {"total_games": self.total_games}
+
+
+def _run_offline(variant_id: str, train_mode: str) -> None:
+    """离线训练：从冷存储归档数据（MongoDB / 本地 JSONL）消费训练，无自对弈闭环。
+
+    train_mode = "archive"      -> 仅消费归档数据（Mongo GameDocument.samples + 本地 JSONL）
+    train_mode = "rule_selfplay"-> 启动纯规则（minimax/heuristic）自对弈生成数据（不调 MCTS 模型），
+                                   写入训练队列 + 可选归档。
     """
     variant = get_variant(variant_id)
     config: Config = Config.from_variant(variant_id)
@@ -110,11 +248,9 @@ def _run_offline(variant_id: str, mode: str) -> None:
     if config.TENSORBOARD_ENABLED:
         tb_log_dir = os.path.join(config.TENSORBOARD_LOG_DIR, time.strftime("%Y%m%d-%H%M%S"))
         tb_ok = init_summary_writer(log_dir=tb_log_dir, enabled=True)
-        if tb_ok:
-            _log_meta_tb(config, variant_id, tb_log_dir)
 
     print("=" * 56)
-    mode_label = "冷存储离线训练" if mode == "archive" else "纯规则自对弈训练"
+    mode_label = "冷存储离线训练" if train_mode == "archive" else "纯规则自对弈训练"
     print(f"  🚀 {mode_label} 启动（变体 {variant_id}，单进程多线程）")
     print("=" * 56)
     print(f"  PREDICT_BATCH   = {config.PREDICT_BATCH}")
@@ -125,7 +261,8 @@ def _run_offline(variant_id: str, mode: str) -> None:
     print(f"  TRAIN_DEVICE    = {config.TRAIN_DEVICE}（训练，auto 自动选择）")
     print(f"  VALUE_TARGET    = {config.VALUE_TARGET_MODE}（value 目标模式）")
     print(f"  INIT_FROM_CKPT  = {config.INIT_FROM_CHECKPOINT or '（无）'}")
-    if mode == "rule_selfplay":
+    if train_mode == "rule_selfplay":
+        print(f"  RULE_BACKEND    = {config.RULE_SELFPLAY_BACKEND}（规则自对弈后端）")
         print(f"  RULE_PROC       = {config.RULE_SELF_PLAY_PROCESSES}（规则自对弈进程）")
         print(f"  RULE_DEPTH      = {config.RULE_SELF_PLAY_DEPTH}（minimax 搜索深度）")
     print("=" * 56)
@@ -150,45 +287,51 @@ def _run_offline(variant_id: str, mode: str) -> None:
     use_archive = bool(config.ARCHIVE_ENABLED and variant.archive_dir is not None)
     archive_q = ctx.Queue(maxsize=config.ARCHIVE_QUEUE_MAXSIZE) if use_archive else None
 
+    # ---- 数据生产者 ----
     producers: List[object] = []
-    if mode == "rule_selfplay":
-        if rule_selfplay_spawn_main is None:
-            print(f"{tag} ❌ rule_self_play 模块不可用，无法启动规则自对弈")
-            return
-        procs = [
-            ctx.Process(
-                target=rule_selfplay_spawn_main,
-                args=(variant_id, wid, data_q, archive_q, stop_event),
-                name=f"RuleSP-{wid}", daemon=True,
-            )
-            for wid in range(config.RULE_SELF_PLAY_PROCESSES)
-        ]
-        for p in procs:
-            p.start()
-        producers.extend(procs)
-        print(f"{tag} 🚀 规则自对弈子进程 × {len(procs)} 已启动")
+    use_mp = config.RULE_SELFPLAY_BACKEND == "multiprocess"
+    if train_mode == "rule_selfplay":
+        if use_mp:
+            procs = [
+                ctx.Process(
+                    target=rule_sp_worker_main,
+                    args=(variant_id, wid, data_q, archive_q, stop_event),
+                    name=f"RuleSP-{wid}", daemon=True,
+                )
+                for wid in range(config.RULE_SELF_PLAY_PROCESSES)
+            ]
+            for p in procs:
+                p.start()
+            producers.extend(procs)
+            print(f"{tag} 🚀 规则自对弈子进程 × {len(procs)} 已启动")
+        else:
+            concurrency = config.RULE_SELF_PLAY_PROCESSES
+            for wid in range(concurrency):
+                producers.append(
+                    RuleSelfPlayWorker(variant, data_q, lambda: stop_flag[0],
+                                       worker_id=wid)
+                )
+            print(f"{tag} 🚀 纯规则自对弈线程 × {concurrency} 已创建"
+                  f"（RULE_SELFPLAY_BACKEND=thread）")
     else:
-        # archive 模式：启动 Mongo 数据供给线程，而非子进程
-        from banqi.archive import MongoDataProducer
-        prod = MongoDataProducer(data_q, stop_event, variant, config)
-        prod.start()
-        producers.append(prod)
-        print(f"{tag} 🚀 Mongo 归档数据供给线程已启动（集合 {config.DB_NAME}.{config.COLLECTION}）")
+        producers.append(_ArchiveFeederWorker(variant, data_q, stop_flag))
 
-    workers = [TrainWorker(counting_q, stop_flag, variant)]
-    if use_archive:
-        archiver = archiver_worker_factory(archive_q, stop_flag, variant)
-        if archiver is not None:
-            workers.append(archiver)
+    # ---- 训练线程 ----
+    workers: List[threading.Thread] = [TrainWorker(data_q, stop_flag, variant)]
 
+    for p in producers:
+        p.start()
     for w in workers:
         w.start()
 
+    # ---- 系统资源监控线程 ----
     monitor = None
     if config.MONITOR_ENABLED and HAS_MONITOR:
         monitor = SystemMonitor(
-            interval=config.MONITOR_INTERVAL, show_per_core=config.MONITOR_PER_CORE,
-            csv_path=config.MONITOR_CSV_PATH, log_to_tb=bool(config.TENSORBOARD_LOG_SYS and tb_ok),
+            interval=config.MONITOR_INTERVAL,
+            show_per_core=config.MONITOR_PER_CORE,
+            csv_path=config.MONITOR_CSV_PATH,
+            log_to_tb=bool(config.TENSORBOARD_LOG_SYS and tb_ok),
             stop_flag=stop_flag,
         )
         monitor.start()
@@ -198,6 +341,7 @@ def _run_offline(variant_id: str, mode: str) -> None:
 
     print(f"{tag} 线程已启动，正在运行（Ctrl-C 优雅退出）...\n")
 
+    # ---- 主线程：等待 / 达到时限 / 优雅退出 ----
     start_t = time.time()
 
     def _request_stop(reason: str = "") -> None:
@@ -226,10 +370,12 @@ def _run_offline(variant_id: str, mode: str) -> None:
     except KeyboardInterrupt:
         _request_stop()
 
+    # ---- 优雅关闭 ----
     print(f"\n{tag} 正在优雅关闭各供给进程/线程...")
     for p in producers:
         if p.is_alive():
             p.join(timeout=10)
+    # 多进程模式：仍有存活子进程则强制终止（防 Rust 线程挂住退出）
     for p in producers:
         if p.is_alive():
             print(f"{tag} ⚠️ 供给进程/线程 {p.name} 未在超时内退出，强制终止")
@@ -239,26 +385,23 @@ def _run_offline(variant_id: str, mode: str) -> None:
             else:
                 stop_flag[0] = True
                 p.join(timeout=5)
-    train_worker: TrainWorker = workers[0]
+    train_worker: TrainWorker = workers[0]  # type: ignore[assignment]
     if train_worker.is_alive():
         train_worker.join(timeout=30)
     if train_worker.is_alive():
         stop_flag[0] = True
         train_worker.join(timeout=10)
     train_worker.finalize()
-    if use_archive and len(workers) > 1:
-        archiver_worker = workers[1]
-        if archiver_worker.is_alive():
-            archiver_worker.join(timeout=15)
     if monitor is not None and monitor.is_alive():
         monitor.join(timeout=3)
     close_summary_writer()
 
+    # ---- 结束统计 ----
     tr_stats = train_worker.stats()
     history = train_worker.round_history_snapshot()
     sep = "=" * 56
     print(f"\n{sep}")
-    print(f"  {variant_id} 变体 离线训练结束（mode={mode}）")
+    print(f"  {variant_id} 变体 离线训练结束（mode={train_mode}）")
     print(f"{sep}")
     print(f"  训练轮次:          {tr_stats['round_num']}")
     print(f"  累计训练批次:      {tr_stats['total_batches']}")
@@ -288,8 +431,6 @@ def _run_selfplay(variant_id: str) -> None:
     if config.TENSORBOARD_ENABLED:
         tb_log_dir = os.path.join(config.TENSORBOARD_LOG_DIR, time.strftime("%Y%m%d-%H%M%S"))
         tb_ok = init_summary_writer(log_dir=tb_log_dir, enabled=True)
-        if tb_ok:
-            _log_meta_tb(config, variant_id, tb_log_dir)
 
     print("=" * 56)
     print(f"  🚀 自对弈 + 训练闭环启动（变体 {variant_id}，单进程多线程）")
@@ -358,7 +499,7 @@ def _run_selfplay(variant_id: str) -> None:
     print(f"{tag} 🚀 自对弈子进程 × {len(procs)} 已启动 "
           f"(推理设备={config.INFER_DEVICE}, 独立 GIL/CUDA)")
 
-    workers = [TrainWorker(counting_q, stop_flag, variant)]
+    workers: List[threading.Thread] = [TrainWorker(counting_q, stop_flag, variant)]
     if use_archive:
         workers.append(ArchiverWorker(archive_q, stop_flag, variant))
 
@@ -422,7 +563,7 @@ def _run_selfplay(variant_id: str) -> None:
         train_worker.join(timeout=10)
     train_worker.finalize()
     if use_archive:
-        archiver_worker: ArchiverWorker = workers[1]
+        archiver_worker: ArchiverWorker = workers[1]  # type: ignore[assignment]
         if archiver_worker.is_alive():
             archiver_worker.join(timeout=15)
     if monitor is not None and monitor.is_alive():

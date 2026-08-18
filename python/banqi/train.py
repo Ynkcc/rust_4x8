@@ -14,5 +14,12 @@ __all__ = ["main", "build_const", "parse_args", "programmatic_entry"]
 
 
 if __name__ == "__main__":
+    import argparse as _argparse
+
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        _argparse.ArgumentParser(
+            prog="python -m banqi.train",
+            description="Banqi 4x8 训练入口（向后兼容）。等价于 `python -m banqi.trainer_cli`。",
+        ).parse_args(sys.argv[1:])
     vid = sys.argv[1] if len(sys.argv) > 1 else "4x8"
     main(vid)

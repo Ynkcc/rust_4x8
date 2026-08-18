@@ -1,0 +1,161 @@
+"""benchmark/schemes.py — 各运行方案的调度与多进程执行。"""
+
+from __future__ import annotations
+
+import os
+import queue
+import time
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+
+try:
+    import banqi_4x8
+except ImportError as exc:  # pragma: no cover
+    raise SystemExit(
+        "无法导入 banqi_4x8。请先执行: maturin develop --features pyo3"
+    ) from exc
+
+from banqi.config import make_config
+from banqi.variant import Variant, get_variant
+
+from .predictors import CountingPredictor
+from .results import BenchResult
+
+# 变体 -> (单局, 并行, 批量) Rust 绑定函数名
+_SCHEME_FNS: Dict[str, Tuple[str, str, str]] = {
+    "": ("run_self_play_with_predictor",
+         "run_parallel_self_play_with_predictor",
+         "run_batched_self_play_with_predictor"),
+    "mini": ("run_mini_self_play_with_predictor",
+             "run_mini_parallel_self_play_with_predictor",
+             "run_mini_batched_self_play_with_predictor"),
+    "game4x4": ("run_game4x4_self_play_with_predictor",
+                "run_game4x4_parallel_self_play_with_predictor",
+                "run_game4x4_batched_self_play_with_predictor"),
+}
+
+
+def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
+    """构造 SelfPlayConfig（c_scale/gumbel_scale 支持 env 覆盖）。"""
+    cfg = make_config(variant.id)
+    p = variant.env_prefix
+    c_scale = float(os.getenv(p + "C_SCALE", os.getenv("C_SCALE", "1.0")))
+    gumbel_scale = float(os.getenv(p + "GUMBEL_SCALE", os.getenv("GUMBEL_SCALE", "1.0")))
+    return banqi_4x8.SelfPlayConfig(
+        mcts_sims=cfg.MCTS_SIMS,
+        max_considered_actions=cfg.MAX_CONSIDERED_ACTIONS,
+        temperature_steps=cfg.TEMPERATURE_STEPS,
+        c_scale=c_scale,
+        gumbel_scale=gumbel_scale,
+    )
+
+
+def _run_scheme(variant_id: str, scheme: str, predictor: Any,
+                games: int, concurrency: int, worker_id: int = 0) -> BenchResult:
+    """对单个 (变种, 方案) 运行基准；返回 BenchResult（已完成对局/步数/样本数/调用次数）。"""
+    variant = get_variant(variant_id)
+    cfg = make_config(variant_id)
+    sp_cfg = build_self_play_config(variant)
+    fn_single, fn_parallel, fn_batched = _SCHEME_FNS[variant.rust_prefix]
+
+    if scheme in ("serial", "parallel", "batched"):
+        if scheme == "serial":
+            fn = getattr(banqi_4x8, fn_single)
+            kwargs: Dict[str, Any] = {"num_games": games, "worker_id": worker_id}
+        elif scheme == "parallel":
+            fn = getattr(banqi_4x8, fn_parallel)
+            kwargs = {"num_workers": concurrency, "games_per_worker": max(1, -(-games // concurrency)),
+                      "worker_id": worker_id}
+        else:  # batched
+            fn = getattr(banqi_4x8, fn_batched)
+            kwargs = {"num_games": games, "concurrency": concurrency, "worker_id": worker_id}
+
+        t0 = time.time()
+        episodes = fn(predict_fn=predictor, config=sp_cfg, **kwargs)
+        duration = time.time() - t0
+
+        completed_games = len(episodes)
+        total_steps = sum(int(ep.game_length) for ep in episodes)
+        total_samples = sum(int(ep.num_samples) for ep in episodes)
+        return BenchResult(
+            variant_id=variant_id, scheme=scheme, device=str(cfg.INFER_DEVICE),
+            duration_s=duration, completed_games=completed_games,
+            total_steps=total_steps, total_samples=total_samples,
+            predictor_calls=predictor.calls, predictor_samples=predictor.samples,
+        )
+    elif scheme == "multiproc":
+        return _benchmark_multiproc(variant_id, predictor, games, concurrency)
+    else:
+        raise ValueError(f"未知方案: {scheme}")
+
+
+def _benchmark_multiproc(variant_id: str, predictor: Any, games: int,
+                         concurrency: int) -> BenchResult:
+    """多进程方案：spawn N 个自对弈进程并行生成，聚合计数（需独立进程，无法直接复用 predictor 统计）。"""
+    import multiprocessing as mp
+
+    variant = get_variant(variant_id)
+    cfg = make_config(variant_id)
+    sp_cfg = build_self_play_config(variant)
+    fn_single, fn_parallel, fn_batched = _SCHEME_FNS[variant.rust_prefix]
+
+    n_proc = max(1, concurrency)
+    games_per_proc = max(1, -(-games // n_proc))
+    result_q: "mp.Queue" = mp.Queue()
+    procs = [
+        mp.Process(
+            target=_mp_bench_worker_main,
+            args=(variant_id, fn_batched, sp_cfg, games_per_proc, cfg.BATCH_CONCURRENCY,
+                  i, result_q),
+            name=f"BenchMP-{i}",
+        )
+        for i in range(n_proc)
+    ]
+    for p in procs:
+        p.start()
+    t0 = time.time()
+    agg = {"games": 0, "steps": 0, "samples": 0, "calls": 0, "predictor_samples": 0}
+    for _ in procs:
+        r = result_q.get()
+        agg["games"] += r["games"]
+        agg["steps"] += r["steps"]
+        agg["samples"] += r["samples"]
+        agg["calls"] += r["calls"]
+        agg["predictor_samples"] += r["predictor_samples"]
+    for p in procs:
+        p.join()
+    duration = time.time() - t0
+    return BenchResult(
+        variant_id=variant_id, scheme="multiproc", device=str(cfg.INFER_DEVICE),
+        duration_s=duration, completed_games=agg["games"],
+        total_steps=agg["steps"], total_samples=agg["samples"],
+        predictor_calls=agg["calls"], predictor_samples=agg["predictor_samples"],
+    )
+
+
+def _mp_bench_worker_main(variant_id: str, fn_name: str, sp_cfg, games: int,
+                          concurrency: int, worker_id: int, result_q: "queue.Queue"):
+    """多进程 worker：独立 predictor（真实模型或模拟），统计本进程计数。"""
+    from .predictors import SimulatedPredictor
+    from banqi.constants import build_constants
+
+    variant = get_variant(variant_id)
+    action_space = build_constants(variant).ACTION_SPACE_SIZE
+    if os.getenv("BENCH_SIMULATED") == "1":
+        predictor = SimulatedPredictor(action_space)
+    else:
+        from .runner import _build_predictor
+        predictor, _ = _build_predictor(variant, make_config(variant_id).MODEL_PATH,
+                                        make_config(variant_id).INFER_DEVICE)
+    counting = CountingPredictor(predictor)
+    fn = getattr(banqi_4x8, fn_name)
+    episodes = fn(predict_fn=counting, config=sp_cfg,
+                  num_games=games, concurrency=concurrency, worker_id=worker_id)
+    result_q.put({
+        "games": len(episodes),
+        "steps": sum(int(ep.game_length) for ep in episodes),
+        "samples": sum(int(ep.num_samples) for ep in episodes),
+        "calls": counting.calls,
+        "predictor_samples": counting.samples,
+    })
