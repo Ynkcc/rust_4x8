@@ -14,50 +14,24 @@ crate-type = ["lib", "cdylib"]
 
 [[bin]]
 name = "banqi"
-path = "src/main.rs"
+path = "src/bin/banqi.rs"
 
 # ── banqi-tauri ────────────────────────────────────────────────────────────
 # 桌面 GUI（Tauri 2）。仅在启用 `tauri` feature 时构建。
-#
-# ⚠️ 编译失败快速定位：需要系统级 GTK/WebKit 开发库（Debian/Ubuntu）：
-#     sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
-#       libayatana-appindicator3-dev librsvg2-dev patchelf
-#   - 报错 "failed to run custom build command for atk-sys/pango-sys/gdk-sys"
-#     = 缺 libgtk-3-dev（GTK3）；缺 libwebkit2gtk-4.1-dev 会报 webkit2gtk-sys 失败。
-#   - macOS 无需额外依赖；Windows 需安装 WebView2。
-#   - 若只做训练/纯库/数据收集，请勿启用 tauri feature，避免拉取 GTK 依赖。
 [[bin]]
 name = "banqi-tauri"
-path = "src/tauri_main.rs"
+path = "src/bin/banqi_tauri.rs"
 required-features = ["tauri"]
 
 [[bin]]
 name = "banqi-data-collector"
-path = "src/data_collector.rs"
+path = "src/bin/data_collector.rs"
 required-features = ["torch"]
 
 # ── banqi-py-collector ─────────────────────────────────────────────────────
-# 嵌入 Python 的独立二进制（在 Rust 进程内直接调用 Python 网络做数据收集）。
-# 与 maturin 构建的 cdylib 扩展模块不同，它必须**链接共享版 libpython**，
-# 因此使用不带 `extension-module` 的 `pyo3` feature。
-#
-# ⚠️ 编译失败快速定位（链接错误）：
-#   - 错误 "undefined symbol: PyObject_VectorcallMethod / PyThreadState_Get"
-#     = 当前启用了 extension-module（如 maturin/`pyo3-extension`），二进制拿不到
-#     Python 符号。本地构建请用 `--features pyo3`（不要用 pyo3-extension）。
-#   - 错误 "relocation R_X86_64_PC32 cannot be used against symbol 'stderr';
-#     recompile with -fPIC"
-#     = 链接到的 libpython 是**静态库**（如 pyenv 默认编译，仅有 libpython3.x.a）。
-#     需要带共享库的 Python 环境，例如：
-#       · pyenv：PYTHON_CONFIGURE_OPTS="--enable-shared" pyenv install 3.11.x
-#       · 系统 Python：apt install libpython3.11-dev（提供 libpython3.11.so）
-#   - 若不需要该二进制，直接用 `cargo build --features pyo3-extension`（wheel）
-#     或 `cargo check --features pyo3` 仅检查编译即可。
-#   - 环境检测：crate 级 build.rs 会在「pyo3 启用但 pyo3-extension 未启用」
-#     （即本地构建 bin 的场景）时自动检查共享 libpython 并打印修复建议。
 [[bin]]
 name = "banqi-py-collector"
-path = "src/py_data_collector.rs"
+path = "src/bin/py_data_collector.rs"
 required-features = ["pyo3"]
 
 [dependencies]
