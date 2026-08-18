@@ -20,6 +20,7 @@ import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
+from banqi.checkpoint import export_torchscript, export_onnx
 from banqi.constants import build_constants
 from banqi.tb_logger import add_scalar
 from banqi.variant import Variant
@@ -248,10 +249,14 @@ class TrainWorker(threading.Thread):
             "pytorch_version": torch.__version__,
         }
         torch.save(snapshot, path)
+        pt_path = os.path.join(self.ckpt_dir, "last.pt")
+        onnx_path = os.path.join(self.ckpt_dir, "last.onnx")
+        export_torchscript(self.model, pt_path, self.variant, self.device)
+        export_onnx(self.model, onnx_path, self.variant, self.device)
         with self._last_ckpt_lock:
             self.metrics["last_ckpt_path"] = path
             self.metrics["last_global_step"] = self.global_step
-        print(f"[TR-{self.variant.id}] 💾 checkpoint 已保存: {path} "
+        print(f"[TR-{self.variant.id}] 💾 checkpoint 已保存: {path} + {pt_path} "
               f"(global_step={self.global_step}, v{self.version})")
 
     def _anneal_value_weight(self, round_idx: int):

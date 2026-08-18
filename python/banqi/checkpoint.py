@@ -86,6 +86,36 @@ def save_checkpoint(
                 os.remove(tmp)
 
 
+def export_torchscript(
+    model,
+    pt_path: str,
+    variant: Variant,
+    device: torch.device,
+) -> bool:
+    """导出模型为 TorchScript .pt 文件（供 Rust tch-rs / MctsDL 推理）。"""
+    c = build_constants(variant)
+    trace_model = getattr(model, "_orig_mod", model)
+    pt_temp = pt_path + ".tmp"
+    try:
+        model.eval()
+        with torch.inference_mode():
+            example_board = torch.randn(
+                1, c.TOTAL_INPUT_CHANNELS, c.BOARD_ROWS, c.BOARD_COLS, device=device
+            )
+            example_scalars = torch.randn(1, c.SCALAR_FEATURE_COUNT, device=device)
+            traced = torch.jit.trace(trace_model, (example_board, example_scalars))
+            traced.save(pt_temp)
+        os.replace(pt_temp, pt_path)
+        print(f"[checkpoint] ✅ TorchScript 已导出: {pt_path}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[checkpoint] ❌ TorchScript 导出失败: {exc}")
+        if os.path.exists(pt_temp):
+            os.remove(pt_temp)
+        return False
+
+
+
 def export_onnx(
     model,
     onnx_path: str,

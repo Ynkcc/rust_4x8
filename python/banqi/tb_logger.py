@@ -120,10 +120,11 @@ def add_text(
 def add_hparams(
     hparam_dict: dict,
     metric_dict: Optional[dict] = None,
+    run_name: str = ".",
     **kwargs,
 ) -> None:
-    """写入超参数（TensorBoard HParams 面板）。metric_dict 可为空。"""
-    _safe_call("add_hparams", hparam_dict, metric_dict or {}, **kwargs)
+    """写入超参数（TensorBoard HParams 面板）。默认 run_name="." 避免创建额外时间戳子目录。"""
+    _safe_call("add_hparams", hparam_dict, metric_dict or {}, run_name=run_name, **kwargs)
 
 
 def close_summary_writer() -> None:

@@ -385,6 +385,9 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // --- 数据空间对称增强（Data Augmentation，动作置换表/board 重排下沉 Rust） ---
     register_augment_functions(m)?;
 
+    // --- Rust 原生多线程评估接口 ---
+    m.add_function(wrap_pyfunction!(crate::bridge::python::eval::run_eval_match, m)?)?;
+
     // --- 井字棋绑定（验证逻辑复用） ---
     m.add_class::<crate::bridge::python::ttt::PyTicTacToe>()?;
     m.add_function(wrap_pyfunction!(crate::bridge::python::ttt::ttt_mcts_search, m)?)?;

@@ -206,8 +206,12 @@ impl<G: GameEnv> Evaluator<G> for OnnxEvaluator<G> {
 
         let mut board_data = Vec::with_capacity(batch_size * board_channels * board_rows * board_cols);
         let mut scalars_data = Vec::with_capacity(batch_size * scalar_count);
+        let mut board_buf = Vec::new();
+        let mut scalar_buf = Vec::new();
         for env in envs {
-            env.encode_features_flat_into(&mut board_data, &mut scalars_data);
+            env.encode_features_flat_into(&mut board_buf, &mut scalar_buf);
+            board_data.extend_from_slice(&board_buf);
+            scalars_data.extend_from_slice(&scalar_buf);
         }
 
         let (raw_logits, values) = match self.model.run(

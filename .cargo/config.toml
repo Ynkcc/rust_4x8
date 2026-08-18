@@ -1,3 +1,7 @@
+[target.'cfg(target_os = "linux")']
+rustflags = [
+    "-C", "link-arg=-Wl,-rpath,/home/ynk/miniconda3/lib/python3.13/site-packages/torch/lib"
+]
+
 [env]
 LIBTORCH = { value = "/home/ynk/miniconda3/lib/python3.13/site-packages/torch", relative = false }
-LD_LIBRARY_PATH = { value = "/home/ynk/miniconda3/lib/python3.13/site-packages/torch/lib", relative = false }

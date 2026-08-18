@@ -433,11 +433,19 @@ fn collect_models(dir: &std::path::Path, depth: usize, out: &mut Vec<ModelEntry>
     }
 }
 
-/// 列出项目内（含子目录）的 .pt / .onnx 模型
+/// 列出 python/outputs 目录下的 .pt / .onnx 模型
 #[tauri::command]
 fn list_models() -> Vec<ModelEntry> {
     let mut out = Vec::new();
-    collect_models(std::path::Path::new("."), 0, &mut out);
+    let search_dir = std::path::Path::new("python/outputs");
+    if search_dir.exists() {
+        collect_models(search_dir, 0, &mut out);
+    } else {
+        let alt_dir = std::path::Path::new("outputs");
+        if alt_dir.exists() {
+            collect_models(alt_dir, 0, &mut out);
+        }
+    }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }

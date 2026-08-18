@@ -26,6 +26,9 @@ pub mod chess_env;
 #[cfg(feature = "pyo3")]
 pub mod ttt;
 
+#[cfg(feature = "pyo3")]
+pub mod eval;
+
 #[cfg(all(feature = "torch", feature = "pyo3"))]
 pub mod rust_collector;
 

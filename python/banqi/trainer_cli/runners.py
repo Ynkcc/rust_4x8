@@ -275,11 +275,38 @@ def _log_meta_tb(config: Config, variant_id: str, tb_log_dir: str) -> None:
     add_hparams({k: str(v) for k, v in hparams.items()}, {})
 
 
+class _TeeStream:
+    """将 stdout/stderr 同时输出到控制台与日志文件。"""
+
+    def __init__(self, original_stream, file_obj) -> None:
+        self.original_stream = original_stream
+        self.file_obj = file_obj
+        self._is_tee = True
+
+    def write(self, data: str) -> None:
+        self.original_stream.write(data)
+        self.file_obj.write(data)
+        self.file_obj.flush()
+
+    def flush(self) -> None:
+        self.original_stream.flush()
+        self.file_obj.flush()
+
+    def isatty(self) -> bool:
+        return getattr(self.original_stream, "isatty", lambda: False)()
+
+
 def setup_variant_logging(variant: Variant) -> str:
-    """初始化变体运行日志：在 variant.logs_dir 中创建日志文件并添加 FileHandler。"""
+    """初始化变体运行日志：在 variant.logs_dir 中创建日志文件并将 print/logging 同步落盘。"""
     import logging
     os.makedirs(variant.logs_dir, exist_ok=True)
     log_file = os.path.join(variant.logs_dir, f"train_{time.strftime('%Y%m%d_%H%M%S')}.log")
+
+    if not getattr(sys.stdout, "_is_tee", False):
+        f = open(log_file, "a", encoding="utf-8")
+        sys.stdout = _TeeStream(sys.stdout, f)
+        sys.stderr = _TeeStream(sys.stderr, f)
+
     root_logger = logging.getLogger()
     handler = logging.FileHandler(log_file, encoding="utf-8")
     formatter = logging.Formatter("[%(asctime)s][%(levelname)s] %(message)s")
