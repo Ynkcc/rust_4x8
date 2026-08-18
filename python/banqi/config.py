@@ -52,7 +52,7 @@ _DEFAULT_YAML = os.path.join(_CONFIG_DIR, "config.default.yaml")  # 仅作模板
 _LOCAL_YAML = os.path.join(_CONFIG_DIR, "config.local.yaml")      # 唯一运行时来源
 
 # 相对 python/ 目录解析的路径字段（兼容旧版 os.path.join(_PY_DIR, ...)）
-_PATH_FIELDS = ("MODEL_PATH", "STATE_DICT_PATH")
+_PATH_FIELDS = ("MODEL_PATH", "STATE_DICT_PATH", "ONNX_PATH")
 
 # 历史环境变量别名：字段名 -> 依次尝试的旧变量名（保留既有脚本的 env 兼容）
 _LEGACY_ENV: Dict[str, List[str]] = {
@@ -76,6 +76,9 @@ _LEGACY_ENV: Dict[str, List[str]] = {
     "DB_NAME": ["DB_NAME", "G4X4_DB_NAME"],
     "MODEL_PATH": ["MODEL_PATH", "G4X4_MODEL_PATH", "MINI_MODEL_PATH"],
     "STATE_DICT_PATH": ["STATE_DICT_PATH", "G4X4_STATE_DICT_PATH", "MINI_STATE_DICT_PATH"],
+    "MODEL_BACKEND": ["MODEL_BACKEND", "G4X4_MODEL_BACKEND", "MINI_MODEL_BACKEND"],
+    "ONNX_PATH": ["ONNX_PATH", "G4X4_ONNX_PATH", "MINI_ONNX_PATH"],
+    "ONNX_PROVIDERS": ["ONNX_PROVIDERS", "G4X4_ONNX_PROVIDERS", "MINI_ONNX_PROVIDERS"],
     "VALUE_TARGET_MODE": ["VALUE_TARGET_MODE", "G4X4_VALUE_TARGET"],
     "VALUE_ANNEAL_START": ["VALUE_ANNEAL_START", "G4X4_ANNEAL_START"],
     "VALUE_ANNEAL_INCREMENT": ["VALUE_ANNEAL_INCREMENT", "G4X4_ANNEAL_INCREMENT"],
@@ -197,6 +200,9 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "RULE_SELFPLAY_CONCURRENCY": _cast_int,
     "RULE_SELFPLAY_TEMPERATURE": _cast_float,
     "RULE_SELFPLAY_BACKEND": _cast_str,
+    # ---- 模型后端（TorchScript / ONNX）----
+    "MODEL_BACKEND": _cast_str,
+    "ONNX_PROVIDERS": _cast_str,
 }
 
 
@@ -352,6 +358,13 @@ class Config:
     DATA_AUGMENT_TRANSFORMS: str
     MODEL_PATH: str
     STATE_DICT_PATH: str
+    # ---- 模型后端切换 ----
+    # MODEL_BACKEND: "torchscript"（默认，.pt TorchScript）| "onnx"（.onnx，ONNX Runtime）。
+    #   - "onnx" 时，自对弈优先走 Rust 绑定 RustOnnxCollector（推理不经过 GIL）；
+    #     若 wheel 未启用 onnx+pyo3 绑定，则回退到 Python onnxruntime 推理。
+    MODEL_BACKEND: str
+    ONNX_PATH: str            # ONNX 模型路径（相对 python/ 目录，MODEL_BACKEND="onnx" 时使用）
+    ONNX_PROVIDERS: str       # onnxruntime 执行提供者，逗号分隔（如 "CUDAExecutionProvider,CPUExecutionProvider"）
     INFER_DEVICE: str
     TRAIN_DEVICE: str
     INFER_CPU_AUX_WORKERS: int

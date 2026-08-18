@@ -53,6 +53,17 @@ common:
   DATA_AUGMENT_ENABLED: true    # 是否启用数据增强
   DATA_AUGMENT_KEEP_ORIGINAL: true  # 增强时是否保留原始样本
 
+  # ---------------- 模型后端（公共） ----------------
+  # MODEL_BACKEND: 推理模型格式。
+  #   "torchscript"（默认）: .pt TorchScript（RustTorchCollector / Predictor）
+  #   "onnx"              : .onnx（自对弈优先走 Rust 绑定 RustOnnxCollector，
+  #                          推理不经过 GIL；若 wheel 未启用 onnx+pyo3 则回退
+  #                          Python onnxruntime 推理）
+  # ONNX_PROVIDERS: Python onnxruntime 回退推理时的执行提供者（逗号分隔）。
+  #   CUDAExecutionProvider 需本机安装 CUDA 版 onnxruntime（pip install onnxruntime-gpu）。
+  MODEL_BACKEND: "torchscript"
+  ONNX_PROVIDERS: "CPUExecutionProvider"
+
   # ---------------- 队列 ----------------
   ARCHIVE_QUEUE_MAXSIZE: 256    # 归档队列容量
 
@@ -143,8 +154,9 @@ common:
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180"  # 增强变换列表
 
   # ---------------- 模型与路径 ----------------
-  MODEL_PATH: "banqi_model_latest.pt"     # 相对 python/ 目录
+  MODEL_PATH: "banqi_model_latest.pt"     # 相对 python/ 目录（TorchScript）
   STATE_DICT_PATH: "banqi_model_latest.pth"
+  ONNX_PATH: "banqi_model_latest.onnx"    # ONNX 模型（MODEL_BACKEND="onnx" 时使用）
 
   # ---------------- 队列 ----------------
   DATA_QUEUE_MAXSIZE: 128       # 训练数据队列容量
@@ -186,6 +198,7 @@ common:
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180,rot90,rot270,diag,anti_diag"
   MODEL_PATH: "game_4x4/banqi4x4_model_latest.pt"
   STATE_DICT_PATH: "game_4x4/banqi4x4_model_latest.pth"
+  ONNX_PATH: "game_4x4/banqi4x4_model_latest.onnx"
   DATA_QUEUE_MAXSIZE: 256
   TENSORBOARD_LOG_DIR: "runs_4x4"
   DB_NAME: "banqi_4x4"
@@ -217,6 +230,7 @@ common:
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180"  # 仅 hflip -> 全对称增广
   MODEL_PATH: "mini_4x2/banqi_mini_model_latest.pt"
   STATE_DICT_PATH: "mini_4x2/banqi_mini_model_latest.pth"
+  ONNX_PATH: "mini_4x2/banqi_mini_model_latest.onnx"
   DATA_QUEUE_MAXSIZE: 256
   TENSORBOARD_LOG_DIR: "runs_mini"
   DB_NAME: "banqi_mini"

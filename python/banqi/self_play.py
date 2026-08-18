@@ -7,14 +7,17 @@ self_play.py — 向后兼容入口。
 """
 
 from banqi.selfplay import (
+    OnnxPredictor,
     Predictor,
     MultiDevicePredictor,
     SelfPlayWorker,
     sp_worker_main,
     build_predictor,
+    build_onnx_predictor,
     build_mixed_predictor,
     build_self_play_config,
     build_rust_collector,
+    build_onnx_collector,
     rust_collector_run_batch,
     _splay_fns,
     _episode_to_dict,
@@ -23,14 +26,17 @@ from banqi.selfplay import (
 )
 
 __all__ = [
+    "OnnxPredictor",
     "Predictor",
     "MultiDevicePredictor",
     "SelfPlayWorker",
     "sp_worker_main",
     "build_predictor",
+    "build_onnx_predictor",
     "build_mixed_predictor",
     "build_self_play_config",
     "build_rust_collector",
+    "build_onnx_collector",
     "rust_collector_run_batch",
     "_splay_fns",
     "_episode_to_dict",

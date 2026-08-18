@@ -26,6 +26,12 @@ def _model_config(c: Constants) -> dict:
     }
 
 
+def _default_onnx_path(model_path: str) -> str:
+    """由 TorchScript 模型路径推导默认 ONNX 路径（同名 .onnx）。"""
+    base, _ = os.path.splitext(model_path)
+    return base + ".onnx"
+
+
 def save_checkpoint(
     model,
     optimizer,
@@ -34,9 +40,11 @@ def save_checkpoint(
     state_dict_path: str,
     device: torch.device,
     variant: Variant,
+    onnx_path: Optional[str] = None,
 ) -> None:
-    """保存完整训练状态：.pth（可恢复）+ .pt（TorchScript 供推理）。
+    """保存完整训练状态：.pth（可恢复）+ .pt（TorchScript 供推理）+ .onnx（可选）。
 
+    onnx_path 为 None 时由 model_path 推导（同名 .onnx）；传入空串则跳过 ONNX 导出。
     先写临时文件再原子 replace，避免进程中断留下半成品。
     """
     c = build_constants(variant)
@@ -64,12 +72,69 @@ def save_checkpoint(
             traced = torch.jit.trace(trace_model, (example_board, example_scalars))
             traced.save(pt_temp)
         os.replace(pt_temp, model_path)
+
+        # ONNX 导出（供 RustOnnxCollector / MctsOnnx 推理）
+        target_onnx = _default_onnx_path(model_path) if onnx_path is None else onnx_path
+        if target_onnx:
+            export_onnx(model, target_onnx, variant, device)
+
         print(f"[checkpoint] ✅ 保存成功: {state_dict_path} + {model_path}")
     except Exception as exc:  # noqa: BLE001
         print(f"[checkpoint] ❌ 保存失败: {exc}")
         for tmp in (pt_temp, pth_temp):
             if os.path.exists(tmp):
                 os.remove(tmp)
+
+
+def export_onnx(
+    model,
+    onnx_path: str,
+    variant: Variant,
+    device: torch.device,
+) -> bool:
+    """导出模型为 ONNX（供 RustOnnxCollector / MctsOnnx / onnxruntime 推理）。
+
+    输入名固定为 "board" / "scalars"，输出名固定为 "policy_logits" / "value"
+    （与 Rust 侧 src/onnx/mod.rs 的契约一致），batch 维度动态。
+    失败时打印原因并返回 False（不抛异常，避免中断主训练流程）。
+    """
+    c = build_constants(variant)
+    trace_model = getattr(model, "_orig_mod", model)
+    onnx_temp = onnx_path + ".tmp"
+    try:
+        model.eval()
+        with torch.inference_mode():
+            example_board = torch.randn(
+                1, c.TOTAL_INPUT_CHANNELS, c.BOARD_ROWS, c.BOARD_COLS, device=device
+            )
+            example_scalars = torch.randn(1, c.SCALAR_FEATURE_COUNT, device=device)
+            torch.onnx.export(
+                trace_model,
+                (example_board, example_scalars),
+                onnx_temp,
+                # dynamo=False：使用传统 TorchScript 导出器（无需安装 onnxscript）；
+                # 与 torch.jit.trace 同样只跟踪前向计算图，BatchNorm 已在 eval 模式
+                # 下常量折叠，输出与 .pt TorchScript 完全等价。
+                dynamo=False,
+                input_names=["board", "scalars"],
+                output_names=["policy_logits", "value"],
+                dynamic_axes={
+                    "board": {0: "batch"},
+                    "scalars": {0: "batch"},
+                    "policy_logits": {0: "batch"},
+                    "value": {0: "batch"},
+                },
+                opset_version=13,
+                do_constant_folding=True,
+            )
+        os.replace(onnx_temp, onnx_path)
+        print(f"[checkpoint] ✅ ONNX 已导出: {onnx_path}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[checkpoint] ❌ ONNX 导出失败: {exc}")
+        if os.path.exists(onnx_temp):
+            os.remove(onnx_temp)
+        return False
 
 
 def load_checkpoint(

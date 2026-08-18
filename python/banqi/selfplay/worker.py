@@ -245,6 +245,97 @@ def _log_episode(tag: str, ep: Dict, duration: float, game_index: int) -> None:
     )
 
 
+def _run_onnx_collector_loop(
+    collector,
+    variant: Variant,
+    cfg,
+    sp_cfg,
+    data_q,
+    archive_q,
+    stop_event,
+    gpi: int,
+    scheme: str,
+    inner_workers: int,
+    worker_id: int,
+    tag: str,
+) -> None:
+    """Rust 持有 ONNX 模型的收集器主循环（免 GIL，模型在 Rust 侧推理）。
+
+    与 Predictor 路径等效：按 scheme 选择 batched / parallel / serial，产出的
+    episode 语义一致（PyGameEpisode）。权重经 .onnx 文件 mtime 热重载自动同步——
+    训练侧保存 checkpoint 后，本循环在下一批开始前 reload 新模型。
+    """
+    model_path = cfg.ONNX_PATH
+    last_mtime: float = 0.0
+
+    def _maybe_reload() -> None:
+        nonlocal last_mtime
+        if not model_path or not os.path.exists(model_path):
+            return
+        m = os.path.getmtime(model_path)
+        if m > last_mtime:
+            try:
+                collector.reload(model_path)
+                last_mtime = m
+                print(f"{tag} 🔄 ONNX 模型已热更新: {model_path}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"{tag} ⚠️ ONNX 模型重载失败（保持旧模型）: {exc}")
+
+    total_games = 0
+    iteration = 0
+    game_count = 0
+    while not stop_event.is_set():
+        t0 = time.time()
+        _maybe_reload()
+        try:
+            if scheme == "batched":
+                episodes = list(collector.run_batched(
+                    config=sp_cfg, num_games=gpi,
+                    concurrency=cfg.BATCH_CONCURRENCY, worker_id=worker_id,
+                ))
+            elif scheme == "parallel" and inner_workers > 1:
+                episodes = list(collector.run_parallel(
+                    config=sp_cfg, num_workers=inner_workers,
+                    games_per_worker=max(1, -(-gpi // inner_workers)),
+                    worker_id=worker_id,
+                ))
+            else:
+                episodes = list(collector.run_serial(
+                    config=sp_cfg, num_games=gpi, worker_id=worker_id,
+                ))
+        except Exception as exc:  # pragma: no cover
+            print(f"{tag} ⚠️ ONNX 收集器自对弈异常: {exc}，子进程退出")
+            break
+
+        batch_duration = time.time() - t0
+        if not episodes:
+            if stop_event.is_set():
+                break
+            continue
+
+        for ep in episodes:
+            if stop_event.is_set():
+                break
+            ep_dict = _episode_to_dict(ep, iteration, worker_id)
+            _log_episode(tag, ep_dict, batch_duration / max(len(episodes), 1),
+                         total_games + 1)
+            if not stop_event.is_set():
+                try:
+                    data_q.put(ep_dict, timeout=30.0)
+                    if archive_q is not None:
+                        archive_q.put(ep_dict, timeout=30.0)
+                except queue.Full:  # pragma: no cover
+                    print(f"{tag} ⚠️ 队列满，丢弃 1 局（stop 退出中）")
+            total_games += 1
+            game_count += 1
+            if game_count >= gpi:
+                game_count -= gpi
+                iteration += 1
+                print(f"{tag} 📍 完成迭代 {iteration - 1} → 进入迭代 {iteration}")
+
+    print(f"{tag} 子进程退出，累计 {total_games} 局，{iteration} 个迭代")
+
+
 def sp_worker_main(
     variant_id: str,
     worker_id: int,
@@ -275,9 +366,29 @@ def sp_worker_main(
               ("batched" if cfg.USE_BATCHED_SELF_PLAY else "parallel"))
 
     _torch.set_num_threads(1)  # 每进程 1 torch 线程，防多进程共享核超售
-    predictor, device = build_predictor(variant, cfg.MODEL_PATH, cfg.INFER_DEVICE)
     sp_cfg = build_self_play_config(variant)
     fn_single, fn_parallel, fn_batched = _splay_fns(variant)
+
+    # ---- MODEL_BACKEND="onnx"：优先走 Rust 持有 ONNX 模型的收集器（免 GIL） ----
+    # 模型在 Rust 侧用 ONNX Runtime 推理，不经过 GIL；权重经 .onnx mtime 热重载。
+    # 若 wheel 未启用 onnx+pyo3 绑定（RustOnnxCollector 不存在）或模型缺失，
+    # 回退 build_predictor（onnx 时自动选 Python onnxruntime 推理）。
+    use_onnx = (cfg.MODEL_BACKEND or "").strip().lower() == "onnx"
+    if use_onnx:
+        from .config import build_onnx_collector
+
+        collector = build_onnx_collector(variant, cfg.ONNX_PATH, cfg.INFER_DEVICE)
+        if collector is not None:
+            print(f"{tag} 🚀 子进程启动: ONNX 后端（RustOnnxCollector），pid={os.getpid()}, "
+                  f"scheme={scheme}, games/iter={gpi}, inner_workers={inner_workers}")
+            _run_onnx_collector_loop(
+                collector, variant, cfg, sp_cfg, data_q, archive_q, stop_event,
+                gpi, scheme, inner_workers, worker_id, tag,
+            )
+            return
+        print(f"{tag} ⚠️ RustOnnxCollector 不可用，回退 Python 推理路径")
+
+    predictor, device = build_predictor(variant, cfg.MODEL_PATH, cfg.INFER_DEVICE)
     print(f"{tag} 🚀 子进程启动: device={device}, pid={os.getpid()}, "
           f"scheme={scheme}, games/iter={gpi}, inner_workers={inner_workers}")
 

@@ -435,6 +435,7 @@ function updateAiSettingsVisibility() {
     Engine: 'settings-engine',
     MctsHeuristic: 'settings-heuristic',
     MctsDL: 'settings-mctsdl',
+    MctsOnnx: 'settings-mctsdl',
   };
   const targetId = settingsMap[opponent];
 
@@ -500,7 +501,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       const models = await invoke('list_models');
       modelSelect.innerHTML = '';
       if (!models || models.length === 0) {
-        modelSelect.innerHTML = '<option value="">未找到 .pt 模型</option>';
+        modelSelect.innerHTML = '<option value="">未找到 .pt / .onnx 模型</option>';
         return;
       }
       models.forEach(m => {
@@ -545,9 +546,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
       const result = await invoke('load_model', { path });
       alert('模型加载成功：' + result);
-      // 自动切换到 MCTS+DL 对手并提示
+      // 自动切换对手：.onnx → MCTS+ONNX，否则 → MCTS+DL
       const oppSel = document.getElementById('opponent-select');
-      if (oppSel) oppSel.value = 'MctsDL';
+      if (oppSel) oppSel.value = path.toLowerCase().endsWith('.onnx') ? 'MctsOnnx' : 'MctsDL';
       updateAiSettingsVisibility();
     } catch (e) {
       alert('模型加载失败：' + e);

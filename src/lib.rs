@@ -33,6 +33,11 @@ pub mod ai;
 #[cfg(feature = "torch")]
 pub mod local_evaluator;
 
+// ONNX Runtime 推理服务（仅在 onnx feature 启用时编译）。
+// 供自对弈收集器（rust-onnx-collector）与 banqi-tauri（MctsOnnx 对手）使用。
+#[cfg(feature = "onnx")]
+pub mod onnx;
+
 // 重新导出核心类型，方便外部使用
 pub use game_env::{DarkChessEnv, Observation, Piece, PieceType, Player, Slot};
 
@@ -377,6 +382,11 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // 且模型只加载一份，避免 spawn 多进程重复加载 libtorch 带来的内存开销。
     #[cfg(all(feature = "torch", feature = "pyo3"))]
     m.add_class::<crate::py::rust_collector::RustTorchCollector>()?;
+
+    // --- Rust 持有模型的 ONNX 数据收集器（需同时启用 onnx + pyo3） ---
+    // 与 RustTorchCollector 等价，但推理后端为 ONNX Runtime（不依赖 libtorch）。
+    #[cfg(all(feature = "onnx", feature = "pyo3"))]
+    m.add_class::<crate::py::onnx_collector::RustOnnxCollector>()?;
 
     m.add("BOARD_ROWS", BOARD_ROWS)?;
     m.add("BOARD_COLS", BOARD_COLS)?;

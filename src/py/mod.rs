@@ -27,6 +27,9 @@ pub mod ttt;
 #[cfg(all(feature = "torch", feature = "pyo3"))]
 pub mod rust_collector;
 
+#[cfg(all(feature = "onnx", feature = "pyo3"))]
+pub mod onnx_collector;
+
 // ---- 公共 re-export：保持 `crate::py::*` 与 `lib.rs` / py_data_collector.rs 的引用路径不变 ----
 
 #[cfg(feature = "pyo3")]

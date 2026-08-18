@@ -2,10 +2,12 @@
 #[cfg(feature = "torch")]
 use banqi_4x8::ai::{MctsDlPolicy, ModelWrapper};
 use banqi_4x8::ai::{Policy, RandomPolicy, RevealFirstPolicy};
+#[cfg(feature = "onnx")]
+use banqi_4x8::onnx::{OnnxMctsPolicy, OnnxModel};
 use banqi_4x8::*;
 use serde::{Deserialize, Serialize}; // Added Deserialize
 use std::collections::HashMap;
-#[cfg(feature = "torch")]
+#[cfg(any(feature = "torch", feature = "onnx"))]
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -46,7 +48,8 @@ pub enum OpponentType {
     Minimax,       // 纯规则 Minimax（expectiminimax+alpha-beta，已升级：多特征评估/置换表/走子排序/静态搜索）
     Engine,        // 纯计算强引擎（αβ + Star1 + 置换表 + 迭代加深，节点预算可控）
     MctsHeuristic, // Gumbel MCTS + 纯计算启发式评估（无需 torch）
-    MctsDL,        // MCTS + 深度学习
+    MctsDL,        // MCTS + 深度学习（TorchScript，需 torch feature）
+    MctsOnnx,      // MCTS + ONNX 深度学习（需 onnx feature，无需 libtorch）
 }
 
 // 应用状态：包含游戏环境和当前对手设置
@@ -67,6 +70,11 @@ struct AppState {
     // MCTS+DL 策略（基于 DarkChessEnv，4x8/4x4/4x2 共用）
     #[cfg(feature = "torch")]
     mcts_policy: Mutex<Option<MctsDlPolicy<DarkChessEnv>>>,
+    // 已加载的 ONNX 模型（MctsOnnx 对手，无需 libtorch）
+    #[cfg(feature = "onnx")]
+    onnx_model: Mutex<Option<Arc<OnnxModel>>>,
+    #[cfg(feature = "onnx")]
+    onnx_policy: Mutex<Option<OnnxMctsPolicy<DarkChessEnv>>>,
 }
 
 // Tauri 命令：重置游戏
@@ -83,6 +91,7 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
         Some("Engine") => OpponentType::Engine,
         Some("MctsHeuristic") => OpponentType::MctsHeuristic,
         Some("MctsDL") => OpponentType::MctsDL,
+        Some("MctsOnnx") => OpponentType::MctsOnnx,
         _ => OpponentType::PvP,
     };
 
@@ -95,7 +104,7 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
         _ => DarkChessEnv::new(),
     };
 
-    // 若选择 MctsDL 且已有模型，创建策略实例
+    // 若选择 MctsDL / MctsOnnx 且已有对应模型，创建策略实例
     #[cfg(feature = "torch")]
     if *opp_type_lock == OpponentType::MctsDL {
         let model_opt = state.model.lock().unwrap().clone();
@@ -111,6 +120,24 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
         {
             // 非 MctsDL 模式清空策略
             let mut policy_lock = state.mcts_policy.lock().unwrap();
+            *policy_lock = None;
+        }
+    }
+    #[cfg(feature = "onnx")]
+    if *opp_type_lock == OpponentType::MctsOnnx {
+        let model_opt = state.onnx_model.lock().unwrap().clone();
+        let mut policy_lock = state.onnx_policy.lock().unwrap();
+        if let Some(model) = model_opt {
+            let sims = *state.mcts_num_simulations.lock().unwrap();
+            *policy_lock = Some(OnnxMctsPolicy::new(model, &*game, sims));
+        } else {
+            *policy_lock = None; // 未加载 ONNX 模型，策略不可用
+        }
+    } else {
+        #[cfg(feature = "onnx")]
+        {
+            // 非 MctsOnnx 模式清空 ONNX 策略
+            let mut policy_lock = state.onnx_policy.lock().unwrap();
             *policy_lock = None;
         }
     }
@@ -204,6 +231,24 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
                 }
                 #[cfg(not(feature = "torch"))]
                 OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
+                #[cfg(feature = "onnx")]
+                OpponentType::MctsOnnx => {
+                    let mut policy_lock = state.onnx_policy.lock().unwrap();
+                    if policy_lock.is_none() {
+                        // 尝试基于已加载的 ONNX 模型创建
+                        let model_opt = state.onnx_model.lock().unwrap().clone();
+                        if let Some(model) = model_opt {
+                            let sims = *state.mcts_num_simulations.lock().unwrap();
+                            *policy_lock = Some(OnnxMctsPolicy::new(model, &*game, sims));
+                        } else {
+                            return Err("未加载 ONNX 模型，无法执行 MCTS+ONNX 策略".into());
+                        }
+                    }
+                    let policy = policy_lock.as_ref().unwrap();
+                    policy.choose_action(&*game)
+                }
+                #[cfg(not(feature = "onnx"))]
+                OpponentType::MctsOnnx => return Err("MctsOnnx 需要启用 onnx 特性".into()),
                 OpponentType::PvP => None,        // 已在上面返回 Err，这里兜底
                 OpponentType::Minimax => unreachable!(),
                 OpponentType::Engine => unreachable!(),
@@ -352,8 +397,8 @@ struct ModelEntry {
     path: String,
 }
 
-/// 递归收集目录下的 .pt 模型（忽略隐藏目录 / node_modules / target 等）。
-fn collect_pt_models(dir: &std::path::Path, depth: usize, out: &mut Vec<ModelEntry>) {
+/// 递归收集目录下的 .pt / .onnx 模型（忽略隐藏目录 / node_modules / target 等）。
+fn collect_models(dir: &std::path::Path, depth: usize, out: &mut Vec<ModelEntry>) {
     if depth > 4 {
         return;
     }
@@ -368,9 +413,13 @@ fn collect_pt_models(dir: &std::path::Path, depth: usize, out: &mut Vec<ModelEnt
             if name.starts_with('.') || name == "node_modules" || name == "target" {
                 continue;
             }
-            collect_pt_models(&path, depth + 1, out);
+            collect_models(&path, depth + 1, out);
         } else if ft.is_file() {
-            if path.extension().map(|x| x == "pt").unwrap_or(false) {
+            let is_model = path
+                .extension()
+                .map(|x| x == "pt" || x == "onnx")
+                .unwrap_or(false);
+            if is_model {
                 let name = path
                     .file_name()
                     .unwrap_or_default()
@@ -385,20 +434,57 @@ fn collect_pt_models(dir: &std::path::Path, depth: usize, out: &mut Vec<ModelEnt
     }
 }
 
-/// 列出项目内（含子目录）的 .pt 模型
+/// 列出项目内（含子目录）的 .pt / .onnx 模型
 #[tauri::command]
 fn list_models() -> Vec<ModelEntry> {
     let mut out = Vec::new();
-    collect_pt_models(std::path::Path::new("."), 0, &mut out);
+    collect_models(std::path::Path::new("."), 0, &mut out);
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }
 
-/// 载入模型（.pt TorchScript 模型）
-#[cfg(feature = "torch")]
+/// 载入模型：按扩展名分派（.pt → TorchScript（需 torch feature），.onnx → ONNX）。
+#[cfg(any(feature = "torch", feature = "onnx"))]
 #[tauri::command]
 fn load_model(path: String, state: State<AppState>) -> Result<String, String> {
-    let wrapper = ModelWrapper::load_from_file(&path)?;
+    let is_onnx = std::path::Path::new(&path)
+        .extension()
+        .map(|x| x == "onnx")
+        .unwrap_or(false);
+    if is_onnx {
+        load_onnx_model_impl(&path, &state)
+    } else {
+        load_torch_model_impl(&path, &state)
+    }
+}
+
+#[cfg(feature = "onnx")]
+fn load_onnx_model_impl(path: &str, state: &State<AppState>) -> Result<String, String> {
+    let model = OnnxModel::new(path, "auto").map_err(|e| format!("ONNX 模型加载失败: {e}"))?;
+    let arc_model = Arc::new(model);
+    {
+        let mut model_lock = state.onnx_model.lock().unwrap();
+        *model_lock = Some(arc_model.clone());
+    }
+    // 若当前为 MctsOnnx 且已有游戏，尝试重建策略
+    if *state.opponent_type.lock().unwrap() == OpponentType::MctsOnnx {
+        let sims = *state.mcts_num_simulations.lock().unwrap();
+        let game = state.game.lock().unwrap();
+        let mut pol_lock = state.onnx_policy.lock().unwrap();
+        *pol_lock = Some(OnnxMctsPolicy::new(arc_model, &*game, sims));
+    }
+    Ok(format!("ONNX 模型已加载: {}", path))
+}
+
+#[cfg(not(feature = "onnx"))]
+#[allow(dead_code)]
+fn load_onnx_model_impl(path: &str, _state: &State<AppState>) -> Result<String, String> {
+    Err(format!("需要启用 onnx 特性才能加载 ONNX 模型（{path}）"))
+}
+
+#[cfg(feature = "torch")]
+fn load_torch_model_impl(path: &str, state: &State<AppState>) -> Result<String, String> {
+    let wrapper = ModelWrapper::load_from_file(path)?;
     let arc_wrapper = Arc::new(wrapper);
     {
         let mut model_lock = state.model.lock().unwrap();
@@ -414,11 +500,17 @@ fn load_model(path: String, state: State<AppState>) -> Result<String, String> {
     Ok(format!("模型已加载: {}", path))
 }
 
-/// 无 torch 特性时的占位函数
 #[cfg(not(feature = "torch"))]
+#[allow(dead_code)]
+fn load_torch_model_impl(path: &str, _state: &State<AppState>) -> Result<String, String> {
+    Err(format!("需要启用 torch 特性才能加载 TorchScript 模型（{path}）"))
+}
+
+/// 无 torch / onnx 特性时的占位函数
+#[cfg(not(any(feature = "torch", feature = "onnx")))]
 #[tauri::command]
 fn load_model(_path: String, _state: State<AppState>) -> Result<String, String> {
-    Err("需要启用 torch 特性才能加载模型".into())
+    Err("需要启用 torch 或 onnx 特性才能加载模型".into())
 }
 
 /// 设置 Minimax 搜索深度（默认 4，与 verify_mini_vs_minimax.py 的 minimax(depth=4) 对应）
@@ -446,6 +538,10 @@ fn set_mcts_iterations(iters: usize, state: State<AppState>) -> Result<usize, St
 
     #[cfg(feature = "torch")]
     if let Some(policy) = state.mcts_policy.lock().unwrap().as_mut() {
+        policy.set_iterations(iters);
+    }
+    #[cfg(feature = "onnx")]
+    if let Some(policy) = state.onnx_policy.lock().unwrap().as_mut() {
         policy.set_iterations(iters);
     }
 
@@ -490,6 +586,10 @@ pub fn run() {
                 model: Mutex::new(None),
                 #[cfg(feature = "torch")]
                 mcts_policy: Mutex::new(None),
+                #[cfg(feature = "onnx")]
+                onnx_model: Mutex::new(None),
+                #[cfg(feature = "onnx")]
+                onnx_policy: Mutex::new(None),
             });
             Ok(())
         })

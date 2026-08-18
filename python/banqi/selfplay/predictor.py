@@ -178,3 +178,81 @@ class MultiDevicePredictor:
             np.concatenate([pl_g, pl_c], axis=0),
             np.concatenate([vl_g, vl_c], axis=0),
         )
+
+
+class OnnxPredictor:
+    """Python onnxruntime 推理 Predictor（MODEL_BACKEND="onnx" 时的回退方案）。
+
+    契约与 `Predictor` 一致（匹配 py_evaluator.rs / py/mod.rs 绑定）：
+      `__call__(board: (N, C, H, W) float32, scalars: (N, S) float32)`
+      -> `(policy_logits (N, A) float32, values (N,) float32)`
+
+    仅在 Rust 绑定 `RustOnnxCollector` 不可用（wheel 未启用 onnx+pyo3）时使用；
+    推理走 onnxruntime，可通过 `ONNX_PROVIDERS` 指定执行提供者。
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        action_space: int,
+        providers: Optional[List[str]] = None,
+        variant: Optional[Variant] = None,
+    ) -> None:
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "MODEL_BACKEND=onnx 需要 onnxruntime：pip install onnxruntime"
+            ) from exc
+        self.variant = variant
+        self.action_space = int(action_space)
+        self.model_path = model_path
+        self._providers = providers or ["CPUExecutionProvider"]
+        self._mtime: float = 0.0
+        self._last_reload_check: float = 0.0
+        self._ort = ort
+        self._sess = ort.InferenceSession(model_path, providers=self._providers)
+        self._reload_weights(force=True)
+
+    def _tag(self) -> str:
+        return f"[SP-{self.variant.id}]" if self.variant is not None else "[SP-?]"
+
+    def _reload_weights(self, force: bool = False) -> None:
+        """mtime 热重载（与 Predictor 语义一致）：训练侧保存 checkpoint 后自动刷新。"""
+        now = time.monotonic()
+        if not force and now - self._last_reload_check < RELOAD_CHECK_INTERVAL:
+            return
+        self._last_reload_check = now
+        if not os.path.exists(self.model_path):
+            return
+        mtime = os.path.getmtime(self.model_path)
+        if force or mtime > self._mtime:
+            try:
+                self._sess = self._ort.InferenceSession(
+                    self.model_path, providers=self._providers
+                )
+                self._mtime = mtime
+                print(f"{self._tag()} 已重载 ONNX 模型: {self.model_path}")
+            except Exception as exc:  # pragma: no cover
+                print(f"{self._tag()} ONNX 重载失败（保持旧模型）: {exc}")
+
+    def __call__(
+        self, board: np.ndarray, scalars: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """返回 (policy_logits (N, A) float32, values (N,) float32)，匹配绑定契约。"""
+        self._reload_weights()
+        if board.shape[0] == 0:
+            return (
+                np.zeros((0, self.action_space), dtype=np.float32),
+                np.zeros(0, dtype=np.float32),
+            )
+        outputs = self._sess.run(
+            None,
+            {
+                "board": np.ascontiguousarray(board, dtype=np.float32),
+                "scalars": np.ascontiguousarray(scalars, dtype=np.float32),
+            },
+        )
+        policy_logits = np.asarray(outputs[0], dtype=np.float32)
+        value = np.asarray(outputs[1], dtype=np.float32).reshape(-1)
+        return policy_logits, value

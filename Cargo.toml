@@ -88,6 +88,11 @@ async-trait ="0.1.92"
 # PyTorch 依赖 - 可选，用于本地训练和推理
 tch = { version = "0.22", optional = true }
 
+# ONNX Runtime 依赖 - 可选，用于 ONNX 模型推理服务（自对弈收集器 / banqi-tauri）。
+# 启用 `onnx` feature 后构建时通过 download-binaries 下载预编译的 ONNX Runtime；
+# 若想用 CUDA EP（onnx-cuda），还需本机安装 CUDA 工具链（库在运行时加载）。
+ort = { version = "2.0.0-rc.13", features = ["download-binaries"], optional = true }
+
 # PyO3 依赖 - 可选，用于 Python 集成
 # 注意：extension-module 通过独立的 pyo3-extension feature 启用，
 # 因为 banqi-py-collector（嵌入 Python 的独立二进制）需要链接 libpython，
@@ -109,6 +114,17 @@ pyo3-extension = ["pyo3", "pyo3/extension-module"]
 #   - maturin wheel：--features pyo3-extension,torch
 #   - 本地 check：  cargo check --features pyo3,torch
 rust-torch-collector = ["torch", "pyo3"]
+# onnx 特性：ONNX Runtime 推理服务（src/onnx/mod.rs）。
+# 供自对弈收集器（rust-onnx-collector）与 banqi-tauri（MctsOnnx 对手）使用。
+# 构建时会下载预编译 ONNX Runtime 二进制（需网络）。
+onnx = ["dep:ort"]
+# onnx-cuda 特性：额外启用 ONNX Runtime CUDA EP（需本机 CUDA 库）。
+# 与 download-binaries 搭配时下载 CUDA 版 ORT 二进制；不可用时自动回退 CPU。
+onnx-cuda = ["onnx", "ort/cuda"]
+# 组合特性：Rust 持有模型的 ONNX 数据收集器（RustOnnxCollector）。
+# 与 RustTorchCollector 等价，但推理后端为 ONNX Runtime（不依赖 libtorch）。
+#   - maturin wheel：--features pyo3-extension,onnx
+rust-onnx-collector = ["onnx", "pyo3"]
 # tauri 特性：桌面 GUI（构建 banqi-tauri 时才需要，含 GTK 系统依赖）
 tauri = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-build"]
 

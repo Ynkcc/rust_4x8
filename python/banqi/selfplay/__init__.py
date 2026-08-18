@@ -9,7 +9,12 @@
 self_play.py 保留为向后兼容的 re-export 入口。
 """
 
-from .predictor import Predictor, MultiDevicePredictor, RELOAD_CHECK_INTERVAL
+from .predictor import (
+    OnnxPredictor,
+    Predictor,
+    MultiDevicePredictor,
+    RELOAD_CHECK_INTERVAL,
+)
 from .worker import (
     SelfPlayWorker,
     sp_worker_main,
@@ -19,13 +24,16 @@ from .worker import (
 )
 from .config import (
     build_predictor,
+    build_onnx_predictor,
     build_mixed_predictor,
     build_self_play_config,
     build_rust_collector,
+    build_onnx_collector,
     rust_collector_run_batch,
 )
 
 __all__ = [
+    "OnnxPredictor",
     "Predictor",
     "MultiDevicePredictor",
     "RELOAD_CHECK_INTERVAL",
@@ -35,8 +43,10 @@ __all__ = [
     "_episode_to_dict",
     "_log_episode",
     "build_predictor",
+    "build_onnx_predictor",
     "build_mixed_predictor",
     "build_self_play_config",
     "build_rust_collector",
+    "build_onnx_collector",
     "rust_collector_run_batch",
 ]

@@ -28,10 +28,11 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from banqi.config import make_config
+from banqi.constants import build_constants
 from banqi.nn_model import BanqiNet
 from banqi.variant import Variant
 
-from .predictor import Predictor, MultiDevicePredictor
+from .predictor import OnnxPredictor, Predictor, MultiDevicePredictor
 
 
 def _resolve_device(device_str: str) -> "torch.device":
@@ -44,7 +45,19 @@ def _resolve_device(device_str: str) -> "torch.device":
 
 def build_predictor(variant: Variant, model_path: Optional[str],
                     device_str: str = "auto") -> Tuple[Predictor, "torch.device"]:
-    """构建 Predictor。model_path 为 None 时使用全新初始化网络。"""
+    """构建 Predictor。model_path 为 None 时使用全新初始化网络。
+
+    当 config.MODEL_BACKEND == "onnx" 时优先构建 `OnnxPredictor`（onnxruntime）；
+    若 ONNX 推理不可用（缺文件 / 未装 onnxruntime），回退 torch 推理。
+    """
+    cfg = make_config(variant.id)
+    backend = (cfg.MODEL_BACKEND or "torchscript").strip().lower()
+    if backend == "onnx":
+        onnx_predictor = build_onnx_predictor(variant, model_path or cfg.ONNX_PATH)
+        if onnx_predictor is not None:
+            return onnx_predictor, torch.device("cpu")
+        print(f"[SP-{variant.id}] ⚠️ ONNX 推理不可用，回退 torch 推理")
+
     if not HAS_TORCH:
         print(f"[SP-{variant.id}] 警告：未安装 PyTorch，将使用退化预测（均匀 logits）")
         device = torch.device("cpu")
@@ -62,6 +75,34 @@ def build_predictor(variant: Variant, model_path: Optional[str],
     else:
         print(f"[SP-{variant.id}] 未指定有效模型路径，使用全新初始化网络")
     return predictor, device
+
+
+def build_onnx_predictor(
+    variant: Variant, model_path: Optional[str] = None
+) -> Optional[OnnxPredictor]:
+    """构建 Python onnxruntime Predictor（MODEL_BACKEND="onnx" 时的回退推理）。
+
+    仅在 Rust 绑定 `RustOnnxCollector` 不可用时被调用；若 onnx 文件缺失或
+    onnxruntime 未安装，返回 None（调用方回退 torch 推理）。
+    """
+    cfg = make_config(variant.id)
+    path = model_path or cfg.ONNX_PATH
+    if not path or not os.path.exists(path):
+        print(f"[SP-{variant.id}] ⚠️ ONNX 模型不存在: {path}")
+        return None
+    providers = [p.strip() for p in cfg.ONNX_PROVIDERS.split(",") if p.strip()] or [
+        "CPUExecutionProvider"
+    ]
+    try:
+        return OnnxPredictor(
+            path,
+            build_constants(variant).ACTION_SPACE_SIZE,
+            providers=providers,
+            variant=variant,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[SP-{variant.id}] ⚠️ ONNX Predictor 构建失败: {exc}")
+        return None
 
 
 def build_mixed_predictor(
@@ -125,43 +166,87 @@ def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
 
 
 # ============================================================================
-# Rust 持有模型的 Torch 收集器（可选，需 maturin 以 torch+pyo3 双 feature 构建）
+# Rust 持有模型的收集器（可选，需 maturin 以对应 feature 构建）
 # ============================================================================
 #
 # 背景：`run_*_self_play_with_predictor` 把 Python `predict_fn` 传给 Rust，MCTS 评估
 # 时通过 GIL 调 Python 推理 → 即使 Rust 侧多线程，推理仍被 GIL 串行化；若改用
 # multiprocessing(spawn) 绕开 GIL，每个子进程又重复加载一份 libtorch + 权重。
 #
-# 解法：`banqi_4x8.RustTorchCollector` 在 Rust 侧用 tch-rs 一次性加载 TorchScript
-# 模型（模型留在 Rust，推理不经过 GIL），跨线程共享单份模型。这里提供便捷工厂与
-# 一个「生产一批 episode 并带权重热更新」的辅助函数，作为 python 回调方案的替代。
+# 解法：收集器在 Rust 侧一次性加载模型（模型留在 Rust，推理不经过 GIL），
+# 跨线程共享单份模型。这里提供便捷工厂与一个「生产一批 episode」的辅助函数，
+# 作为 python 回调方案的替代。
 #
-# 需同时启用 torch + pyo3 feature 构建（见 Cargo.toml `rust-torch-collector`）。
+# 两个后端：
+#   - `RustTorchCollector`（RustTorchCollector）：TorchScript .pt，tch-rs 推理。
+#     需同时启用 torch + pyo3 feature 构建（Cargo.toml `rust-torch-collector`）。
+#   - `RustOnnxCollector`（RustOnnxCollector）：ONNX .onnx，ONNX Runtime 推理。
+#     需同时启用 onnx + pyo3 feature 构建（Cargo.toml `rust-onnx-collector`），
+#     不依赖 libtorch。
+#
+# 按 config.MODEL_BACKEND 自动选择：MODEL_BACKEND="onnx" 时优先使用 ONNX 后端，
+# 否则回退 Torch 后端。
 
-_RUST_COLLECTOR_AVAILABLE = hasattr(banqi_4x8, "RustTorchCollector")
+_RUST_TORCH_COLLECTOR_AVAILABLE = hasattr(banqi_4x8, "RustTorchCollector")
+_RUST_ONNX_COLLECTOR_AVAILABLE = hasattr(banqi_4x8, "RustOnnxCollector")
 
 
 def build_rust_collector(
     variant: Variant,
     model_path: Optional[str] = None,
     device: Optional[str] = None,
+    backend: Optional[str] = None,
 ):
     """构建 Rust 侧持有模型的收集器（模型只加载一份，推理不经过 GIL）。
 
-    返回 `banqi_4x8.RustTorchCollector`；若当前 wheel 未启用 torch 侧绑定
-    （`rust-torch-collector` feature 未开），返回 None。
+    backend：
+      - "torchscript"：RustTorchCollector（.pt）
+      - "onnx"：       RustOnnxCollector（.onnx）
+      - None：按 config.MODEL_BACKEND 自动选择（默认）。
+
+    返回对应 pyclass 实例；若当前 wheel 未启用对应绑定，返回 None。
     """
-    if not _RUST_COLLECTOR_AVAILABLE:
+    cfg = make_config(variant.id)
+    backend = (backend or cfg.MODEL_BACKEND or "torchscript").strip().lower()
+    if backend == "onnx":
+        return build_onnx_collector(variant, model_path, device)
+    if not _RUST_TORCH_COLLECTOR_AVAILABLE:
         print(
             f"[SP-{variant.id}] 未检测到 RustTorchCollector。若需要 Rust 持有模型、"
             f"免 GIL 的数据收集，请用 maturin build --features torch,pyo3-extension 构建。"
         )
         return None
-    cfg = make_config(variant.id)
     path = model_path or cfg.MODEL_PATH
     dev = device or cfg.INFER_DEVICE
     print(f"[SP-{variant.id}] 构建 RustTorchCollector: model={path} device={dev}")
     return banqi_4x8.RustTorchCollector(path, variant.id, dev)
+
+
+def build_onnx_collector(
+    variant: Variant,
+    model_path: Optional[str] = None,
+    device: Optional[str] = None,
+):
+    """构建 Rust 侧持有 ONNX 模型的收集器（`banqi_4x8.RustOnnxCollector`）。
+
+    推理由 ONNX Runtime 完成（不经过 GIL、不依赖 libtorch）。
+    若当前 wheel 未启用 onnx+pyo3 绑定（`rust-onnx-collector` feature 未开），
+    返回 None（调用方可回退到 Python onnxruntime 推理）。
+    """
+    if not _RUST_ONNX_COLLECTOR_AVAILABLE:
+        print(
+            f"[SP-{variant.id}] 未检测到 RustOnnxCollector。若需要 Rust 持有 ONNX 模型、"
+            f"免 GIL 的数据收集，请用 maturin build --features onnx,pyo3-extension 构建。"
+        )
+        return None
+    cfg = make_config(variant.id)
+    path = model_path or cfg.ONNX_PATH or cfg.MODEL_PATH
+    dev = device or cfg.INFER_DEVICE
+    if not path or not os.path.exists(path):
+        print(f"[SP-{variant.id}] ⚠️ ONNX 模型不存在: {path}（无法构建 RustOnnxCollector）")
+        return None
+    print(f"[SP-{variant.id}] 构建 RustOnnxCollector: model={path} device={dev}")
+    return banqi_4x8.RustOnnxCollector(path, variant.id, dev)
 
 
 def rust_collector_run_batch(
