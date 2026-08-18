@@ -23,7 +23,8 @@ use crate::game_env::GameEnv;
 use crate::mcts::budget::SequentialHalvingBudget;
 use crate::mcts::config::{GumbelConfig, MctsSearchResult};
 use crate::mcts::evaluator::Evaluator;
-use crate::mcts::search::{GumbelMCTS, PendingEval};
+use crate::mcts::path::PendingEval;
+use crate::mcts::search::GumbelMCTS;
 use crate::Player;
 
 /// 本棵树的推进阶段（决定下一次 `collect` 应产生何种待评估项）
