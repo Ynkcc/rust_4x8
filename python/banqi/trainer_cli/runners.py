@@ -29,7 +29,12 @@ from banqi.config import Config, make_config
 from banqi.memory_guard import start_memory_guard
 from banqi.rule_self_play import RuleSelfPlayWorker, rule_sp_worker_main
 from banqi.self_play import sp_worker_main
-from banqi.tb_logger import close_summary_writer, init_summary_writer
+from banqi.tb_logger import (
+    add_hparams,
+    add_text,
+    close_summary_writer,
+    init_summary_writer,
+)
 from banqi.training_service import TrainWorker
 from banqi.variant import Variant, get_variant
 
@@ -225,6 +230,51 @@ class _ArchiveFeederWorker(threading.Thread):
         return {"total_games": self.total_games}
 
 
+def _log_meta_tb(config: Config, variant_id: str, tb_log_dir: str) -> None:
+    """TensorBoard 运行元信息：HParams + 文本标注（启动时调用一次）。
+
+    add_hparams 在 log_dir/hparams 子目录写入超参数表，跨多次运行可在
+    TensorBoard 的 HParams 面板中对比。metric_dict 传空（训练指标另行记录）。
+    """
+    add_text("meta/variant", variant_id, 0)
+    add_text("meta/run_id", os.path.basename(tb_log_dir) if tb_log_dir else "", 0)
+    add_text("meta/train_mode", config.TRAIN_MODE or "selfplay", 0)
+    add_text("meta/value_target", config.VALUE_TARGET_MODE, 0)
+    add_text(
+        "meta/device",
+        f"train={config.TRAIN_DEVICE} infer={config.INFER_DEVICE} "
+        f"cpu_aux={config.INFER_CPU_AUX_WORKERS}",
+        0,
+    )
+    add_text(
+        "meta/augment",
+        f"enabled={config.DATA_AUGMENT_ENABLED} transforms={config.DATA_AUGMENT_TRANSFORMS}",
+        0,
+    )
+    hparams = {
+        "variant": variant_id,
+        "mcts_sims": config.MCTS_SIMS,
+        "max_considered_actions": config.MAX_CONSIDERED_ACTIONS,
+        "temperature_steps": config.TEMPERATURE_STEPS,
+        "games_per_iter": config.GAMES_PER_ITER,
+        "train_batch": config.TRAIN_BATCH,
+        "learning_rate": config.LEARNING_RATE,
+        "min_lr": config.MIN_LR,
+        "lr_decay_steps": config.LR_DECAY_STEPS,
+        "train_epochs_per_round": config.TRAIN_EPOCHS_PER_ROUND,
+        "weight_decay": config.WEIGHT_DECAY,
+        "max_buffer": config.MAX_SAMPLE_BUFFER_SIZE,
+        "min_samples_to_start": config.MIN_SAMPLES_TO_START,
+        "value_target": config.VALUE_TARGET_MODE,
+        "data_augment": config.DATA_AUGMENT_ENABLED,
+        "eval_match_rounds": config.EVAL_MATCH_ROUNDS,
+        "eval_match_games": config.EVAL_MATCH_GAMES,
+        "eval_match_opponents": config.EVAL_MATCH_OPPONENTS,
+        "eval_match_vs_prev": config.EVAL_MATCH_VS_PREV,
+    }
+    add_hparams({k: str(v) for k, v in hparams.items()}, {})
+
+
 def _run_offline(variant_id: str, train_mode: str) -> None:
     """离线训练：从冷存储归档数据（MongoDB / 本地 JSONL）消费训练，无自对弈闭环。
 
@@ -233,7 +283,7 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
                                    写入训练队列 + 可选归档。
     """
     variant = get_variant(variant_id)
-    config: Config = Config.from_variant(variant_id)
+    config: Config = make_config(variant_id)
     config._variant = variant
     tag = f"[{variant.id}]"
 
@@ -248,6 +298,8 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
     if config.TENSORBOARD_ENABLED:
         tb_log_dir = os.path.join(config.TENSORBOARD_LOG_DIR, time.strftime("%Y%m%d-%H%M%S"))
         tb_ok = init_summary_writer(log_dir=tb_log_dir, enabled=True)
+        if tb_ok:
+            _log_meta_tb(config, variant_id, tb_log_dir)
 
     print("=" * 56)
     mode_label = "冷存储离线训练" if train_mode == "archive" else "纯规则自对弈训练"
@@ -260,11 +312,11 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
     print(f"  INFER_DEVICE    = {config.INFER_DEVICE}")
     print(f"  TRAIN_DEVICE    = {config.TRAIN_DEVICE}（训练，auto 自动选择）")
     print(f"  VALUE_TARGET    = {config.VALUE_TARGET_MODE}（value 目标模式）")
-    print(f"  INIT_FROM_CKPT  = {config.INIT_FROM_CHECKPOINT or '（无）'}")
+    print(f"  INIT_FROM_CKPT  = {getattr(config, 'INIT_FROM_CHECKPOINT', None) or '（无）'}")
     if train_mode == "rule_selfplay":
         print(f"  RULE_BACKEND    = {config.RULE_SELFPLAY_BACKEND}（规则自对弈后端）")
-        print(f"  RULE_PROC       = {config.RULE_SELF_PLAY_PROCESSES}（规则自对弈进程）")
-        print(f"  RULE_DEPTH      = {config.RULE_SELF_PLAY_DEPTH}（minimax 搜索深度）")
+        print(f"  RULE_CONCURRENCY= {config.RULE_SELFPLAY_CONCURRENCY}（规则自对弈并发数）")
+        print(f"  RULE_DEPTH      = {config.RULE_SELFPLAY_DEPTH}（minimax 搜索深度）")
     print("=" * 56)
 
     start_memory_guard()
@@ -298,14 +350,14 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
                     args=(variant_id, wid, data_q, archive_q, stop_event),
                     name=f"RuleSP-{wid}", daemon=True,
                 )
-                for wid in range(config.RULE_SELF_PLAY_PROCESSES)
+                for wid in range(config.RULE_SELFPLAY_CONCURRENCY)
             ]
             for p in procs:
                 p.start()
             producers.extend(procs)
             print(f"{tag} 🚀 规则自对弈子进程 × {len(procs)} 已启动")
         else:
-            concurrency = config.RULE_SELF_PLAY_PROCESSES
+            concurrency = config.RULE_SELFPLAY_CONCURRENCY
             for wid in range(concurrency):
                 producers.append(
                     RuleSelfPlayWorker(variant, data_q, lambda: stop_flag[0],
@@ -396,6 +448,11 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
         monitor.join(timeout=3)
     close_summary_writer()
 
+    for q in (data_q, archive_q):
+        if q is not None:
+            q.close()
+            q.cancel_join_thread()
+
     # ---- 结束统计 ----
     tr_stats = train_worker.stats()
     history = train_worker.round_history_snapshot()
@@ -416,7 +473,7 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
 
 def _run_selfplay(variant_id: str) -> None:
     variant = get_variant(variant_id)
-    config: Config = Config.from_variant(variant_id)
+    config: Config = make_config(variant_id)
     config._variant = variant
     tag = f"[{variant.id}]"
 
@@ -431,6 +488,8 @@ def _run_selfplay(variant_id: str) -> None:
     if config.TENSORBOARD_ENABLED:
         tb_log_dir = os.path.join(config.TENSORBOARD_LOG_DIR, time.strftime("%Y%m%d-%H%M%S"))
         tb_ok = init_summary_writer(log_dir=tb_log_dir, enabled=True)
+        if tb_ok:
+            _log_meta_tb(config, variant_id, tb_log_dir)
 
     print("=" * 56)
     print(f"  🚀 自对弈 + 训练闭环启动（变体 {variant_id}，单进程多线程）")
@@ -569,6 +628,11 @@ def _run_selfplay(variant_id: str) -> None:
     if monitor is not None and monitor.is_alive():
         monitor.join(timeout=3)
     close_summary_writer()
+
+    for q in (data_q, archive_q):
+        if q is not None:
+            q.close()
+            q.cancel_join_thread()
 
     sp_stats = {
         "iteration": counting_q.consumed_games // max(1, config.GAMES_PER_ITER),

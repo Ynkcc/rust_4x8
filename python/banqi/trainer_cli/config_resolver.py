@@ -44,7 +44,7 @@ def detect_mode_conflicts(modes: List[str]) -> List[Tuple[str, str]]:
 
 def make_config_from_args(variant_id: str, args) -> "Config":
     """根据 argparse.Namespace 构造 Config（含命令行覆盖）。"""
-    config = Config.from_variant(variant_id)
+    config = make_config(variant_id)
     config._variant = get_variant(variant_id)
 
     # 命令行覆盖（仅设置非 None 字段）

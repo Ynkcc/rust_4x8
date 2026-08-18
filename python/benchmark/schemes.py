@@ -125,6 +125,8 @@ def _benchmark_multiproc(variant_id: str, predictor: Any, games: int,
         agg["predictor_samples"] += r["predictor_samples"]
     for p in procs:
         p.join()
+    result_q.close()
+    result_q.cancel_join_thread()
     duration = time.time() - t0
     return BenchResult(
         variant_id=variant_id, scheme="multiproc", device=str(cfg.INFER_DEVICE),

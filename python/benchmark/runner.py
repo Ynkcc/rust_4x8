@@ -138,3 +138,22 @@ def print_summary(results: List[BenchResult],
     # 各结果独立详细打印
     for r in results:
         r.print()
+
+    print_per_variant(results)
+
+
+def print_per_variant(results: List[BenchResult]) -> None:
+    """按变种分组，横向对比该变种在不同设备/方案下的样本生产效率，并排序输出。"""
+    by_variant: Dict[str, List[BenchResult]] = {}
+    for r in results:
+        by_variant.setdefault(r.variant_id, []).append(r)
+
+    for vid, rs in by_variant.items():
+        print(f"\n  [变种 {vid}] 样本生产效率 (samples/s) 排序:")
+        for rank, r in enumerate(sorted(rs, key=lambda x: x.samples_per_second, reverse=True), 1):
+            print(
+                f"    #{rank}  {r.scheme:<12} 设备={r.device:<5}  "
+                f"{r.samples_per_second:>9.1f} 样本/s  "
+                f"({r.completed_games} 局, {r.duration_s:.1f}s)"
+            )
+
