@@ -132,6 +132,7 @@ def generate_rule_episode(
     game_results: List[float] = []
     action_masks: List[List[int]] = []
     actions: List[int] = []
+    teacher_actions: List[int] = []  # 温度采样前的启发式/规则最优动作（策略头验证 ground truth）
     health_diffs: List[float] = []
 
     if max_moves is None:
@@ -158,6 +159,8 @@ def generate_rule_episode(
         if action is None:
             winner = env.winner()
             break
+        # 记录温度采样前的启发式/规则最优动作（作为策略头验证 ground truth）
+        teacher_action = int(action)
         # 温度采样：以概率 temperature 走随机合法动作（增加探索），否则走规则最优
         if temperature > 1e-3 and mask and np.random.rand() < temperature:
             action = int(mask[np.random.randint(len(mask))])
@@ -175,6 +178,7 @@ def generate_rule_episode(
         game_results.append(0.0)
         action_masks.append(amask)
         actions.append(int(action))
+        teacher_actions.append(teacher_action)
         health_diffs.append(0.0)
 
         env.step(int(action))
@@ -201,6 +205,7 @@ def generate_rule_episode(
         "game_results": game_results,
         "action_masks": action_masks,
         "actions": actions,
+        "teacher_actions": teacher_actions,
         "health_diffs": health_diffs,
         "game_length": n,
         "winner": winner,

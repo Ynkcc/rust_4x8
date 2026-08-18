@@ -125,11 +125,13 @@ def play_one(predictor, model_is_red: bool, max_moves: int = 400,
              model_sims: int = EVAL_SIMS,
              opponent: str = OPP_MINIMAX3,
              variant_id: str = "4x4",
-             heuristic_sims: Optional[int] = None) -> int:
+             heuristic_sims: Optional[int] = None,
+             return_moves: bool = False):
     """单局：模型 vs 指定对手。返回 (红视角) 1/0/-1。
 
     heuristic_sims：非 None 时覆盖启发式 MCTS 对手的模拟数（仅
     opponent 为启发式时生效），默认用 HM_SIMS(=64)。
+    return_moves：True 时返回 (结果, 步数) 二元组（供对局时长统计）。
     """
     env = get_env_class(variant_id)()
     moves = 0
@@ -149,7 +151,8 @@ def play_one(predictor, model_is_red: bool, max_moves: int = 400,
         if moves > max_moves:
             break
     w = env.winner()
-    return 1 if w == 1 else (-1 if w == -1 else 0)
+    r = 1 if w == 1 else (-1 if w == -1 else 0)
+    return (r, moves) if return_moves else r
 
 
 def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
@@ -186,6 +189,33 @@ def play_match(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
         if progress and (i + 1) % 20 == 0:
             print(f"    ... {i+1}/{n} 局", flush=True)
     return wins, draws, losses, block_wr
+
+
+def play_match_stats(predictor, n: int = 100, model_sims: int = EVAL_SIMS,
+                     opponent: str = OPP_MINIMAX3,
+                     variant_id: str = "4x4",
+                     heuristic_sims: Optional[int] = None) -> Tuple[int, int, int, float]:
+    """n 局对战并统计平均步数，返回 (wins, draws, losses, avg_moves)。
+
+    专供 TensorBoard eval/* 记录（胜率 / 平局率 / 平均对局长度），
+    与 play_match 共用同一对战协议（交替先后手、分块胜率语义一致）。
+    """
+    wins = draws = losses = 0
+    total_moves = 0
+    model_is_red = True
+    for _ in range(n):
+        r, moves = play_one(predictor, model_is_red, model_sims=model_sims,
+                            opponent=opponent, variant_id=variant_id,
+                            heuristic_sims=heuristic_sims, return_moves=True)
+        total_moves += moves
+        if r == 0:
+            draws += 1
+        elif r == 1:
+            wins += 1
+        else:
+            losses += 1
+        model_is_red = not model_is_red
+    return wins, draws, losses, total_moves / max(1, n)
 
 
 def report(predictor, tag: str, n: int = 100, model_sims: int = EVAL_SIMS,

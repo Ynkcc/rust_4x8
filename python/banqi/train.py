@@ -47,7 +47,12 @@ from banqi.config import Config, make_config
 from banqi.memory_guard import start_memory_guard
 from banqi.rule_self_play import RuleSelfPlayWorker, rule_sp_worker_main
 from banqi.self_play import sp_worker_main
-from banqi.tb_logger import close_summary_writer, init_summary_writer
+from banqi.tb_logger import (
+    add_hparams,
+    add_text,
+    close_summary_writer,
+    init_summary_writer,
+)
 from banqi.training_service import TrainWorker
 from banqi.variant import Variant, get_variant
 
@@ -88,6 +93,10 @@ class _CountingQueue:
 
     def put(self, *args, **kwargs):
         self._q.put(*args, **kwargs)
+
+    def qsize(self):
+        """透传底层队列积压数（供 TB queue/backlog 监控）。"""
+        return self._q.qsize()
 
 
 class _ArchiveFeederWorker(threading.Thread):
@@ -223,6 +232,51 @@ class _ArchiveFeederWorker(threading.Thread):
         return {"total_games": self.total_games}
 
 
+def _log_meta_tb(config: Config, variant_id: str, tb_log_dir: str) -> None:
+    """TensorBoard 运行元信息：HParams + 文本标注（启动时调用一次）。
+
+    add_hparams 在 log_dir/hparams 子目录写入超参数表，跨多次运行可在
+    TensorBoard 的 HParams 面板中对比。metric_dict 传空（训练指标另行记录）。
+    """
+    add_text("meta/variant", variant_id, 0)
+    add_text("meta/run_id", os.path.basename(tb_log_dir) if tb_log_dir else "", 0)
+    add_text("meta/train_mode", config.TRAIN_MODE, 0)
+    add_text("meta/value_target", config.VALUE_TARGET_MODE, 0)
+    add_text(
+        "meta/device",
+        f"train={config.TRAIN_DEVICE} infer={config.INFER_DEVICE} "
+        f"cpu_aux={config.INFER_CPU_AUX_WORKERS}",
+        0,
+    )
+    add_text(
+        "meta/augment",
+        f"enabled={config.DATA_AUGMENT_ENABLED} transforms={config.DATA_AUGMENT_TRANSFORMS}",
+        0,
+    )
+    hparams = {
+        "variant": variant_id,
+        "mcts_sims": config.MCTS_SIMS,
+        "max_considered_actions": config.MAX_CONSIDERED_ACTIONS,
+        "temperature_steps": config.TEMPERATURE_STEPS,
+        "games_per_iter": config.GAMES_PER_ITER,
+        "train_batch": config.TRAIN_BATCH,
+        "learning_rate": config.LEARNING_RATE,
+        "min_lr": config.MIN_LR,
+        "lr_decay_steps": config.LR_DECAY_STEPS,
+        "train_epochs_per_round": config.TRAIN_EPOCHS_PER_ROUND,
+        "weight_decay": config.WEIGHT_DECAY,
+        "max_buffer": config.MAX_SAMPLE_BUFFER_SIZE,
+        "min_samples_to_start": config.MIN_SAMPLES_TO_START,
+        "value_target": config.VALUE_TARGET_MODE,
+        "data_augment": config.DATA_AUGMENT_ENABLED,
+        "eval_match_rounds": config.EVAL_MATCH_ROUNDS,
+        "eval_match_games": config.EVAL_MATCH_GAMES,
+        "eval_match_opponents": config.EVAL_MATCH_OPPONENTS,
+        "eval_match_vs_prev": config.EVAL_MATCH_VS_PREV,
+    }
+    add_hparams({k: str(v) for k, v in hparams.items()}, {})
+
+
 def _run_offline(variant_id: str, train_mode: str) -> None:
     """离线训练：`TRAIN_MODE="archive"`（从归档）或 `"rule_selfplay"`（纯规则自对弈）。
 
@@ -248,6 +302,8 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
             config.TENSORBOARD_LOG_DIR, time.strftime("%Y%m%d-%H%M%S")
         )
         tb_ok = init_summary_writer(log_dir=tb_log_dir, enabled=True)
+        if tb_ok:
+            _log_meta_tb(config, variant_id, tb_log_dir)
 
     print("=" * 56)
     print(f"  🚀 离线训练启动（变体 {variant_id}，mode={train_mode}，单进程多线程）")
@@ -473,6 +529,8 @@ def _run_selfplay(variant_id: str) -> None:
             time.strftime("%Y%m%d-%H%M%S"),
         )
         tb_ok = init_summary_writer(log_dir=tb_log_dir, enabled=True)
+        if tb_ok:
+            _log_meta_tb(config, variant_id, tb_log_dir)
 
     print("=" * 56)
     print(f"  🚀 自对弈 + 训练闭环启动（变体 {variant_id}，单进程多线程）")

@@ -15,6 +15,7 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
@@ -282,6 +283,8 @@ class SelfPlayWorker(threading.Thread):
         self._game_count = 0  # 当前迭代内局数
         self.game_records: List[Dict] = []
         self._iter_lock = threading.Lock()
+        # 滚动窗口胜负结果（winner=1 红/-1 黑/0 平），供 TB 胜率统计
+        self._recent_results: deque = deque(maxlen=100)
 
     def _put(self, q: "queue.Queue", item: Dict) -> None:
         """压入队列；若队列满则等待（优雅退出时不等待）。"""
@@ -343,6 +346,11 @@ class SelfPlayWorker(threading.Thread):
                     self.total_samples += len(ep_dict["samples"]) if "samples" in ep_dict else ep_dict["num_samples"]
                     self._advance_iteration()
 
+            # 吞吐：每批结束后记录局/秒（x 轴为累计局数）
+            if self.cfg.TENSORBOARD_ENABLED:
+                add_scalar("selfplay/games_per_sec", len(episodes) / max(batch_duration, 1e-9),
+                           self.total_games)
+
     def _advance_iteration(self) -> None:
         """与 data_collector.rs 迭代推进语义一致：每 GAMES_PER_ITER 局 iteration += 1。"""
         cfg = self.cfg
@@ -364,11 +372,46 @@ class SelfPlayWorker(threading.Thread):
             "winner": int(ep["winner"]),
             "duration": float(duration),
         })
+        self._recent_results.append(int(ep["winner"]))
 
         if self.cfg.TENSORBOARD_ENABLED:
             game_idx = self.total_games + 1
             add_scalar("selfplay/game_length", int(ep["game_length"]), game_idx)
             add_scalar("selfplay/steps_per_sec", ep["game_length"] / max(duration, 1e-9), game_idx)
+            # 滚动窗口胜率/平局率（红方胜率，模型交替先后手时近似模型胜率）
+            n_win = sum(1 for w in self._recent_results if w == 1)
+            n_draw = sum(1 for w in self._recent_results if w == 0)
+            n_r = len(self._recent_results)
+            add_scalar("selfplay/win_rate", 100.0 * n_win / max(n_r, 1), game_idx)
+            add_scalar("selfplay/draw_rate", 100.0 * n_draw / max(n_r, 1), game_idx)
+            # 搜索健康度：根节点价值均值（模型自我评价漂移）+ root 访问分布熵
+            mvs = ep.get("mcts_values") or []
+            if mvs:
+                add_scalar("search/root_value_mean", float(np.mean(mvs)), game_idx)
+            rvs = ep.get("root_visits") or []
+            if len(rvs) > 1:
+                rv = np.asarray(rvs, dtype=np.float64)
+                p = rv / max(rv.sum(), 1e-9)
+                ent = float(-(p * np.log(p + 1e-12)).sum())
+                add_scalar("search/root_visits_entropy", ent, game_idx)
+            # 棋盘占用率（该局全部局面平均，empty 为最后一通道）
+            occ = self._episode_occupancy(ep)
+            if occ is not None:
+                add_scalar("data/board_occupancy", occ, game_idx)
+
+    @staticmethod
+    def _episode_occupancy(ep: Dict) -> Optional[float]:
+        """该局平均棋盘占用率 = 1 - empty 通道均值（features.rs 通道序）。"""
+        boards = ep.get("boards")
+        shape = ep.get("board_shape")
+        if not boards or not shape or len(shape) < 3:
+            return None
+        try:
+            bc, br, bcol = int(shape[0]), int(shape[1]), int(shape[2])
+            arr = np.asarray(boards, dtype=np.float32).reshape(-1, bc, br, bcol)
+            return float((1.0 - arr[:, -1, :, :]).mean())
+        except Exception:  # noqa: BLE001 - 单局统计失败不影响主流程
+            return None
 
     def stats(self) -> Dict[str, int]:
         with self._iter_lock:

@@ -18,6 +18,7 @@ import queue
 import random
 import threading
 import time
+from collections import namedtuple
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -62,6 +63,8 @@ class DataBuffer:
         self.root_visits: List[int] = []
         # anneal 模式下 game_result 的权重（0~1），由 TrainWorker 按轮更新
         self.value_result_weight = 0.0
+        # 累计丢弃的异常样本数（NaN/Inf/非法策略），供 TB 数据质量监控
+        self.total_dropped = 0
 
     def _target_value(self, s: Dict) -> float:
         """按 value 目标模式计算训练 target：
@@ -122,9 +125,10 @@ class DataBuffer:
             self.root_visits.append(int(s.get('root_visit_count', 0)))
 
         if dropped:
+            self.total_dropped += dropped
             print(
                 f"[TR-{self.variant.id}] ⚠️ DataBuffer 丢弃 {dropped} 个异常样本"
-                f"（NaN/Inf/非法策略），Blocked 来自自对弈或冷存储"
+                f"（累计 {self.total_dropped}，NaN/Inf/非法策略），Blocked 来自自对弈或冷存储"
             )
 
         if len(self.boards) > self.capacity:
@@ -153,6 +157,11 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
     samples = []
     n = len(episode_dict["boards"])
     health_diffs = episode_dict.get("health_diffs") or [0.0] * n
+    # 策略头验证 ground truth：
+    #   - rule_selfplay 数据带 teacher_actions（温度采样前的启发式/规则最优动作）
+    #   - 自对弈数据带 actions（MCTS 实际选择的最优动作）作为 fallback
+    teacher_actions = episode_dict.get("teacher_actions")
+    actions = episode_dict.get("actions")
     for step_idx, (board, scalar, policy, mcts_val, completed_q,
                     root_visit, game_result, mask) in enumerate(zip(
         episode_dict["boards"], episode_dict["scalars"], episode_dict["policies"],
@@ -160,6 +169,11 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
         episode_dict["root_visits"], episode_dict["game_results"],
         episode_dict["action_masks"],
     )):
+        teacher_action = None
+        if teacher_actions is not None and step_idx < len(teacher_actions):
+            teacher_action = int(teacher_actions[step_idx])
+        elif actions is not None and step_idx < len(actions):
+            teacher_action = int(actions[step_idx])
         samples.append({
             "board_state": board,
             "scalar_state": scalar,
@@ -169,6 +183,7 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
             "root_visit_count": int(root_visit),
             "game_result_value": float(game_result),
             "action_mask": mask,
+            "teacher_action": teacher_action,
             "health_diff": float(health_diffs[step_idx]),
         })
     return samples
@@ -178,7 +193,16 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
 # 训练步骤
 # ============================================================================
 
-def train_step(model, optimizer, batch_data, device):
+# 单 batch 训练统计（供 TensorBoard 记录）：
+#   total/policy/value：三类 loss；grad_norm：clip 前梯度范数（发散预警）；
+#   entropy：目标策略平均熵（探索健康度）；value_mean/std：价值目标分布。
+TrainStepStats = namedtuple(
+    "TrainStepStats", "total policy value grad_norm entropy value_mean value_std"
+)
+_ZERO_STATS = TrainStepStats(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def train_step(model, optimizer, batch_data, device) -> TrainStepStats:
     model.train()
     boards_t, scalars_t, target_probs_t, target_values_t, masks_t = batch_data
 
@@ -207,7 +231,7 @@ def train_step(model, optimizer, batch_data, device):
             f"[TR] ⚠️ 跳过 1 个异常 batch（输入/策略目标非有限或非法）"
         )
         # 返回一个有限的占位 loss，避免上层把 NaN 累进统计/日志
-        return 0.0, 0.0, 0.0
+        return _ZERO_STATS
 
     optimizer.zero_grad()
     logits, values = model(boards_t, scalars_t)
@@ -231,7 +255,7 @@ def train_step(model, optimizer, batch_data, device):
             f"不更新权重"
         )
         optimizer.zero_grad()
-        return 0.0, 0.0, 0.0
+        return _ZERO_STATS
 
     total_loss.backward()
     # ---- 梯度有限性检查：NaN/Inf 梯度静默放行是权重被污染的主通道 ----
@@ -243,11 +267,26 @@ def train_step(model, optimizer, batch_data, device):
     if not grad_ok:
         print("[TR] ⚠️ 跳过 1 个异常 batch（检测到非有限梯度），不更新权重")
         optimizer.zero_grad()
-        return 0.0, 0.0, 0.0
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        return _ZERO_STATS
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
 
-    return total_loss.item(), policy_loss.item(), value_loss.item()
+    # 记录目标分布统计（无需梯度）：策略熵 + 价值目标 mean/std，供 TB 观测
+    with torch.no_grad():
+        log_p = torch.log(target_probs_t.clamp_min(1e-12))
+        entropy = float(-(target_probs_t * log_p).sum(dim=1).mean())
+        value_mean = float(target_values_t.mean())
+        value_std = float(target_values_t.std())
+
+    return TrainStepStats(
+        total=total_loss.item(),
+        policy=policy_loss.item(),
+        value=value_loss.item(),
+        grad_norm=float(grad_norm),
+        entropy=entropy,
+        value_mean=value_mean,
+        value_std=value_std,
+    )
 
 
 def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
@@ -277,20 +316,29 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
                 break
             num_batches = min(num_batches, remaining)
         batch_total_l, batch_pol_l, batch_val_l = 0.0, 0.0, 0.0
+        batch_grad_l, batch_ent_l, batch_vm_l, batch_vs_l = 0.0, 0.0, 0.0, 0.0
         for step in range(num_batches):
             batch_indices = indices[step * buffer.cfg.TRAIN_BATCH: (step + 1) * buffer.cfg.TRAIN_BATCH]
             batch_data = buffer.get_batch(batch_indices)
-            tl, pl, vl = train_step(model, optimizer, batch_data, device)
+            s = train_step(model, optimizer, batch_data, device)
             scheduler.step()
-            batch_total_l += tl
-            batch_pol_l += pl
-            batch_val_l += vl
+            batch_total_l += s.total
+            batch_pol_l += s.policy
+            batch_val_l += s.value
+            batch_grad_l += s.grad_norm
+            batch_ent_l += s.entropy
+            batch_vm_l += s.value_mean
+            batch_vs_l += s.value_std
             total_batches += 1
 
         epoch_results.append((
             batch_total_l / num_batches,
             batch_pol_l / num_batches,
             batch_val_l / num_batches,
+            batch_grad_l / num_batches,
+            batch_ent_l / num_batches,
+            batch_vm_l / num_batches,
+            batch_vs_l / num_batches,
         ))
     return epoch_results, total_batches
 
@@ -348,6 +396,7 @@ class TrainWorker(threading.Thread):
         # 新局"开始就过度拟合当轮数据（config.ARCHIVE_PREFILL_GAMES>0 时启用）。
         self._prefill_from_archive()
         self._last_round_new_samples = 0
+        self._last_round_aug_count = 0
         self.round_num = 0
         self.total_batches_trained = 0
         self.total_loss_sum = 0.0
@@ -359,6 +408,8 @@ class TrainWorker(threading.Thread):
         # 无归档时降级为"用本会话前 N 条自对弈样本构建"。
         self._fixed_eval = None
         self._raw_sample_pool: List[Dict] = []
+        # 上一轮训练后的模型权重快照（CPU，供 eval/* vs prev 守门评估）
+        self._prev_weights: Optional[Dict[str, torch.Tensor]] = None
 
     # ---- 冷存储预填充 + 固定验证集 ----
 
@@ -404,7 +455,11 @@ class TrainWorker(threading.Thread):
         if not samples:
             return None
         C = build_constants(self.variant)
+        aspace = C.ACTION_SPACE_SIZE
         try:
+            masks = np.array([s['action_mask'] for s in samples], dtype=np.float32)
+            if masks.ndim == 1:  # 兼容缺省 mask 的异常样本：默认全合法
+                masks = np.ones((len(samples), aspace), dtype=np.float32)
             return {
                 "boards": np.stack([np.array(s['board_state'], dtype=np.float32).reshape(
                     C.TOTAL_INPUT_CHANNELS, C.BOARD_ROWS, C.BOARD_COLS) for s in samples]),
@@ -412,14 +467,58 @@ class TrainWorker(threading.Thread):
                                      for s in samples]),
                 "results": np.array([s.get('game_result_value', 0.0)
                                      for s in samples], dtype=np.float32),
+                "masks": masks,
+                # 策略头验证 ground truth：启发式/MCTS 最优动作（缺失时置 -1 跳过）
+                "teacher_actions": np.array(
+                    [int(s['teacher_action']) if s.get('teacher_action') is not None else -1
+                     for s in samples], dtype=np.int64),
             }
         except Exception:  # pragma: no cover
             return None
 
-    def _ensure_fixed_eval_from_selfplay(self, samples: List[Dict]) -> None:
-        """无归档时，用本会话自对弈原始样本构建固定价值验证集。
+    @staticmethod
+    def _select_balanced_fixed_samples(pool: List[Dict], n_fixed: int) -> List[Dict]:
+        """从原始样本池中筛选「满足要求」的固定验证局面（方案 B）。
 
-        必须在数据增强之前调用（保留原始局面与终局结果）。
+        要求：
+          1. 仅取原始样本（不含数据增强副本），保证验证集是对真实自对弈局面的
+             采样，不因增强变换而引入冗余/伪样本；
+          2. 按终局结果分层（game_result_value 的符号）均衡覆盖：胜方视角(+1)、
+             负方视角(-1)、平局(0)，避免验证集被某一类终局结果垄断，从而更客观
+             地反映价值头的整体视角一致性；
+          3. 数量封顶为 n_fixed，不足时按到达顺序兜底补齐。
+
+        注意：game_result_value 是「当前行动方视角」的终局真值（胜=+1/负=-1/平=0），
+        因此正/负两层天然覆盖了胜负双方的样本视角，是视角对称性的有效代理。
+        """
+        if not pool or n_fixed <= 0:
+            return []
+        buckets: Dict[int, List[Dict]] = {1: [], -1: [], 0: []}
+        for s in pool:
+            gr = s.get("game_result_value", 0.0)
+            key = 1 if gr > 0 else (-1 if gr < 0 else 0)
+            buckets[key].append(s)
+        per_bucket = max(1, n_fixed // 3)
+        selected: List[Dict] = []
+        for key in (1, -1, 0):
+            selected.extend(buckets[key][:per_bucket])
+        # 若总量不足 n_fixed，从剩余池中按到达顺序补齐（保持多样性）
+        if len(selected) < n_fixed:
+            seen = {id(s) for s in selected}
+            for s in pool:
+                if id(s) in seen:
+                    continue
+                selected.append(s)
+                if len(selected) >= n_fixed:
+                    break
+        return selected[:n_fixed]
+
+    def _ensure_fixed_eval_from_selfplay(self, samples: List[Dict]) -> None:
+        """无归档时，用本会话自对弈原始样本构建固定价值验证集（方案 B）。
+
+        在数据增强之前调用（保留原始局面与终局结果），且**不参与训练**——仅用于
+        `_eval_value_drift` 的价值漂移/视角一致性监控。按终局结果分层均衡筛选，
+        保证覆盖胜/负/平三类真实局面。
         """
         if self._fixed_eval is not None:
             return
@@ -429,15 +528,18 @@ class TrainWorker(threading.Thread):
         self._raw_sample_pool.extend(samples)
         if len(self._raw_sample_pool) < n_fixed:
             return
-        pool = self._raw_sample_pool[:n_fixed]
-        fixed = self._build_fixed_eval(pool)
+        pool = self._select_balanced_fixed_samples(self._raw_sample_pool, n_fixed)
+        fixed = self._build_fixed_eval(pool) if pool else None
         if fixed is not None:
             self._fixed_eval = fixed
             self._raw_sample_pool = []
-            print(f"{self.tag} 🎯 固定价值验证集（自对弈样本）"
-                  f"{len(fixed['boards'])} 局面已就绪")
+            results = fixed["results"]
+            dist = (int((results > 0).sum()), int((results < 0).sum()), int((results == 0).sum()))
+            print(f"{self.tag} 🎯 固定价值验证集（自对弈样本，仅验证不训练）"
+                  f"{len(fixed['boards'])} 局面已就绪 | 终局分布 胜/负/平={dist}")
         else:
-            self._raw_sample_pool = pool
+            # 构建失败：保留最近一轮池子，避免无限累积
+            self._raw_sample_pool = self._raw_sample_pool[-n_fixed:]
 
     # ---- 主循环 ----
 
@@ -492,6 +594,8 @@ class TrainWorker(threading.Thread):
                     keep_original=cfg.DATA_AUGMENT_KEEP_ORIGINAL,
                 )
                 aug_count = len(train_samples) - raw_count
+            # 记录本轮增强副本数（供 TB train/augment_count）
+            self._last_round_aug_count = aug_count
 
             if train_samples:
                 self.buffer.add_samples(train_samples)
@@ -529,15 +633,21 @@ class TrainWorker(threading.Thread):
                 self.total_loss_sum += sum(r[0] for r in epoch_results)
                 self.total_policy_loss_sum += sum(r[1] for r in epoch_results)
                 self.total_value_loss_sum += sum(r[2] for r in epoch_results)
-                last_avg_l, last_avg_p, last_avg_v = epoch_results[-1]
+                (last_avg_l, last_avg_p, last_avg_v, last_grad_norm,
+                 last_entropy, last_v_mean, last_v_std) = epoch_results[-1]
             else:
                 last_avg_l = last_avg_p = last_avg_v = 0.0
+                last_grad_norm = last_entropy = last_v_mean = last_v_std = 0.0
             entry: Dict = {
                 "round": self.round_num,
                 "batches": batches_in_round,
                 "train_loss": last_avg_l,
                 "train_policy_loss": last_avg_p,
                 "train_value_loss": last_avg_v,
+                "grad_norm": last_grad_norm,
+                "policy_entropy": last_entropy,
+                "value_mean": last_v_mean,
+                "value_std": last_v_std,
                 "lr": self.optimizer.param_groups[0]['lr'],
             }
             self.round_history.append(entry)
@@ -545,7 +655,7 @@ class TrainWorker(threading.Thread):
         if epoch_results:
             print(f"{self.tag} ✅ Round#{self.round_num} | {batches_in_round} 批次 | "
                   f"Loss: {last_avg_l:.4f} (Pol: {last_avg_p:.4f}, Val: {last_avg_v:.4f}) "
-                  f"| lr={entry['lr']:.2e}")
+                  f"| grad={last_grad_norm:.3f} | lr={entry['lr']:.2e}")
 
         self.round_num += 1
         if self.round_num % cfg.CHECKPOINT_EVERY_N_ROUNDS == 0:
@@ -559,10 +669,17 @@ class TrainWorker(threading.Thread):
             self.buffer.value_result_weight = w
             print(f"{self.tag} 🔄 value退火权重(game_result)={w:.2f} (Round#{self.round_num})")
 
-        # 固定验证集价值漂移监控
+        # 固定验证集价值漂移 + 策略头命中率监控（仅验证，不参与训练）
         if (cfg.VALUE_DRIFT_EVAL_ROUNDS > 0 and self._fixed_eval is not None
                 and self.round_num % cfg.VALUE_DRIFT_EVAL_ROUNDS == 0):
             self._eval_value_drift()
+            self._eval_policy_accuracy()
+
+        # 对战评估（vs 规则对手 + 上一轮模型守门，仅验证，不参与训练）。
+        # 注意：_prev_weights 此时仍是「上一轮训练后」的快照（本轮快照在末尾更新），
+        # 因此 eval/* vs prev 反映「本轮模型 vs 上一轮模型」的进步/退化。
+        if cfg.EVAL_MATCH_ROUNDS > 0 and self.round_num % cfg.EVAL_MATCH_ROUNDS == 0:
+            self._eval_match()
 
         # TensorBoard 训练日志（x 轴为累计训练 batch 数）
         if cfg.TENSORBOARD_ENABLED:
@@ -571,6 +688,24 @@ class TrainWorker(threading.Thread):
             add_scalar("train/policy_loss", entry["train_policy_loss"], step)
             add_scalar("train/value_loss", entry["train_value_loss"], step)
             add_scalar("train/lr", entry["lr"], step)
+            # ---- 新增：训练过程健康度 ----
+            add_scalar("train/grad_norm", entry["grad_norm"], step)
+            add_scalar("train/policy_entropy", entry["policy_entropy"], step)
+            add_scalar("data/value_target_mean", entry["value_mean"], step)
+            add_scalar("data/value_target_std", entry["value_std"], step)
+            add_scalar("train/buffer_size", len(self.buffer), step)
+            add_scalar("train/samples_per_round", self._last_round_new_samples, step)
+            add_scalar("train/augment_count", self._last_round_aug_count, step)
+            add_scalar("train/dropped_samples_total", self.buffer.total_dropped, step)
+            add_scalar("queue/backlog", self._safe_qsize(), step)
+            if cfg.VALUE_TARGET_MODE == "anneal":
+                add_scalar("train/value_anneal_w", self.buffer.value_result_weight, step)
+
+        # 保存本轮训练后权重快照，供下一轮 eval/* vs prev 使用（CPU 副本，避免占显存）
+        self._prev_weights = {
+            k: v.detach().to("cpu").clone()
+            for k, v in self.model.state_dict().items()
+        }
 
     def _save(self) -> None:
         save_checkpoint(self.model, self.optimizer, self.scheduler,
@@ -606,6 +741,119 @@ class TrainWorker(threading.Thread):
             add_scalar("value_drift/sep", sep, step)
         except Exception as e:  # pragma: no cover
             print(f"{self.tag} ⚠️ 价值漂移评估失败 ({e})")
+
+    def _eval_policy_accuracy(self) -> None:
+        """在固定验证集上评估策略头（Policy）单点命中率。
+
+        计算模型输出的 Top-1 / Top-3 候选动作（mask 掉非法动作后）
+        与「启发式/MCTS 最优动作」（teacher_actions）的重合率（命中率），
+        用于验证策略头是否学到合理走子常识。验证集不参与训练，仅评估。
+        """
+        fixed = self._fixed_eval
+        if fixed is None:
+            return
+        teacher = fixed["teacher_actions"]
+        if teacher.size == 0 or int((teacher >= 0).sum()) == 0:
+            print(f"{self.tag} ⚠️ 策略头验证跳过：验证集无有效 teacher_action")
+            return
+        try:
+            self.model.eval()
+            with torch.inference_mode():
+                b = torch.from_numpy(np.ascontiguousarray(fixed["boards"])).to(self.device)
+                s = torch.from_numpy(np.ascontiguousarray(fixed["scalars"])).to(self.device)
+                logits, _ = self.model(b, s)
+                logits = logits.cpu().numpy().astype(np.float32)
+            self.model.train()
+            masks = fixed["masks"].astype(np.float32)
+            # 防御：非有限 logits 置为极小（不参与 Top-k），非法动作 mask 为 -1e9，
+            # 与训练端 masked_fill 语义一致，避免 NaN/Inf 污染命中率统计。
+            ml_all = np.where(np.isfinite(logits), logits, -1e9).copy()
+            ml_all = np.where(masks >= 0.5, ml_all, -1e9)
+            valid = teacher >= 0
+            if int(valid.sum()) == 0:
+                print(f"{self.tag} ⚠️ 策略头验证跳过：无有效样本")
+                return
+            ml = ml_all[valid]
+            ta = teacher[valid]
+            top1_idx = np.argmax(ml, axis=1)
+            # Top-3：无需排序所有动作，用 argpartition 取前 3 个候选
+            k = min(3, ml.shape[1])
+            topk_idx = np.argpartition(-ml, k - 1, axis=1)[:, :k]
+            hit1 = float(np.mean(top1_idx == ta))
+            hit3 = float(np.mean(np.any(topk_idx == ta[:, None], axis=1)))
+            n_eval = int(valid.sum())
+            print(f"{self.tag} 🎯 策略头命中 Round#{self.round_num}: Top-1={hit1:.3f} "
+                  f"Top-3={hit3:.3f}（{n_eval} 局面 vs 启发式/MCTS 最优动作）")
+            step = self.total_batches_trained
+            add_scalar("policy_acc/top1_vs_teacher", hit1, step)
+            add_scalar("policy_acc/top3_vs_teacher", hit3, step)
+            add_scalar("policy_acc/n_positions", n_eval, step)
+        except Exception as e:  # pragma: no cover
+            print(f"{self.tag} ⚠️ 策略头验证失败 ({e})")
+
+    def _safe_qsize(self) -> int:
+        """线程安全地读取数据队列积压；多进程队列 qsize 可能不可用（返回 -1）。"""
+        try:
+            qsize = self.data_q.qsize()
+            return int(qsize) if qsize is not None else -1
+        except Exception:  # noqa: BLE001 - 平台/包装不支持 qsize 时降级
+            return -1
+
+    def _eval_match(self) -> None:
+        """周期性对战评估：vs 启发式/minimax 规则对手 + 上一轮模型（守门）。
+
+        与 value_drift 同 x 轴（累计训练 batch 数）。评估期间模型切 eval 模式，
+        结束后恢复 train。规则对手走统一评估协议（banqi.eval，EVAL_SIMS=64），
+        三变体协议一致。vs prev 的局数减半以控制评估耗时。
+        """
+        from banqi import eval as banqi_eval
+
+        cfg = self.cfg
+        n = max(1, cfg.EVAL_MATCH_GAMES)
+        opps = [o.strip() for o in cfg.EVAL_MATCH_OPPONENTS.split(",") if o.strip()]
+        step = self.total_batches_trained
+        self.model.eval()
+        cur = banqi_eval.ModelPredictor(self.model, self.device)
+        try:
+            for opp in opps:
+                try:
+                    wins, draws, losses, avg_moves = banqi_eval.play_match_stats(
+                        cur, n=n, model_sims=banqi_eval.EVAL_SIMS,
+                        opponent=opp, variant_id=self.variant.id,
+                    )
+                    tot = max(1, wins + draws + losses)
+                    add_scalar(f"eval/win_rate_vs_{opp}", 100.0 * wins / tot, step)
+                    add_scalar(f"eval/draw_rate_vs_{opp}", 100.0 * draws / tot, step)
+                    add_scalar(f"eval/loss_rate_vs_{opp}", 100.0 * losses / tot, step)
+                    add_scalar(f"eval/avg_game_length_vs_{opp}", avg_moves, step)
+                    print(f"{self.tag} ⚔️ Round#{self.round_num} vs {opp}: "
+                          f"胜{wins} 平{draws} 负{losses} (n={n}, 平均{avg_moves:.0f}步)")
+                except Exception as exc:  # noqa: BLE001 - 单对手失败不中断整体评估
+                    print(f"{self.tag} ⚠️ 对战评估 vs {opp} 失败: {exc}")
+            # 与上一轮模型对头（守门）：_prev_weights 为上一轮训练后快照
+            if cfg.EVAL_MATCH_VS_PREV and self._prev_weights is not None:
+                try:
+                    prev_model = BanqiNet(self.variant).to(self.device)
+                    prev_model.load_state_dict({
+                        k: v.to(self.device) for k, v in self._prev_weights.items()
+                    })
+                    prev_model.eval()
+                    prev_pred = banqi_eval.ModelPredictor(prev_model, self.device)
+                    n_prev = max(4, n // 2)
+                    wins, draws, losses, _ = banqi_eval.play_match_vs(
+                        cur, prev_pred, n=n_prev,
+                        model_sims=banqi_eval.EVAL_SIMS, variant_id=self.variant.id,
+                    )
+                    tot = max(1, wins + draws + losses)
+                    add_scalar("eval/win_rate_vs_prev", 100.0 * wins / tot, step)
+                    add_scalar("eval/draw_rate_vs_prev", 100.0 * draws / tot, step)
+                    add_scalar("eval/loss_rate_vs_prev", 100.0 * losses / tot, step)
+                    print(f"{self.tag} ⚔️ Round#{self.round_num} vs prev: "
+                          f"胜{wins} 平{draws} 负{losses} (n={n_prev})")
+                except Exception as exc:  # noqa: BLE001 - 守门失败不影响主流程
+                    print(f"{self.tag} ⚠️ 对战评估 vs prev 失败: {exc}")
+        finally:
+            self.model.train()
 
     def stats(self) -> Dict[str, float]:
         with self._stats_lock:

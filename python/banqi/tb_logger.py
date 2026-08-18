@@ -58,6 +58,17 @@ def init_summary_writer(
         return False
 
 
+def _safe_call(fn_name: str, *args, **kwargs):
+    """线程安全地调用 writer 方法；writer 未初始化或调用失败时静默忽略。"""
+    if _writer is None:
+        return None
+    with _lock:
+        try:
+            return getattr(_writer, fn_name)(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - 避免监控线程因日志异常而崩溃
+            return None
+
+
 def add_scalar(
     tag: str,
     scalar_value: float,
@@ -71,13 +82,44 @@ def add_scalar(
     """
     if "step" in kwargs:
         global_step = kwargs["step"]
-    if _writer is None:
-        return
-    with _lock:
-        try:
-            _writer.add_scalar(tag, scalar_value, global_step, walltime)
-        except Exception:  # noqa: BLE001 - 避免监控线程因日志异常而崩溃
-            pass
+    _safe_call("add_scalar", tag, scalar_value, global_step, walltime)
+
+
+def add_histogram(
+    tag: str,
+    values,
+    global_step: Optional[int] = None,
+    **kwargs,
+) -> None:
+    """
+    线程安全的直方图写入（与 add_scalar 相同降级策略）。
+    兼容 torch SummaryWriter 的 step= 关键字。
+    values 为 numpy 数组 / torch tensor 均可。
+    """
+    if "step" in kwargs:
+        global_step = kwargs["step"]
+    _safe_call("add_histogram", tag, values, global_step)
+
+
+def add_text(
+    tag: str,
+    text: str,
+    global_step: Optional[int] = None,
+    **kwargs,
+) -> None:
+    """线程安全的文本写入（运行标注 / 超参数说明等）。"""
+    if "step" in kwargs:
+        global_step = kwargs["step"]
+    _safe_call("add_text", tag, text, global_step)
+
+
+def add_hparams(
+    hparam_dict: dict,
+    metric_dict: Optional[dict] = None,
+    **kwargs,
+) -> None:
+    """写入超参数（TensorBoard HParams 面板）。metric_dict 可为空。"""
+    _safe_call("add_hparams", hparam_dict, metric_dict or {}, **kwargs)
 
 
 def close_summary_writer() -> None:

@@ -160,8 +160,17 @@ def episode_dict_to_samples(ep: Dict) -> List[Dict]:
     game_results = ep.get("game_results") or []
     masks = ep.get("action_masks") or []
     health_diffs = ep.get("health_diffs") or []
+    # 策略头验证 ground truth：优先 teacher_actions（规则/启发式最优），
+    # fallback 到 actions（MCTS 最优动作）；两者都缺时置 None（验证时跳过）。
+    teacher_actions = ep.get("teacher_actions") or []
+    actions = ep.get("actions") or []
     for i, (board, scalar, policy, mv, gr, mask) in enumerate(zip(
             boards, scalars, policies, mcts_values, game_results, masks)):
+        teacher_action = None
+        if i < len(teacher_actions) and teacher_actions[i] is not None:
+            teacher_action = int(teacher_actions[i])
+        elif i < len(actions) and actions[i] is not None:
+            teacher_action = int(actions[i])
         samples.append({
             "board_state": board,
             "scalar_state": scalar,
@@ -169,6 +178,7 @@ def episode_dict_to_samples(ep: Dict) -> List[Dict]:
             "mcts_value": float(mv) if mv is not None else 0.0,
             "game_result_value": float(gr) if gr is not None else 0.0,
             "action_mask": mask,
+            "teacher_action": teacher_action,
             "health_diff": float(health_diffs[i]) if i < len(health_diffs) else 0.0,
         })
     return samples

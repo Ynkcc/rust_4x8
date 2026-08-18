@@ -82,6 +82,10 @@ _LEGACY_ENV: Dict[str, List[str]] = {
     "VALUE_ANNEAL_STEP_ROUNDS": ["VALUE_ANNEAL_STEP_ROUNDS", "G4X4_ANNEAL_STEP"],
     "VALUE_DRIFT_EVAL_ROUNDS": ["VALUE_DRIFT_EVAL_ROUNDS", "G4X4_VALUE_DRIFT_EVAL"],
     "VALUE_DRIFT_NUM_POSITIONS": ["VALUE_DRIFT_NUM_POSITIONS", "G4X4_VALUE_DRIFT_N"],
+    "EVAL_MATCH_ROUNDS": ["EVAL_MATCH_ROUNDS", "G4X4_EVAL_MATCH_ROUNDS"],
+    "EVAL_MATCH_GAMES": ["EVAL_MATCH_GAMES", "G4X4_EVAL_MATCH_GAMES"],
+    "EVAL_MATCH_OPPONENTS": ["EVAL_MATCH_OPPONENTS", "G4X4_EVAL_MATCH_OPPONENTS"],
+    "EVAL_MATCH_VS_PREV": ["EVAL_MATCH_VS_PREV", "G4X4_EVAL_MATCH_VS_PREV"],
     "ARCHIVE_PREFILL_GAMES": ["ARCHIVE_PREFILL_GAMES", "G4X4_ARCHIVE_PREFILL"],
     "ARCHIVE_PREFILL_DIR": ["ARCHIVE_PREFILL_DIR", "G4X4_ARCHIVE_PREFILL_DIR"],
     # ---- 训练模式（TRAIN_MODE 分流） ----
@@ -177,6 +181,10 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "VALUE_ANNEAL_STEP_ROUNDS": _cast_int,
     "VALUE_DRIFT_EVAL_ROUNDS": _cast_int,
     "VALUE_DRIFT_NUM_POSITIONS": _cast_int,
+    "EVAL_MATCH_ROUNDS": _cast_int,
+    "EVAL_MATCH_GAMES": _cast_int,
+    "EVAL_MATCH_OPPONENTS": _cast_str,
+    "EVAL_MATCH_VS_PREV": _cast_bool,
     "TRAIN_MODE": _cast_str,
     "ARCHIVE_TRAIN_DIR": _cast_str,
     "ARCHIVE_TRAIN_GAMES": _cast_int,
@@ -374,6 +382,13 @@ class Config:
     VALUE_ANNEAL_STEP_ROUNDS: int
     VALUE_DRIFT_EVAL_ROUNDS: int
     VALUE_DRIFT_NUM_POSITIONS: int
+    # ============ 对战评估（TensorBoard eval/*，通用） ============
+    # 周期性把当前模型与规则对手（启发式 MCTS / minimax）及上一轮模型对弈，
+    # 记录 eval/* 指标到 TensorBoard。EVAL_MATCH_ROUNDS=0 时关闭。
+    EVAL_MATCH_ROUNDS: int            # 对战评估周期（训练轮，0=关闭）
+    EVAL_MATCH_GAMES: int             # 每周期对弈局数（交替先后手）
+    EVAL_MATCH_OPPONENTS: str         # 对手列表，逗号分隔：heuristic64 / minimax3
+    EVAL_MATCH_VS_PREV: bool          # 是否与上一轮训练后模型对头（守门）
     # ============ 训练模式（TRAIN_MODE 分流） ============
     # TRAIN_MODE: 标准模型自对弈闭环 / 归档训练 / 纯规则自对弈训练
     #   - "selfplay"   : 默认。模型 MCTS 自对弈生成数据 + 训练（现有闭环）

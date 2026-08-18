@@ -77,6 +77,14 @@ common:
   ARCHIVE_ENABLED: true         # 是否启用 Mongo 归档
   ARCHIVE_PREFILL_DIR: ""       # 预填充数据目录（空=不预填充）
 
+  # ---------------- 对战评估（TensorBoard eval/*，公共） ----------------
+  # 周期性把当前模型与规则对手（启发式 MCTS / minimax）及上一轮模型对弈，
+  # 记录 eval/* 指标到 TensorBoard。EVAL_MATCH_ROUNDS=0 时关闭。
+  EVAL_MATCH_ROUNDS: 5           # 对战评估周期（训练轮，0=关闭）
+  EVAL_MATCH_GAMES: 20           # 每周期对弈局数（交替先后手）
+  EVAL_MATCH_OPPONENTS: "heuristic64,minimax3"  # 规则对手列表，逗号分隔
+  EVAL_MATCH_VS_PREV: true       # 是否与上一轮训练后模型对头（守门）
+
   # ---------------- 价值目标（公共） ----------------
   VALUE_TARGET_MODE: "mcts"     # 价值目标模式（mcts / ...）
   VALUE_ANNEAL_START: 0.2       # 价值退火起始系数
@@ -152,8 +160,8 @@ common:
   MAX_RUNTIME_SECONDS: 0        # 单次运行时限（秒），0 = 不限时
 
   # ---------------- 价值目标 ----------------
-  VALUE_DRIFT_EVAL_ROUNDS: 0    # 价值漂移评估轮数（0=关闭）
-  VALUE_DRIFT_NUM_POSITIONS: 0  # 价值漂移评估位置数
+  VALUE_DRIFT_EVAL_ROUNDS: 5    # 价值漂移评估轮数（0=关闭；0->5 对齐 4x4/4x2）
+  VALUE_DRIFT_NUM_POSITIONS: 500  # 价值漂移评估位置数（0->500，构建固定验证集）
 
 # ---------------------------------------------------------------------------
 # 4x4 变体：仅变体相关字段

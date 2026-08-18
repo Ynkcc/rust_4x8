@@ -211,6 +211,7 @@ pub fn game_4x4_config() -> GameConfig {
 }
 
 /// 4x2 迷你暗棋配置：仅 兵/炮/士/将，每方各 1 子，血量上限 = 2+5+10+30 = 47。
+/// 变体规则：连续未吃子步数达到 8 则强制判和。
 pub fn mini_config() -> GameConfig {
     let rows = 4usize;
     let cols = 2usize;
@@ -235,8 +236,8 @@ pub fn mini_config() -> GameConfig {
         piece_values,
         initial_health: 47,
         initial_revealed_pieces: 2,
-        max_consecutive_moves_for_draw: 24,
-        max_steps_per_episode: 60,
+        max_consecutive_moves_for_draw: 8, // 未吃子步数为 8 时强制判和
+        max_steps_per_episode: 30,
         reveal_actions_count: reveal,
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,
