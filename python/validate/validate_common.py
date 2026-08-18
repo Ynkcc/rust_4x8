@@ -19,10 +19,13 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 
 # 确保可从 python/ 目录 import 生产模块（config/constant/nn_model 等）。
-# validate/ 是 python/ 的子目录，父目录需加入 sys.path。
-_PARENT = __file__.rsplit("/", 2)[0]
-if _PARENT not in sys.path:
-    sys.path.insert(0, _PARENT)
+import os
+
+_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_BANQI_DIR = os.path.join(_PARENT, "banqi")
+for _d in (_PARENT, _BANQI_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
 
 from banqi.variant import get_variant  # noqa: E402
 from banqi.constants import build_constants  # noqa: E402

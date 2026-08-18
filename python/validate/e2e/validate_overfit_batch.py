@@ -39,6 +39,16 @@ import sys
 import numpy as np
 import torch
 
+import os
+import sys
+
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401  （设置 sys.path，可 import 生产模块）
 from validate_common import Reporter, run_part, require
 
@@ -53,7 +63,7 @@ BOARD_ROWS = C.BOARD_ROWS
 BOARD_COLS = C.BOARD_COLS
 SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
 TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
-from training_service import train_step  # 生产损失：masked policy CE + value MSE + grad clip
+from banqi.training_service import train_step  # 生产损失：masked policy CE + value MSE + grad clip
 
 DEVICE = "cpu"
 # 项目根 = python/validate/../..；归档数据在项目根 training_data/archive

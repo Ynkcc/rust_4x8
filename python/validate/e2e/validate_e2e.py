@@ -22,10 +22,20 @@ import time
 import numpy as np
 import torch
 
+import os
+import sys
+
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401
 from validate_common import Reporter, run_part
 
-from config import config
+from banqi.config import config
 
 
 def _override_tiny_config() -> None:
@@ -52,9 +62,9 @@ def test_full_pipeline() -> None:
     rep = Reporter("end-to-end CPU smoke")
     _override_tiny_config()
 
-    from self_play import SelfPlayWorker, build_predictor, build_self_play_config
-    from training_service import TrainWorker
-    from archiver import ArchiverWorker
+    from banqi.self_play import SelfPlayWorker, build_predictor, build_self_play_config
+    from banqi.training_service import TrainWorker
+    from banqi.archiver import ArchiverWorker
 
     print("      极小配置: MCTS_SIMS=2, GAMES_PER_ITER=2, TRAIN_BATCH=4, "
           "MIN_SAMPLES=4")

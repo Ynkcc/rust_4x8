@@ -22,21 +22,37 @@ import os
 import numpy as np
 import torch
 
+import os
+import sys
+
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, run_part
 
-from config import config
+from banqi.config import make_config
 from banqi.variant import get_variant
 from banqi.constants import build_constants
 from banqi.nn_model import BanqiNet
-from training_service import load_checkpoint, save_checkpoint
+from banqi.checkpoint import load_checkpoint, save_checkpoint
 
 VARIANT = get_variant("4x8")
+config = make_config(VARIANT.id)
 C = build_constants(VARIANT)
 BOARD_ROWS = C.BOARD_ROWS
 BOARD_COLS = C.BOARD_COLS
 SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
 TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
+def save_ckpt(model, opt, sched):
+    save_checkpoint(model, opt, sched, config.MODEL_PATH, config.STATE_DICT_PATH, torch.device(DEVICE), VARIANT)
+
+def load_ckpt(model, opt, sched):
+    return load_checkpoint(model, opt, sched, config.MODEL_PATH, config.STATE_DICT_PATH, torch.device(DEVICE), VARIANT)
 
 
 def _rand_weights(rng: np.random.Generator):
@@ -78,7 +94,7 @@ def test_files_created() -> None:
     model = BanqiNet(VARIANT).to(DEVICE)
     opt = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=100, eta_min=1e-6)
-    save_checkpoint(model, opt, sched)
+    save_ckpt(model, opt, sched)
 
     rep.check(os.path.exists(pth), f".pth exists: {pth}")
     rep.check(os.path.exists(pt), f".pt exists: {pt}")
@@ -99,13 +115,13 @@ def test_state_dict_roundtrip() -> None:
             p.add_(torch.randn_like(p) * 0.1)
     before = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
-    save_checkpoint(model, opt, sched)
+    save_ckpt(model, opt, sched)
 
     # 新模型 + 清空优化器后加载
     model2 = BanqiNet(VARIANT).to(DEVICE)
     opt2 = torch.optim.Adam(model2.parameters(), lr=config.LEARNING_RATE)
     sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=100, eta_min=1e-6)
-    load_checkpoint(model2, opt2, sched2)
+    load_ckpt(model2, opt2, sched2)
 
     after = model2.state_dict()
     keys_equal = list(before.keys()) == list(after.keys())
@@ -122,7 +138,7 @@ def test_torchscript_loadable() -> None:
     pt = config.MODEL_PATH
     # 加载参考 Python 模型
     ref_model = BanqiNet(VARIANT).to(DEVICE)
-    load_checkpoint(ref_model, torch.optim.Adam(ref_model.parameters()),
+    load_ckpt(ref_model, torch.optim.Adam(ref_model.parameters()),
                     torch.optim.lr_scheduler.CosineAnnealingLR(
                         torch.optim.Adam(ref_model.parameters()), T_max=100))
     ref_model.eval()
@@ -172,13 +188,13 @@ def test_optimizer_scheduler_restored() -> None:
         sched.step()
 
     opt_state_before = opt.state_dict()
-    save_checkpoint(model, opt, sched)
+    save_ckpt(model, opt, sched)
 
     # 恢复
     model2 = BanqiNet(VARIANT).to(DEVICE)
     opt2 = torch.optim.Adam(model2.parameters(), lr=config.LEARNING_RATE)
     sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=100, eta_min=1e-6)
-    load_checkpoint(model2, opt2, sched2)
+    load_ckpt(model2, opt2, sched2)
     opt_state_after = opt2.state_dict()
 
     state_equal = _optimizer_state_equal(opt_state_before, opt_state_after)

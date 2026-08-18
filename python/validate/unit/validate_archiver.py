@@ -20,10 +20,20 @@ import tempfile
 
 import numpy as np
 
-import validate_common  # noqa: F401
-from validate_common import Reporter, make_episode, run_part
+import os
+import sys
 
-from storage import FileSaver, MongoSaver, to_json_safe
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
+import validate_common  # noqa: F401
+from validate_common import VARIANT, Reporter, make_episode, run_part
+
+from banqi.storage import FileSaver, MongoSaver, to_json_safe
 
 
 def test_to_json_safe() -> None:
@@ -128,14 +138,13 @@ def test_mongo_doc_structure() -> None:
 def test_archiver_worker_no_mongo() -> None:
     """ArchiverWorker 在无 Mongo（连接失败）时降级 FileSaver，且线程可正常退出。"""
     rep = Reporter("ArchiverWorker fallback + exit")
-    import archiver as archiver_mod
+    import banqi.archiver as archiver_mod
     import threading
 
     archive_q = queue.Queue()
     stop_flag = [False]
 
-    # 强制降级：使用无效 mongo_uri
-    worker = archiver_mod.ArchiverWorker(archive_q, stop_flag, mongo_uri="")
+    worker = archiver_mod.ArchiverWorker(archive_q, stop_flag, VARIANT, mongo_uri="")
     rep.check(isinstance(worker.saver, FileSaver), "fallback to FileSaver")
 
     ep = make_episode(num_steps=3, winner=1)
@@ -155,7 +164,7 @@ def test_archiver_worker_no_mongo() -> None:
     t.join(timeout=5)
     rep.check(not t.is_alive(), "archiver thread exited cleanly")
     # 本地文件已生成
-    archive_dir = archiver_mod.LOCAL_ARCHIVE_DIR
+    archive_dir = worker.local_archive_dir
     rep.check(os.path.isdir(archive_dir), f"local archive dir exists: {archive_dir}")
     rep.summary()
 

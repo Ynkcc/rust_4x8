@@ -22,6 +22,16 @@ play_and_record.py — 跑一局 AI 自对弈，记录原始数据，并输出�
 """
 
 from __future__ import annotations
+import os
+import sys
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PYTHON_DIR = os.path.dirname(_TOOLS_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 
 import argparse
 import os

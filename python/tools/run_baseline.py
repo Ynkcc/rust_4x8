@@ -16,6 +16,16 @@ run_baseline.py — 快速基线训练验证入口（无 CLI 参数）
 """
 
 from __future__ import annotations
+import os
+import sys
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PYTHON_DIR = os.path.dirname(_TOOLS_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 
 import json
 import os

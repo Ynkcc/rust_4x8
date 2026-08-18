@@ -16,6 +16,16 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+import os
+import sys
+
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, assert_converged, run_part
 
@@ -30,7 +40,7 @@ BOARD_ROWS = C.BOARD_ROWS
 BOARD_COLS = C.BOARD_COLS
 SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
 TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
-from training_service import DataBuffer, episode_to_samples, train_step
+from banqi.training_service import DataBuffer, episode_to_samples, train_step
 
 
 def _build_fixed_dataset(n_episodes: int = 8, steps_per_ep: int = 4, seed: int = 7):

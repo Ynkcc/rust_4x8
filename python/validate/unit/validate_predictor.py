@@ -19,16 +19,27 @@ import time
 import numpy as np
 import torch
 
+import os
+import sys
+
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, run_part
 
-from config import config
+from banqi.config import make_config
 from banqi.variant import get_variant
 from banqi.constants import build_constants
 from banqi.nn_model import BanqiNet
-from self_play import Predictor
+from banqi.self_play import Predictor
 
 VARIANT = get_variant("4x8")
+config = make_config(VARIANT.id)
 C = build_constants(VARIANT)
 ACTION_SPACE_SIZE = C.ACTION_SPACE_SIZE
 BOARD_ROWS = C.BOARD_ROWS
@@ -47,7 +58,7 @@ def _dummy_inputs(batch: int, seed: int = 0):
 def test_shapes_and_range() -> None:
     rep = Reporter("Predictor shapes/range")
     model = BanqiNet(VARIANT).to(DEVICE)
-    pred = Predictor(model, DEVICE, model_path=None)
+    pred = Predictor(model, DEVICE, model_path=None, variant=VARIANT)
     for batch in [1, 4, 33, 64]:
         board, scalars = _dummy_inputs(batch)
         logits, values = pred(board, scalars)
@@ -63,7 +74,7 @@ def test_shapes_and_range() -> None:
 def test_chunk_consistency() -> None:
     rep = Reporter("Predictor chunk consistency")
     model = BanqiNet(VARIANT).to(DEVICE)
-    pred = Predictor(model, DEVICE, model_path=None)
+    pred = Predictor(model, DEVICE, model_path=None, variant=VARIANT)
     batch = 70  # > PREDICT_BATCH=32，且不能被整除
     board, scalars = _dummy_inputs(batch, seed=1)
 
@@ -102,7 +113,7 @@ def test_hot_reload() -> None:
 
         # 构建 Predictor，加载模型 a
         pred_model = BanqiNet(VARIANT).to(DEVICE)
-        pred = Predictor(pred_model, DEVICE, model_path=model_path)
+        pred = Predictor(pred_model, DEVICE, model_path=model_path, variant=VARIANT)
         board, scalars = _dummy_inputs(4, seed=3)
 
         # 更新文件（改变权重）并强制 mtime 不同
@@ -114,6 +125,7 @@ def test_hot_reload() -> None:
         torch.save(model_b.state_dict(), model_path)
 
         # 重新调用应触发热重载
+        pred._last_reload_check = 0.0
         logits_reloaded, _ = pred(board, scalars)
 
         # 对比 model_b 的输出
@@ -159,7 +171,7 @@ def test_hot_reload_torchscript() -> None:
         traced.save(model_path)
 
         pred_model = BanqiNet(VARIANT).to(DEVICE)
-        pred = Predictor(pred_model, DEVICE, model_path=model_path)
+        pred = Predictor(pred_model, DEVICE, model_path=model_path, variant=VARIANT)
         board, scalars = _dummy_inputs(4, seed=7)
         logits, _ = pred(board, scalars)
 
@@ -185,9 +197,9 @@ def test_degraded_no_torch() -> None:
     rep = Reporter("Predictor degraded (no torch)")
     import unittest.mock as mock
     model = BanqiNet(VARIANT).to(DEVICE)
-    pred = Predictor(model, DEVICE, model_path=None)
+    pred = Predictor(model, DEVICE, model_path=None, variant=VARIANT)
     board, scalars = _dummy_inputs(4, seed=4)
-    with mock.patch("self_play.HAS_TORCH", False):
+    with mock.patch("banqi.selfplay.predictor.HAS_TORCH", False):
         logits, values = pred(board, scalars)
     rep.check(np.all(logits == 0.0), "degraded logits all zero")
     rep.check(np.all(values == 0.0), "degraded values all zero")

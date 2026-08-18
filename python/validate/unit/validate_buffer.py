@@ -16,6 +16,16 @@ from __future__ import annotations
 
 import numpy as np
 
+import os
+import sys
+
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401  (设置 sys.path)
 from validate_common import Reporter, make_episode, run_part
 
@@ -29,7 +39,10 @@ BOARD_ROWS = C.BOARD_ROWS
 BOARD_COLS = C.BOARD_COLS
 SCALAR_FEATURE_COUNT = C.SCALAR_FEATURE_COUNT
 TOTAL_INPUT_CHANNELS = C.TOTAL_INPUT_CHANNELS
-from training_service import DataBuffer, episode_to_samples
+from banqi.config import make_config
+
+CFG = make_config(VARIANT.id)
+from banqi.training_service import DataBuffer, episode_to_samples
 
 
 def test_episode_to_samples_mapping() -> None:
@@ -76,7 +89,7 @@ def test_data_buffer_shapes() -> None:
     rep = Reporter("DataBuffer add/get shapes")
     rng = np.random.default_rng(1)
     ep = make_episode(num_steps=3, winner=-1, rng=rng)
-    buf = DataBuffer(capacity=100)
+    buf = DataBuffer(100, VARIANT, CFG)
     buf.add_samples(episode_to_samples(ep))
 
     rep.check(len(buf) == 3, f"buffer len == 3 (got {len(buf)})")
@@ -98,7 +111,7 @@ def test_data_buffer_fifo_trim() -> None:
     rep = Reporter("DataBuffer FIFO trim")
     rng = np.random.default_rng(2)
     cap = 4
-    buf = DataBuffer(capacity=cap)
+    buf = DataBuffer(cap, VARIANT, CFG)
     # 添加 3 局各 2 步 = 6 样本，超过 cap=4
     ep = make_episode(num_steps=2, winner=1, rng=rng)
     buf.add_samples(episode_to_samples(ep))  # 2
@@ -129,7 +142,7 @@ def test_data_buffer_fifo_trim() -> None:
 def test_get_batch_index_correctness() -> None:
     rep = Reporter("get_batch index correctness")
     rng = np.random.default_rng(3)
-    buf = DataBuffer(capacity=50)
+    buf = DataBuffer(50, VARIANT, CFG)
     for _ in range(3):
         ep = make_episode(num_steps=2, winner=1, rng=rng)
         buf.add_samples(episode_to_samples(ep))
@@ -153,7 +166,8 @@ def test_value_priority() -> None:
     # 人为设置 game_result_value 与 mcts_value 不同，验证取 game_result_value
     samples[0]["game_result_value"] = 0.7
     samples[0]["mcts_value"] = 0.2
-    buf = DataBuffer(capacity=10)
+    CFG.VALUE_TARGET_MODE = "game"
+    buf = DataBuffer(10, VARIANT, CFG)
     buf.add_samples(samples)
     _, _, _, values, _ = buf.get_batch([0])
     rep.check(abs(values[0].item() - 0.7) < 1e-6,

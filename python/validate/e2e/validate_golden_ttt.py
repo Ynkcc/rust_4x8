@@ -32,6 +32,16 @@ import torch
 
 import banqi_4x8 as b  # pyo3 绑定（Rust 井字棋环境 + 泛型 Gumbel MCTS）
 
+import os
+import sys
+
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+_BANQI_DIR = os.path.join(_PYTHON_DIR, "banqi")
+for _d in (_PYTHON_DIR, _BANQI_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401
 from validate_common import Reporter, run_part, require
 

@@ -30,7 +30,7 @@ echo "已清理日志 / 指标 / 基线模型"
 # ---- 2. 运行基线训练 ----
 echo ""
 echo "=== [2/4] 运行基线训练 (timeout=${TIMEOUT}s) ==="
-timeout "$TIMEOUT" "$PY" -u python/run_baseline.py > train_verify.log 2> train_verify_err.log
+timeout "$TIMEOUT" "$PY" -u python/tools/run_baseline.py > train_verify.log 2> train_verify_err.log
 CODE=$?
 echo "exit_code=$CODE"
 
@@ -56,7 +56,7 @@ if [ "$CODE" -eq 124 ]; then
     echo "[train_verify] ⚠️ 基线运行超时被 timeout 终止（exit=124），仍尝试校验已落盘指标"
 fi
 
-"$PY" python/validate/validate_baseline.py train_baseline_metrics.json
+"$PY" python/validate/e2e/validate_baseline.py train_baseline_metrics.json
 VCODE=$?
 
 echo ""

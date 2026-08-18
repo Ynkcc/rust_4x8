@@ -13,12 +13,18 @@ validate_model.py — 验证 BanqiNet 前向 / 反向传播（纯 CPU）。
 
 from __future__ import annotations
 
+import os
 import sys
 
 import numpy as np
 import torch
 
-# 先 import validate_common 以设置 sys.path（加入 python/ 父目录）
+_VALIDATE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PYTHON_DIR = os.path.dirname(_VALIDATE_DIR)
+for _d in (_PYTHON_DIR, _VALIDATE_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
 import validate_common  # noqa: F401
 from validate_common import DEVICE, Reporter, run_part
 
