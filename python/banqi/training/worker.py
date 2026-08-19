@@ -69,6 +69,30 @@ def _is_stopped(stop_event) -> bool:
     return bool(stop_event)
 
 
+def _make_cosine_clamp_scheduler(optimizer, cfg):
+    """余弦衰减到 MIN_LR 后钳位保持，不周期回升。
+
+    原生 CosineAnnealingLR 在训练步数超过 T_max 后学习率会按余弦周期回升，
+    导致长周期自对弈训练后期梯度偏大、收敛震荡。这里用 LambdaLR 实现：
+    前 LR_DECAY_STEPS 步按半周期余弦从 LEARNING_RATE 平滑降到 MIN_LR，
+    之后钳位在 MIN_LR 保持，兼顾余弦退火的平滑收敛与长训练稳定性。
+    """
+    t_max = max(int(getattr(cfg, "LR_DECAY_STEPS", 1000) or 1000), 1)
+    eta_min = float(getattr(cfg, "MIN_LR", 1e-6) or 1e-6)
+    eta_max = float(getattr(cfg, "LEARNING_RATE", 1e-4) or 1e-4)
+    # LambdaLR 的 lambda 返回的是相对 initial_lr 的比例因子
+    min_ratio = eta_min / eta_max if eta_max > 0 else 1e-4
+
+    def lr_lambda(epoch: int) -> float:
+        import math
+        t = min(epoch, t_max) / t_max            # 钳位到 [0,1]
+        # 半周期余弦：t=0 -> 1.0，t=1 -> 0.0（即 MIN_LR）
+        cos = 0.5 * (1.0 + math.cos(math.pi * t))
+        return min_ratio + (1.0 - min_ratio) * cos
+
+    return lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
 class TrainWorker(threading.Thread):
     def __init__(self, arg1, arg2, arg3=None, arg4=None,
                  ckpt_dir: Optional[str] = None, device=None, run_dir: Optional[str] = None):
@@ -201,9 +225,7 @@ class TrainWorker(threading.Thread):
                 weight_decay=cfg.WEIGHT_DECAY,
             )
             self.optimizer.load_state_dict(ckpt["optimizer_state"])
-            self.scheduler = lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=cfg.LR_DECAY_STEPS, eta_min=cfg.MIN_LR
-            )
+            self.scheduler = _make_cosine_clamp_scheduler(self.optimizer, cfg)
             if "scheduler_state" in ckpt:
                 self.scheduler.load_state_dict(ckpt["scheduler_state"])
             self.global_step = ckpt.get("global_step", 0)
@@ -222,9 +244,7 @@ class TrainWorker(threading.Thread):
                 self.model.parameters(), lr=cfg.LEARNING_RATE,
                 weight_decay=cfg.WEIGHT_DECAY
             )
-            self.scheduler = lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=cfg.LR_DECAY_STEPS, eta_min=cfg.MIN_LR
-            )
+            self.scheduler = _make_cosine_clamp_scheduler(self.optimizer, cfg)
             self.global_step = 0
             self.start_global_step = 0
             self.start_total_samples = 0
