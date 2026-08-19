@@ -4,7 +4,7 @@ play_and_record.py — 跑一局 AI 自对弈，记录原始数据，并输出�
 
 流程:
   1. 加载模型（默认 python/banqi_model_latest.pt；缺失时用随机初始化网络并警告）
-  2. 调用 Rust 绑定 banqi_4x8.run_batched_self_play_with_predictor 生成一局 episode
+  2. 调用 Rust 统一入口 banqi_4x8.run_python_match 生成一局 episode
      （concurrency=1 等价旧串行 run_self_play_with_predictor）
   3. 用 storage.FileSaver 记录原始 episode（JSONL 或 JSON）
   4. 调用 Rust 绑定 banqi_4x8.describe_record 解析该局记录，
@@ -89,12 +89,13 @@ def main():
         temperature_steps=args.temperature_steps,
     )
     print(f"[Record] 开始自对弈一局 (mcts_sims={args.mcts_sims}) ...")
-    episodes = banqi_4x8.run_batched_self_play_with_predictor(
+    episodes = banqi_4x8.run_python_match(
         predict_fn=predictor,
         config=sp_cfg,
         num_games=1,
         concurrency=1,
         worker_id=0,
+        variant_id="4x8",
     )
     if not episodes:
         print("[Record] 未生成有效对局（空局）")

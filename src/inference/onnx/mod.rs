@@ -3,8 +3,8 @@
 // ONNX Runtime 推理服务（feature = "onnx"）。
 //
 // 用途：
-//   - 自对弈收集器：`RustOnnxCollector`（见 src/py/onnx_collector.rs）在 Rust 侧
-//     持有 ONNX 模型，推理不经过 Python / GIL，供 run_batched / run_parallel 使用。
+//   - 自对弈：经统一入口 `run_native_match`（record_episodes=True）在 Rust 侧
+//     持有 ONNX 模型，推理不经过 Python / GIL。
 //   - banqi-tauri：`OnnxMctsPolicy` 作为「MCTS + ONNX」对手，无需 libtorch。
 //
 // 模型前向契约与 TorchScript 一致：

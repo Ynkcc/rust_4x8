@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict
 
-# 自对弈运行方案标签（与 schemes.py 中的 _SCHEME_FNS 对应）
+# 自对弈运行方案标签（与 schemes.py 中的 _VARIANT_MAP 对应）
 _SCHEME_LABELS: Dict[str, str] = {
     "serial": "串行 (单树, 小 batch)",
     "parallel": "并行 (rayon, 多树各自推理)",

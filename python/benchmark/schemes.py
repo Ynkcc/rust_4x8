@@ -22,14 +22,13 @@ from banqi.variant import Variant, get_variant
 from .predictors import CountingPredictor
 from .results import BenchResult
 
-# 变体 -> 批量（流水线）Rust 绑定函数名。
-# serial/parallel 绑定已移除，统一用 batched 等价模拟：
-#   serial   = batched(concurrency=1)
-#   parallel = batched(concurrency=N)
-_SCHEME_FNS: Dict[str, str] = {
-    "": "run_batched_self_play_with_predictor",
-    "mini": "run_mini_batched_self_play_with_predictor",
-    "game4x4": "run_game4x4_batched_self_play_with_predictor",
+# 变体 -> 统一入口 run_python_match 的 variant_id。
+# 旧的 serial/parallel/batched 多入口已彻底移除，统一走 run_python_match
+# （Python 推理单线程）。scheme 标签仅保留用于结果标记。
+_VARIANT_MAP: Dict[str, str] = {
+    "": "4x8",        # 4x8
+    "mini": "4x2",    # 4x2
+    "game4x4": "4x4", # 4x4
 }
 
 
@@ -54,21 +53,15 @@ def _run_scheme(variant_id: str, scheme: str, predictor: Any,
     variant = get_variant(variant_id)
     cfg = make_config(variant_id)
     sp_cfg = build_self_play_config(variant)
-    fn_batched = _SCHEME_FNS[variant.rust_prefix]
+    vid = _VARIANT_MAP[variant.rust_prefix]
 
     if scheme in ("serial", "parallel", "batched"):
-        fn = getattr(banqi_4x8, fn_batched)
-        if scheme == "serial":  # 等价旧串行：concurrency=1
-            kwargs: Dict[str, Any] = {"num_games": games, "concurrency": 1, "worker_id": worker_id}
-        elif scheme == "parallel":  # 等价旧并行：N 局并发
-            games_per_worker = max(1, -(-games // concurrency))
-            kwargs = {"num_games": concurrency * games_per_worker, "concurrency": concurrency,
-                      "worker_id": worker_id}
-        else:  # batched
-            kwargs = {"num_games": games, "concurrency": concurrency, "worker_id": worker_id}
-
         t0 = time.time()
-        episodes = fn(predict_fn=predictor, config=sp_cfg, **kwargs)
+        # 统一入口 run_python_match（单线程）；concurrency 参数忽略（保持兼容）。
+        episodes = banqi_4x8.run_python_match(
+            predict_fn=predictor, config=sp_cfg, num_games=games,
+            concurrency=concurrency, worker_id=worker_id, variant_id=vid,
+        )
         duration = time.time() - t0
 
         completed_games = len(episodes)
@@ -94,7 +87,7 @@ def _benchmark_multiproc(variant_id: str, predictor: Any, games: int,
     variant = get_variant(variant_id)
     cfg = make_config(variant_id)
     sp_cfg = build_self_play_config(variant)
-    fn_batched = _SCHEME_FNS[variant.rust_prefix]
+    vid = _VARIANT_MAP[variant.rust_prefix]
 
     n_proc = max(1, concurrency)
     games_per_proc = max(1, -(-games // n_proc))
@@ -102,7 +95,7 @@ def _benchmark_multiproc(variant_id: str, predictor: Any, games: int,
     procs = [
         mp.Process(
             target=_mp_bench_worker_main,
-            args=(variant_id, fn_batched, sp_cfg, games_per_proc, cfg.BATCH_CONCURRENCY,
+            args=(variant_id, vid, sp_cfg, games_per_proc, cfg.BATCH_CONCURRENCY,
                   i, result_q),
             name=f"BenchMP-{i}",
         )
@@ -132,7 +125,7 @@ def _benchmark_multiproc(variant_id: str, predictor: Any, games: int,
     )
 
 
-def _mp_bench_worker_main(variant_id: str, fn_name: str, sp_cfg, games: int,
+def _mp_bench_worker_main(variant_id: str, vid: str, sp_cfg, games: int,
                           concurrency: int, worker_id: int, result_q: "queue.Queue"):
     """多进程 worker：独立 predictor（真实模型或模拟），统计本进程计数。"""
     from .predictors import SimulatedPredictor
@@ -147,9 +140,10 @@ def _mp_bench_worker_main(variant_id: str, fn_name: str, sp_cfg, games: int,
         predictor, _ = _build_predictor(variant, make_config(variant_id).MODEL_PATH,
                                         make_config(variant_id).INFER_DEVICE)
     counting = CountingPredictor(predictor)
-    fn = getattr(banqi_4x8, fn_name)
-    episodes = fn(predict_fn=counting, config=sp_cfg,
-                  num_games=games, concurrency=concurrency, worker_id=worker_id)
+    episodes = banqi_4x8.run_python_match(
+        predict_fn=counting, config=sp_cfg, num_games=games,
+        concurrency=concurrency, worker_id=worker_id, variant_id=vid,
+    )
     result_q.put({
         "games": len(episodes),
         "steps": sum(int(ep.game_length) for ep in episodes),

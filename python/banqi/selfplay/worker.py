@@ -1,10 +1,15 @@
 """banqi/selfplay/worker.py — 自对弈生产者线程与多进程子进程入口。
 
-SelfPlayWorker：线程，按变体分派 Rust 绑定生成 episode，压入训练队列与归档队列，
-  统一走 batched（流水线）方案，并发度由 BATCH_CONCURRENCY 控制（1=串行），
+SelfPlayWorker：线程，统一走唯一入口 `run_python_match`（Python predict_fn 单线程），
+  并发度由 BATCH_CONCURRENCY 控制（现由 Rust 侧 MCTS 串行推进，吞吐受 GIL 约束），
   记录逐局统计与 TensorBoard 标量。
 sp_worker_main：多进程（spawn）子进程入口，独立 GIL + 独立 CUDA context，权重经
   Predictor mtime 热重载自动同步，从根本上消除多线程 GIL 串行推理瓶颈。
+MODEL_BACKEND="onnx" 时走 `run_native_match`（Rust 侧持 ONNX 模型，推理不经过 GIL），
+  每批重新加载模型文件，天然实现权重热更新。
+
+旧的按变体分发的 `run_*_self_play_with_predictor` / `RustOnnxCollector` /
+`RustTorchCollector` 入口已彻底移除，统一经 `run_python_match` / `run_native_match`。
 """
 
 from __future__ import annotations
@@ -31,19 +36,19 @@ from banqi.variant import Variant, get_variant
 
 from .predictor import Predictor
 
-# Rust 绑定函数名分发表（按 variant.rust_prefix）：批量（流水线）自对弈唯一入口
-_SPLAY_FNS: Dict[str, str] = {
-    "": "run_batched_self_play_with_predictor",
-    "mini": "run_mini_batched_self_play_with_predictor",
-    "game4x4": "run_game4x4_batched_self_play_with_predictor",
+# 统一入口变体映射（variant.rust_prefix -> Rust 入口的 variant_id）
+_VARIANT_MAP: Dict[str, str] = {
+    "": "4x8",        # 4x8
+    "mini": "4x2",    # 4x2
+    "game4x4": "4x4", # 4x4
 }
 
 
-def _splay_fns(variant: Variant) -> str:
+def _variant_id(variant: Variant) -> str:
     key = variant.rust_prefix
-    if key not in _SPLAY_FNS:
-        raise KeyError(f"未知 rust_prefix {key!r}，可选: {sorted(_SPLAY_FNS)}")
-    return _SPLAY_FNS[key]
+    if key not in _VARIANT_MAP:
+        raise KeyError(f"未知 rust_prefix {key!r}，可选: {sorted(_VARIANT_MAP)}")
+    return _VARIANT_MAP[key]
 
 
 def _episode_to_dict(ep, iteration: int, worker_id: int) -> Dict:
@@ -76,7 +81,7 @@ class SelfPlayWorker(threading.Thread):
         self.archive_q = archive_q
         self.stop_flag = stop_flag
         self.worker_id = worker_id
-        self._fn_batched = _splay_fns(variant)
+        self.variant_id = _variant_id(variant)
 
         # 统计
         self.total_games = 0
@@ -98,15 +103,15 @@ class SelfPlayWorker(threading.Thread):
                 continue
 
     def run(self) -> None:
-        """主循环，与 data_collector.rs / py_data_collector.rs 迭代语义一致。"""
+        """主循环，统一走 `run_python_match`（Python 推理单线程）。"""
         cfg = self.cfg
         while not self.stop_flag[0]:
             t0 = time.time()
-            episodes = getattr(banqi_4x8, self._fn_batched)(
+            episodes = banqi_4x8.run_python_match(
                 predict_fn=self.predictor,
                 config=self.sp_cfg,
                 num_games=cfg.GAMES_PER_ITER,
-                concurrency=cfg.BATCH_CONCURRENCY,
+                variant_id=self.variant_id,
                 worker_id=self.worker_id,
             )
 
@@ -223,9 +228,9 @@ def _log_episode(tag: str, ep: Dict, duration: float, game_index: int) -> None:
     )
 
 
-def _run_onnx_collector_loop(
-    collector,
+def _run_native_model_loop(
     variant: Variant,
+    model_path: str,
     cfg,
     sp_cfg,
     data_q,
@@ -235,41 +240,37 @@ def _run_onnx_collector_loop(
     worker_id: int,
     tag: str,
 ) -> None:
-    """Rust 持有 ONNX 模型的收集器主循环（免 GIL，模型在 Rust 侧推理）。
+    """Rust 持有模型（.onnx / .pt）的 `run_native_match` 主循环（免 GIL）。
 
-    与 Predictor 路径等效：统一走 batched（concurrency=BATCH_CONCURRENCY），产出的
-    episode 语义一致（PyGameEpisode）。权重经 .onnx 文件 mtime 热重载自动同步——
-    训练侧保存 checkpoint 后，本循环在下一批开始前 reload 新模型。
+    每批经 `run_native_match` 重新加载模型文件，天然实现训练中权重热更新；
+    产出 episode 语义与 `run_python_match` 一致（PyGameEpisode）。
     """
-    model_path = cfg.ONNX_PATH
-    last_mtime: float = 0.0
-
-    def _maybe_reload() -> None:
-        nonlocal last_mtime
-        if not model_path or not os.path.exists(model_path):
-            return
-        m = os.path.getmtime(model_path)
-        if m > last_mtime:
-            try:
-                collector.reload(model_path)
-                last_mtime = m
-                print(f"{tag} 🔄 ONNX 模型已热更新: {model_path}")
-            except Exception as exc:  # noqa: BLE001
-                print(f"{tag} ⚠️ ONNX 模型重载失败（保持旧模型）: {exc}")
-
+    variant_id = _variant_id(variant)
     total_games = 0
     iteration = 0
     game_count = 0
     while not stop_event.is_set():
+        if not os.path.exists(model_path):
+            print(f"{tag} ⚠️ 模型不存在: {model_path}，等待...")
+            time.sleep(2.0)
+            continue
         t0 = time.time()
-        _maybe_reload()
         try:
-            episodes = list(collector.run_batched(
-                config=sp_cfg, num_games=gpi,
-                concurrency=cfg.BATCH_CONCURRENCY, worker_id=worker_id,
-            ))
+            _, _, _, _, _, episodes = banqi_4x8.run_native_match(
+                player_a=model_path,
+                player_b=model_path,
+                n=gpi,
+                variant_id=variant_id,
+                model_sims=cfg.MCTS_SIMS,
+                heuristic_sims=None,
+                seed=None,
+                num_threads=max(1, cfg.BATCH_CONCURRENCY),
+                config=sp_cfg,
+                record_episodes=True,
+            )
+            episodes = list(episodes)
         except Exception as exc:  # pragma: no cover
-            print(f"{tag} ⚠️ ONNX 收集器自对弈异常: {exc}，子进程退出")
+            print(f"{tag} ⚠️ run_native_match 自对弈异常: {exc}，子进程退出")
             break
 
         batch_duration = time.time() - t0
@@ -317,7 +318,9 @@ def sp_worker_main(
     权重同步：Predictor 自带 model_path mtime 热重载——训练侧保存 checkpoint 后，
     各子进程自动加载新权重，无需额外进程间通信。
 
-    自对弈统一走 batched（流水线），并发度由 BATCH_CONCURRENCY 控制（1=串行）。
+    自对弈统一走唯一入口：
+      - `run_python_match`（predict_fn 单线程，默认 / torchscript 后端）
+      - `run_native_match`（MODEL_BACKEND="onnx" 时，Rust 持模型免 GIL）
     """
     import torch as _torch  # noqa: PLC0415
 
@@ -328,29 +331,24 @@ def sp_worker_main(
     tag = f"[SP-{variant.id}#{worker_id}]"
     gpi = games_per_iter or cfg.GAMES_PER_ITER
     scheme = "batched"
+    vid = _variant_id(variant)
 
     _torch.set_num_threads(1)  # 每进程 1 torch 线程，防多进程共享核超售
     sp_cfg = build_self_play_config(variant)
-    fn_batched = _splay_fns(variant)
 
-    # ---- MODEL_BACKEND="onnx"：优先走 Rust 持有 ONNX 模型的收集器（免 GIL） ----
-    # 模型在 Rust 侧用 ONNX Runtime 推理，不经过 GIL；权重经 .onnx mtime 热重载。
-    # 若 wheel 未启用 onnx+pyo3 绑定（RustOnnxCollector 不存在）或模型缺失，
-    # 回退 build_predictor（onnx 时自动选 Python onnxruntime 推理）。
+    # ---- MODEL_BACKEND="onnx"：优先走 Rust 持有 ONNX 模型的 run_native_match（免 GIL） ----
+    # 模型在 Rust 侧用 ONNX Runtime 推理，不经过 GIL；每批重新加载 .onnx 文件实现热更新。
     use_onnx = (cfg.MODEL_BACKEND or "").strip().lower() == "onnx"
+    if use_onnx and cfg.ONNX_PATH and os.path.exists(cfg.ONNX_PATH):
+        print(f"{tag} 🚀 子进程启动: ONNX 后端（run_native_match 原生推理），pid={os.getpid()}, "
+              f"scheme={scheme}, games/iter={gpi}")
+        _run_native_model_loop(
+            variant, cfg.ONNX_PATH, cfg, sp_cfg, data_q, archive_q, stop_event,
+            gpi, worker_id, tag,
+        )
+        return
     if use_onnx:
-        from .config import build_onnx_collector
-
-        collector = build_onnx_collector(variant, cfg.ONNX_PATH, cfg.INFER_DEVICE)
-        if collector is not None:
-            print(f"{tag} 🚀 子进程启动: ONNX 后端（RustOnnxCollector），pid={os.getpid()}, "
-                  f"scheme={scheme}, games/iter={gpi}")
-            _run_onnx_collector_loop(
-                collector, variant, cfg, sp_cfg, data_q, archive_q, stop_event,
-                gpi, worker_id, tag,
-            )
-            return
-        print(f"{tag} ⚠️ RustOnnxCollector 不可用，回退 Python 推理路径")
+        print(f"{tag} ⚠️ ONNX 模型缺失，回退 Python 推理路径")
 
     predictor, device = build_predictor(variant, cfg.MODEL_PATH, cfg.INFER_DEVICE)
     print(f"{tag} 🚀 子进程启动: device={device}, pid={os.getpid()}, "
@@ -362,12 +360,13 @@ def sp_worker_main(
     while not stop_event.is_set():
         t0 = time.time()
         try:
-            episodes = getattr(banqi_4x8, fn_batched)(
+            episodes = banqi_4x8.run_python_match(
                 predict_fn=predictor, config=sp_cfg,
                 num_games=gpi,
-                concurrency=cfg.BATCH_CONCURRENCY,
+                variant_id=vid,
                 worker_id=worker_id,
             )
+            episodes = list(episodes)
         except Exception as exc:  # pragma: no cover
             print(f"{tag} ⚠️ 自对弈异常: {exc}，子进程退出")
             break

@@ -41,11 +41,11 @@ except ImportError as exc:  # pragma: no cover
 from banqi.config import make_config
 from banqi.variant import Variant
 
-# Rust 绑定函数名分发表（按 variant.rust_prefix）：(启发式, minimax)
-_TEACHER_FNS: Dict[str, tuple] = {
-    "": ("run_heuristic_self_play", "run_minimax_self_play"),          # 4x8
-    "mini": ("run_mini_heuristic_self_play", "run_mini_minimax_self_play"),  # 4x2
-    "game4x4": ("run_game4x4_heuristic_self_play", "run_game4x4_minimax_self_play"),  # 4x4
+# Rust 统一入口变体映射（variant.rust_prefix -> run_native_match 的 variant_id）
+_VARIANT_MAP: Dict[str, str] = {
+    "": "4x8",        # 4x8
+    "mini": "4x2",    # 4x2
+    "game4x4": "4x4", # 4x4
 }
 
 # 子批大小（局）：避免一次生成整批 RULE_SELFPLAY_GAMES（如 4x4 500 局）期间
@@ -54,11 +54,11 @@ _TEACHER_FNS: Dict[str, tuple] = {
 _SUB_BATCH = 25
 
 
-def _teacher_fns(variant: Variant) -> tuple:
+def _variant_id(variant: Variant) -> str:
     key = variant.rust_prefix
-    if key not in _TEACHER_FNS:
-        raise KeyError(f"未知 rust_prefix {key!r}，可选: {sorted(_TEACHER_FNS)}")
-    return _TEACHER_FNS[key]
+    if key not in _VARIANT_MAP:
+        raise KeyError(f"未知 rust_prefix {key!r}，可选: {sorted(_VARIANT_MAP)}")
+    return _VARIANT_MAP[key]
 
 
 def build_teacher_config(variant: Variant, sims: int) -> "banqi_4x8.SelfPlayConfig":
@@ -93,22 +93,30 @@ def generate_teacher_batch(
     concurrency: int,
     worker_id: int,
 ) -> List[Dict]:
-    """调用 Rust 教师绑定生成一批 episode dict。
+    """调用 Rust 统一 `run_native_match` 生成一批规则教师 episode。
 
-    `rule_type` : "minimax" | "heuristic"（由 config.RULE_SELFPLAY_TYPE 决定）
+    `rule_type` : "minimax" | "heuristic"（由 config.RULE_SELFPLAY_TYPE 决定）。
+    双方选手均为同一规则教师（自对弈），`record_episodes=True` 收集训练数据。
     """
-    fn_heuristic, fn_minimax = _teacher_fns(variant)
+    del worker_id
+    variant_id = _variant_id(variant)
+    cfg = build_teacher_config(variant, sims)
     if rule_type == "minimax":
-        episodes = getattr(banqi_4x8, fn_minimax)(
-            depth=depth, num_games=num_games,
-            concurrency=concurrency, temperature=temperature,
-        )
+        player_a = player_b = f"minimax{depth}"
     else:
-        cfg = build_teacher_config(variant, sims)
-        episodes = getattr(banqi_4x8, fn_heuristic)(
-            config=cfg, num_games=num_games,
-            concurrency=concurrency, worker_id=worker_id,
-        )
+        player_a = player_b = f"heuristic{sims}"
+    _, _, _, _, _, episodes = banqi_4x8.run_native_match(
+        player_a=player_a,
+        player_b=player_b,
+        n=num_games,
+        variant_id=variant_id,
+        model_sims=64,
+        heuristic_sims=None,
+        seed=None,
+        num_threads=concurrency,
+        config=cfg,
+        record_episodes=True,
+    )
     return list(episodes)
 
 

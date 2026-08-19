@@ -84,8 +84,19 @@ def gen_teacher(sims, games, conc=4, threads=3):
         cfg = banqi_4x8.SelfPlayConfig(
             mcts_sims=sims, max_considered_actions=16,
             temperature_steps=12)
-        return banqi_4x8.run_game4x4_heuristic_self_play(
-            config=cfg, num_games=per, concurrency=conc, worker_id=0)
+        _, _, _, _, _, episodes = banqi_4x8.run_native_match(
+            player_a=f"heuristic{sims}",
+            player_b=f"heuristic{sims}",
+            n=per,
+            variant_id="4x4",
+            model_sims=sims,
+            heuristic_sims=None,
+            seed=None,
+            num_threads=conc,
+            config=cfg,
+            record_episodes=True,
+        )
+        return list(episodes)
 
     t0 = time.time()
     eps = []

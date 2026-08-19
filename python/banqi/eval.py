@@ -100,7 +100,7 @@ def play_match(
     spec_a = _resolve_player_spec(player_a, variant_id, seed)
     spec_b = _resolve_player_spec(player_b, variant_id, seed)
 
-    wins, draws, losses, block_wr, _avg_moves = banqi_4x8.run_eval_match(
+    wins, draws, losses, block_wr, _avg_moves, _eps = banqi_4x8.run_native_match(
         player_a=spec_a,
         player_b=spec_b,
         n=n,
@@ -127,7 +127,7 @@ def play_match_stats(
     spec_a = _resolve_player_spec(player_a, variant_id, seed)
     spec_b = _resolve_player_spec(player_b, variant_id, seed)
 
-    wins, draws, losses, _block_wr, avg_moves = banqi_4x8.run_eval_match(
+    wins, draws, losses, _block_wr, avg_moves, _eps = banqi_4x8.run_native_match(
         player_a=spec_a,
         player_b=spec_b,
         n=n,

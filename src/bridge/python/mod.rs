@@ -2,12 +2,12 @@
 //!
 //! 按职责分层：
 //! - `episode`:   `PyGameEpisode` 包装类 + episode 序列化为 PyDict
-//! - `self_play`: `PySelfPlayConfig` + 串行/并行/批量/启发式/minimax 自对弈 impl
+//! - `self_play`: `PySelfPlayConfig` 配置类（旧自对弈 impl 已移除，统一走 match_core）
 //! - `decode`:    `describe_record` / `decode_scalar_state` / `config_for_variant` 辅助函数
 //! - `py_evaluator`: `PyEvaluator`（委托 Python predict_fn 的评估器）
+//! - `eval`:      `run_native_match` / `run_python_match` 唯一对局入口
 //! - `chess_env`:   统一暗棋环境绑定（DarkChess / Game4x4 / MiniDarkChess）
 //! - `ttt`:         井字棋环境绑定（验证复用）
-//! - `rust_collector`: Rust 持有模型的 Torch 数据收集器（torch + pyo3）
 
 #[cfg(feature = "pyo3")]
 mod augment;
@@ -29,13 +29,7 @@ pub mod ttt;
 #[cfg(feature = "pyo3")]
 pub mod eval;
 
-#[cfg(all(feature = "torch", feature = "pyo3"))]
-pub mod rust_collector;
-
-#[cfg(all(feature = "onnx", feature = "pyo3"))]
-pub mod onnx_collector;
-
-// ---- 公共 re-export：保持 `crate::bridge::python::*` 与 `lib.rs` / py_data_collector.rs 的引用路径不变 ----
+// ---- 公共 re-export：保持 `crate::bridge::python::*` 与既有调用方的引用路径不变 ----
 
 #[cfg(feature = "pyo3")]
 pub use decode::{config_for_variant, decode_scalar_state, describe_record};
@@ -49,11 +43,3 @@ pub use episode::{
 pub use py_evaluator::PyEvaluator;
 #[cfg(feature = "pyo3")]
 pub use self_play::PySelfPlayConfig;
-
-#[cfg(feature = "pyo3")]
-pub use self_play::{
-    run_batched_self_play_with_predictor_impl, run_game4x4_batched_self_play_with_predictor_impl,
-    run_game4x4_heuristic_self_play_impl, run_game4x4_minimax_self_play_impl,
-    run_heuristic_self_play_impl, run_mini_batched_self_play_with_predictor_impl,
-    run_mini_heuristic_self_play_impl, run_mini_minimax_self_play_impl, run_minimax_self_play_impl,
-};

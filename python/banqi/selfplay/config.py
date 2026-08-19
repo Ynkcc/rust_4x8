@@ -1,10 +1,11 @@
-"""banqi/selfplay/config.py — 自对弈相关工厂（模型/Predictor/配置/收集器）。
+"""banqi/selfplay/config.py — 自对弈相关工厂（模型/Predictor/配置）。
 
 build_predictor        : 构建单设备 Predictor（device=auto 时 CUDA 优先）
 build_mixed_predictor  : 构建 GPU+CPU 混合推理 MultiDevicePredictor
 build_self_play_config : 构建 banqi_4x8.SelfPlayConfig（c_scale/gumbel_scale 支持 env 覆盖）
-build_rust_collector   : 构建 Rust 侧持有模型的收集器（免 GIL，可选）
-rust_collector_run_batch: 用 Rust 收集器批量生成 episode
+
+Rust 持有模型的收集器（RustTorchCollector / RustOnnxCollector）已彻底移除，其能力
+统一由 `banqi_4x8.run_native_match`（record_episodes=True）承载。
 """
 
 from __future__ import annotations
@@ -162,112 +163,4 @@ def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
         temperature_steps=cfg.TEMPERATURE_STEPS,
         c_scale=c_scale,
         gumbel_scale=gumbel_scale,
-    )
-
-
-# ============================================================================
-# Rust 持有模型的收集器（可选，需 maturin 以对应 feature 构建）
-# ============================================================================
-#
-# 背景：`run_*_self_play_with_predictor` 把 Python `predict_fn` 传给 Rust，MCTS 评估
-# 时通过 GIL 调 Python 推理 → 即使 Rust 侧多线程，推理仍被 GIL 串行化；若改用
-# multiprocessing(spawn) 绕开 GIL，每个子进程又重复加载一份 libtorch + 权重。
-#
-# 解法：收集器在 Rust 侧一次性加载模型（模型留在 Rust，推理不经过 GIL），
-# 跨线程共享单份模型。这里提供便捷工厂与一个「生产一批 episode」的辅助函数，
-# 作为 python 回调方案的替代。
-#
-# 两个后端：
-#   - `RustTorchCollector`（RustTorchCollector）：TorchScript .pt，tch-rs 推理。
-#     需同时启用 torch + pyo3 feature 构建（Cargo.toml `rust-torch-collector`）。
-#   - `RustOnnxCollector`（RustOnnxCollector）：ONNX .onnx，ONNX Runtime 推理。
-#     需同时启用 onnx + pyo3 feature 构建（Cargo.toml `rust-onnx-collector`），
-#     不依赖 libtorch。
-#
-# 按 config.MODEL_BACKEND 自动选择：MODEL_BACKEND="onnx" 时优先使用 ONNX 后端，
-# 否则回退 Torch 后端。
-
-_RUST_TORCH_COLLECTOR_AVAILABLE = hasattr(banqi_4x8, "RustTorchCollector")
-_RUST_ONNX_COLLECTOR_AVAILABLE = hasattr(banqi_4x8, "RustOnnxCollector")
-
-
-def build_rust_collector(
-    variant: Variant,
-    model_path: Optional[str] = None,
-    device: Optional[str] = None,
-    backend: Optional[str] = None,
-):
-    """构建 Rust 侧持有模型的收集器（模型只加载一份，推理不经过 GIL）。
-
-    backend：
-      - "torchscript"：RustTorchCollector（.pt）
-      - "onnx"：       RustOnnxCollector（.onnx）
-      - None：按 config.MODEL_BACKEND 自动选择（默认）。
-
-    返回对应 pyclass 实例；若当前 wheel 未启用对应绑定，返回 None。
-    """
-    cfg = make_config(variant.id)
-    backend = (backend or cfg.MODEL_BACKEND or "torchscript").strip().lower()
-    if backend == "onnx":
-        return build_onnx_collector(variant, model_path, device)
-    if not _RUST_TORCH_COLLECTOR_AVAILABLE:
-        print(
-            f"[SP-{variant.id}] 未检测到 RustTorchCollector。若需要 Rust 持有模型、"
-            f"免 GIL 的数据收集，请用 maturin build --features torch,pyo3-extension 构建。"
-        )
-        return None
-    path = model_path or cfg.MODEL_PATH
-    dev = device or cfg.INFER_DEVICE
-    print(f"[SP-{variant.id}] 构建 RustTorchCollector: model={path} device={dev}")
-    return banqi_4x8.RustTorchCollector(path, variant.id, dev)
-
-
-def build_onnx_collector(
-    variant: Variant,
-    model_path: Optional[str] = None,
-    device: Optional[str] = None,
-):
-    """构建 Rust 侧持有 ONNX 模型的收集器（`banqi_4x8.RustOnnxCollector`）。
-
-    推理由 ONNX Runtime 完成（不经过 GIL、不依赖 libtorch）。
-    若当前 wheel 未启用 onnx+pyo3 绑定（`rust-onnx-collector` feature 未开），
-    返回 None（调用方可回退到 Python onnxruntime 推理）。
-    """
-    if not _RUST_ONNX_COLLECTOR_AVAILABLE:
-        print(
-            f"[SP-{variant.id}] 未检测到 RustOnnxCollector。若需要 Rust 持有 ONNX 模型、"
-            f"免 GIL 的数据收集，请用 maturin build --features onnx,pyo3-extension 构建。"
-        )
-        return None
-    cfg = make_config(variant.id)
-    path = model_path or cfg.ONNX_PATH or cfg.MODEL_PATH
-    dev = device or cfg.INFER_DEVICE
-    if not path or not os.path.exists(path):
-        print(f"[SP-{variant.id}] ⚠️ ONNX 模型不存在: {path}（无法构建 RustOnnxCollector）")
-        return None
-    print(f"[SP-{variant.id}] 构建 RustOnnxCollector: model={path} device={dev}")
-    return banqi_4x8.RustOnnxCollector(path, variant.id, dev)
-
-
-def rust_collector_run_batch(
-    collector,
-    variant: Variant,
-    sp_cfg,
-    num_games: int,
-    concurrency: int,
-    worker_id: int = 0,
-) -> list:
-    """用 Rust 持有模型的收集器批量生成一局，返回 episode 对象列表。
-
-    `collector`：`build_rust_collector` 的返回值（None 时回退空列表）。
-    """
-    if collector is None:
-        return []
-    return list(
-        collector.run_batched(
-            config=sp_cfg,
-            num_games=num_games,
-            concurrency=concurrency,
-            worker_id=worker_id,
-        )
     )

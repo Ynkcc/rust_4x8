@@ -13,7 +13,7 @@ benchmark_production.py 保留为向后兼容的 re-export 入口。
 from .results import BenchResult
 from .predictors import CountingPredictor, SimulatedPredictor
 from .schemes import (
-    _SCHEME_FNS,
+    _VARIANT_MAP,
     build_self_play_config,
     _run_scheme,
     _benchmark_multiproc,
