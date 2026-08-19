@@ -431,6 +431,16 @@ class TrainWorker(threading.Thread):
         last_processed_round = 0
         version = self.version
         total_samples = self.start_total_samples
+        # 批量训练：自对弈数据逐局到达，单局样本量远小于一个合理训练批次。
+        # 若每局立即训练，max_batches 会按单局样本量被压到极小，训练碎片化且
+        # 反复抽到旧数据。这里累积到足够新样本量（buffer 容量的 1/4）才训练一次，
+        # 让训练量充足且聚焦新数据（selfplay 与 rule_selfplay 统一该逻辑）。
+        capacity_base = getattr(cfg, "MAX_SAMPLE_BUFFER_SIZE", 50000)
+        batch_train_min_samples = max(
+            cfg.TRAIN_BATCH * cfg.TRAIN_EPOCHS_PER_ROUND, capacity_base // 4
+        )
+        pending_samples = 0   # 累积待训练的新样本数
+        pending_round = 0     # 累积期间最新的 round_idx
         while not _is_stopped(self.stop_event):
             try:
                 episode_dict = self.data_queue.get(timeout=2.0)
@@ -449,7 +459,9 @@ class TrainWorker(threading.Thread):
             self.buffer.add_samples(samples)
             new_samples = len(samples)
             total_samples += new_samples
+            pending_samples += new_samples
             round_idx = episode_dict.get("round_idx", last_processed_round)
+            pending_round = max(pending_round, round_idx)
 
             min_samples = getattr(cfg, "MIN_SAMPLES_TO_START", getattr(cfg, "TRAIN_MIN_SAMPLES", 100))
             if len(self.buffer) < min_samples:
@@ -459,11 +471,18 @@ class TrainWorker(threading.Thread):
                 last_processed_round = round_idx
                 continue
 
+            # ---- 批量训练门控：累积够新样本才训练，避免单局碎片化训练 ----
+            if pending_samples < batch_train_min_samples:
+                last_processed_round = round_idx
+                continue
+
+            # 本次训练消化 pending_samples 这一批新样本；selfplay 与 rule_selfplay 统一
+            new_samples = pending_samples
+            pending_samples = 0
+            round_idx = pending_round
             self._anneal_value_weight(round_idx)
 
-            # ---- 训练量限制：与新增样本量匹配，避免旧数据反复训练 ----
-            capacity_base = getattr(cfg, "MAX_SAMPLE_BUFFER_SIZE", 50000)
-            train_mode = getattr(cfg, "TRAIN_MODE", "selfplay").strip().lower()
+            # ---- 训练量限制：与累积新增样本量匹配，避免旧数据反复训练 ----
             if new_samples >= capacity_base // 4:
                 max_batches = None
             else:
@@ -471,16 +490,6 @@ class TrainWorker(threading.Thread):
                     (new_samples / cfg.TRAIN_BATCH) * cfg.TRAIN_EPOCHS_PER_ROUND + 0.5
                 )
                 max_batches = max(max_batches, 1)
-                # 冷启动蒸馏（rule_selfplay）修复：子批化后每个 episode 只含 1 局样本
-                #（增强后 ~80，远小于一个 TRAIN_BATCH），上式会把每 episode 的训练压成
-                # 1 步，策略头梯度不足、policy loss 无法下降。改为冷启动期（buffer 尚小）
-                # 强制训练 buffer 的完整一个 epoch，让策略头充分拟合教师策略；待 buffer
-                # 增大后自动让位给按新数据量成比例的公式，避免翻转成对旧数据过训练。
-                if train_mode == "rule_selfplay":
-                    buffer_epoch = max(1, len(self.buffer) // max(1, cfg.TRAIN_BATCH))
-                    cold_start_limit = max(1, cfg.TRAIN_BATCH * 4)
-                    if len(self.buffer) < cold_start_limit:
-                        max_batches = max(max_batches, buffer_epoch)
 
             self.model.train()
             epoch_results, total_batches = run_training_epochs(
