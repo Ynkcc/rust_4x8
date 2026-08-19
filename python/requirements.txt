@@ -24,6 +24,11 @@ nvidia-ml-py>=12.0.0
 tqdm>=4.66.0
 pyyaml>=6.0
 
+# gRPC 通信依赖（自对弈Worker与训练Server解耦通信）
+grpcio>=1.50.0
+grpcio-tools>=1.50.0
+protobuf>=4.20.0
+
 # --- PyO3 + maturin 集成所需 ---
 # maturin 用于编译 Rust PyO3 扩展 (不需要放到运行时 venv，但这里一起列出方便新手)
 maturin==1.14.1

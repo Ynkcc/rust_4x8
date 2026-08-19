@@ -134,6 +134,45 @@ class TrainWorker(threading.Thread):
         self._perm_cache: Dict[str, list] = {}
         self._init_model_and_checkpoint()
 
+        # 检查是否启动后台 gRPC 服务端（独立自对弈架构支持）
+        # 训练端同时作为 gRPC Server（提供模型/控制命令、接收元信息）与
+        # Client（主动拉取 Rust Worker 产生的样本）。不依赖 Rust PyO3 绑定。
+        self.grpc_server_thread = None
+        grpc_cfg = getattr(self.cfg, "grpc_server", None) or {}
+        if isinstance(grpc_cfg, dict) and grpc_cfg.get("ENABLED", False):
+            from banqi.grpc_server import GrpcServerThread
+            host = grpc_cfg.get("HOST", "0.0.0.0")
+            port = int(grpc_cfg.get("PORT", 50051))
+            max_workers = int(grpc_cfg.get("MAX_WORKERS", 10))
+            worker_host = grpc_cfg.get("WORKER_HOST")
+            worker_port = int(grpc_cfg.get("WORKER_PORT", 50052))
+            pull_enabled = bool(grpc_cfg.get("PULL_ENABLED", True))
+
+            def get_model_path():
+                # 提供 TorchScript 模型（worker 拉取后由 tch CModule 加载）
+                pt = os.path.join(self.ckpt_dir, "last.pt")
+                return pt if os.path.exists(pt) else None
+
+            def get_config():
+                return {
+                    "mcts_sims": getattr(self.cfg, "MCTS_SIMS", 128),
+                    "temperature": 1.0,
+                    "playout_cap_random": getattr(self.cfg, "PLAYOUT_CAP_RANDOM_ENABLED", False),
+                }
+
+            self.grpc_server_thread = GrpcServerThread(
+                host=host,
+                port=port,
+                max_workers=max_workers,
+                worker_host=worker_host,
+                worker_port=worker_port,
+                pull_enabled=pull_enabled,
+                data_queue=self.data_queue,
+                model_path_provider=get_model_path,
+                config_provider=get_config,
+            )
+            self.grpc_server_thread.start()
+
     def _init_model_and_checkpoint(self):
         cfg = self.cfg
         from banqi.nn_model import BanqiNet

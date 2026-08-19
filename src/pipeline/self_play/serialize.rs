@@ -1,0 +1,82 @@
+// src/pipeline/self_play/serialize.rs
+//
+// 将 `GameEpisode` 序列化为与 Python 侧 `episode_to_samples` / PyO3
+// `episode_to_dict` 字段契约一致的 JSON 对象，用于 gRPC 跨语言传输。
+//
+// 关键约定（与 src/bridge/python/episode.rs 的 episode_to_dict_with_shapes 对齐）：
+// - boards      : 每步棋盘特征，展平为一维数组 [C*H*W]（Python 侧再 reshape）
+// - scalars     : 每步标量特征 [scalar_count]
+// - policies    : 每步策略概率 [action_space]
+// - action_masks: 每步动作掩码 [action_space]
+// - 其余标量字段均为每步对齐的并列数组。
+
+use serde_json::{json, Value};
+
+use super::GameEpisode;
+
+/// 将 `GameEpisode` 序列化为与 PyO3 `episode_to_dict` 字段一致的 JSON 对象。
+///
+/// 从首个样本的观测动态推导 shape（board/scalar），从 policy 长度推导 action_space，
+/// 从而无需硬编码变体常量，可服务任意 `GameEnv`。空样本局（无任何中间状态）
+/// 时返回带空数组的 dict，不会 panic。
+pub fn episode_to_dict_json(episode: &GameEpisode) -> Value {
+    let n = episode.samples.len();
+
+    // 从首个样本推导 shape（空局时回退为全 0，Python 侧无样本可消费，不影响）
+    let (board_shape, scalar_shape, action_space) = match episode.samples.first() {
+        Some((obs, policy, ..)) => {
+            let bs: Vec<usize> = obs.board.shape().to_vec();
+            let ss = vec![obs.scalars.len()];
+            let ac = policy.len();
+            (bs, ss, ac)
+        }
+        None => (vec![0, 0, 0], vec![0], 0),
+    };
+
+    let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);
+    let mut scalars: Vec<Vec<f32>> = Vec::with_capacity(n);
+    let mut policies: Vec<Vec<f32>> = Vec::with_capacity(n);
+    let mut mcts_values: Vec<f32> = Vec::with_capacity(n);
+    let mut completed_qs: Vec<f32> = Vec::with_capacity(n);
+    let mut root_visits: Vec<u32> = Vec::with_capacity(n);
+    let mut game_results: Vec<f32> = Vec::with_capacity(n);
+    let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
+    let mut actions: Vec<usize> = Vec::with_capacity(n);
+    let mut health_diffs: Vec<f32> = Vec::with_capacity(n);
+    let mut is_full_searches: Vec<bool> = Vec::with_capacity(n);
+
+    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action, health_diff, is_full_search) in &episode.samples {
+        boards.push(obs.board.as_slice().unwrap().to_vec());
+        scalars.push(obs.scalars.as_slice().unwrap().to_vec());
+        policies.push(policy.clone());
+        mcts_values.push(*mcts_val);
+        completed_qs.push(*completed_q);
+        root_visits.push(*root_visit);
+        game_results.push(*game_result);
+        action_masks.push(mask.clone());
+        actions.push(*action);
+        health_diffs.push(*health_diff);
+        is_full_searches.push(*is_full_search);
+    }
+
+    json!({
+        "game_length": episode.game_length,
+        "winner": episode.winner,
+        "num_samples": n,
+        "boards": boards,
+        "scalars": scalars,
+        "policies": policies,
+        "mcts_values": mcts_values,
+        "completed_qs": completed_qs,
+        "root_visits": root_visits,
+        "game_results": game_results,
+        "health_diffs": health_diffs,
+        "action_masks": action_masks,
+        "actions": actions,
+        "is_full_search": is_full_searches,
+        "health_diff_red": episode.health_diff_red,
+        "board_shape": board_shape,
+        "scalar_shape": scalar_shape,
+        "action_space": action_space,
+    })
+}

@@ -39,14 +39,13 @@ fn main() {
         }
     }
 
-    // gRPC code generation (已禁用 - 现在使用本地模型推理)
-    // 如果需要重新启用 gRPC，请取消以下注释并创建 proto/banqi.proto 文件
-    // tonic_build::configure()
-    //     .build_server(false)
-    //     .build_client(true)
-    //     .compile_protos(&["proto/banqi.proto"], &["proto"])
-    //     .unwrap_or_else(|e| panic!("Failed to compile protos: {}", e));
-    // println!("cargo:rerun-if-changed=proto/banqi.proto");
+    // gRPC 代码生成
+    tonic_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .compile_protos(&["proto/banqi_service.proto"], &["proto"])
+        .unwrap_or_else(|e| panic!("Failed to compile protos: {}", e));
+    println!("cargo:rerun-if-changed=proto/banqi_service.proto");
 }
 
 // ── 环境检测：banqi-py-collector ──────────────────────────────────────────

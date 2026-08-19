@@ -9,6 +9,7 @@ pub mod types;
 pub mod batched;
 pub mod finalize;
 pub mod match_core;
+pub mod serialize;
 
 // 对外重新导出，保持 `crate::pipeline::self_play::*` 命名空间兼容旧调用方。
 pub use types::{

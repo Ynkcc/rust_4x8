@@ -34,17 +34,24 @@ name = "banqi-py-collector"
 path = "src/bin/py_data_collector.rs"
 required-features = ["pyo3"]
 
+# ── banqi-selfplay-worker ──────────────────────────────────────────────────
+[[bin]]
+name = "banqi-selfplay-worker"
+path = "src/bin/selfplay_worker.rs"
+
 [dependencies]
 rand = "0.8"
 rand_distr = "0.4"
 fixedbitset = "0.5"
-ndarray = "0.15"
+ndarray = { version = "0.15", features = ["serde"] }
 slab = "0.4"
 rayon = "1.12"
 tauri = { version = "2.11.5", features = [], optional = true }
 tauri-plugin-shell = { version = "2.3", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
+clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 num_cpus = "1.17"
@@ -52,10 +59,10 @@ mongodb = { version = "3.8" }
 bson = "2.15"
 ctrlc = "3.4"
 
-# gRPC 依赖 - 保留用于可能的 Python 服务通信
+# gRPC 依赖 - 用于自对弈/Python 节点通信
 tonic = "0.12"
 prost = "0.13"
-tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "time", "net", "sync", "signal", "io-util", "fs"] }
 futures = "0.3.34"
 async-trait ="0.1.92"
 

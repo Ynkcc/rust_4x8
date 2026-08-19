@@ -39,3 +39,7 @@ python/outputs
 *.tmp
 # ---- 本地 cargo 配置（不提交，含机器相关路径） ----
 .cargo/config.toml
+
+
+python/banqi/proto/banqi_service_pb2_grpc.py
+python/banqi/proto/banqi_service_pb2.py

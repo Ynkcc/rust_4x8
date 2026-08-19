@@ -10,12 +10,13 @@
 
 use crate::core::env::{GameEnv, Observation};
 use crate::core::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 // ================ 数据结构定义 ================
 
 /// 游戏简要统计信息
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameStats {
     /// 游戏总步数
     pub steps: usize,
@@ -30,7 +31,7 @@ pub struct GameStats {
 ///
 /// 样本中的观测统一使用 `Observation`（各游戏按自身通道/尺寸编码），
 /// 因此 `GameEpisode` 本身不携带游戏泛型参数。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameEpisode {
     /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码, 实际动作, 终局归一化血量差, 是否 Full Search)
     /// health_diff 为终局血量差按该样本玩家视角取号（红方视角为正）。

@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package banqi;
+
+// 游戏对局元信息通知
+message GameMeta {
+  string worker_id = 1;      // 工作节点标识
+  string data_id = 2;        // 数据包唯一 ID
+  int32 game_count = 3;      // 包含的局数
+  int32 total_steps = 4;     // 总步数
+  int32 winner = 5;          // 胜负结果 (1: 红, -1: 黑, 0: 平)
+  int64 timestamp = 6;       // 时间戳
+  string model_version = 7;  // 使用的模型版本
+}
+
+// 元信息确认响应
+message ReportMetaResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// 数据拉取请求
+message PullDataRequest {
+  string data_id = 1;
+}
+
+// 数据包分片
+message GameDataChunk {
+  string data_id = 1;
+  bytes payload = 2;        // 对局数据 (JSON 或序列化字节)
+  bool is_last = 3;
+}
+
+// 模型拉取请求与响应
+message ModelRequest {
+  string current_version = 1;
+}
+
+message ModelChunk {
+  string version = 2;
+  bytes chunk_data = 3;
+  bool is_last = 4;
+}
+
+// 心跳与控制参数同步
+message WorkerStatus {
+  string worker_id = 1;
+  int32 current_threads = 2;
+  int32 completed_games = 3;
+}
+
+message ControlCommand {
+  int32 mcts_sims = 1;              // MCTS 模拟次数
+  float temperature = 2;            // 温度参数
+  bool playout_cap_random = 3;      // 是否开局算力随机化
+  bool pause_self_play = 4;         // 是否暂停自对弈
+}
+
+// 自对弈与训练通信服务
+service SelfPlayService {
+  // 1. Rust 节点向 Python 上报对局元信息
+  rpc ReportGameMeta (GameMeta) returns (ReportMetaResponse);
+  
+  // 2. Python 服务端根据数据 ID 拉取具体数据（流式传输）
+  rpc PullGameData (PullDataRequest) returns (stream GameDataChunk);
+  
+  // 3. Rust 节点拉取最新的模型文件（流式传输）
+  rpc FetchLatestModel (ModelRequest) returns (stream ModelChunk);
+  
+  // 4. 心跳与控制指令同步
+  rpc SyncControl (WorkerStatus) returns (ControlCommand);
+}
