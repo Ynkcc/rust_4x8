@@ -679,11 +679,17 @@ def _run_selfplay(variant_id: str) -> None:
     print(f"\n{tag} 正在优雅关闭各线程/子进程...")
     for p in procs:
         p.join(timeout=15)
+    # 注意：infer_side == "rust" 时 procs 是 threading.Thread（无 terminate）；
+    # 仅对真正的 multiprocessing.Process 做强制终止。
     for p in procs:
         if p.is_alive():
-            print(f"{tag} ⚠️ 子进程 {p.name} 未在超时内退出，强制终止")
-            p.terminate()
-            p.join(timeout=5)
+            if isinstance(p, multiprocessing.Process):
+                print(f"{tag} ⚠️ 子进程 {p.name} 未在超时内退出，强制终止")
+                p.terminate()
+                p.join(timeout=5)
+            else:
+                # 线程无法强制终止，作为 daemon 线程会在主进程退出时一并结束。
+                print(f"{tag} ⚠️ 线程 {p.name} 未在超时内退出（daemon 线程，随主进程退出）")
     train_worker: TrainWorker = workers[0]
     if train_worker.is_alive():
         train_worker.join(timeout=30)

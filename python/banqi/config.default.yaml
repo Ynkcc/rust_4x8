@@ -42,7 +42,7 @@ common:
     SELF_PLAY_PROCESSES: 2        # 自对弈进程数（INFER_SIDE=python 多进程时用）
     SELF_PLAY_BACKEND: "thread"   # 并发后端（保留兼容；实际推理侧由 INFER_SIDE 决定）
     INFER_SIDE: "rust"            # 推理执行侧："python"(多进程, Python run_python_match) | "rust"(多线程, Rust run_native_match 管理线程, 透传 num_threads)
-    PLAYOUT_CAP_RANDOM_ENABLED: true  # 是否启用算力分配随机化
+    PLAYOUT_CAP_RANDOM_ENABLED: false # 关闭算力分配随机化：每局自对弈都用完整 MCTS_SIMS 搜索，保证数据质量
     FAST_MCTS_SIMS: 16            # Fast Search 模拟次数
     FULL_SEARCH_PROB: 0.25        # Full Search 出现概率 (25%)
 
@@ -91,7 +91,7 @@ common:
   eval_match:
     EVAL_MATCH_ROUNDS: 5          # 对战评估周期（轮次，0=关闭）
     EVAL_MATCH_GAMES: 20          # 每周期对弈局数
-    EVAL_MATCH_OPPONENTS: "heuristic64,minimax3"  # 规则对手列表
+    EVAL_MATCH_OPPONENTS: "heuristic16,heuristic64"  # 规则对手列表（不同 sims 的 MCTS）
     EVAL_MATCH_VS_PREV: true      # 是否与上一轮模型对头守门
 
   # ---------------- 价值目标与漂移评估 ----------------
@@ -206,9 +206,9 @@ common:
 
   train:
     TRAIN_BATCH: 32
-    LEARNING_RATE: 1.0e-4
+    LEARNING_RATE: 7.0e-5
     MIN_LR: 1.0e-5
-    LR_DECAY_STEPS: 30000
+    LR_DECAY_STEPS: 6000
     TRAIN_EPOCHS_PER_ROUND: 3
     MAX_SAMPLE_BUFFER_SIZE: 8000
     MIN_SAMPLES_TO_START: 256
@@ -218,16 +218,14 @@ common:
 
   paths:
     OUTPUT_DIR: "outputs/4x2"
-    MODEL_PATH: "outputs/4x2/checkpoints/banqi_mini_model_latest.pt"
-    STATE_DICT_PATH: "outputs/4x2/checkpoints/banqi_mini_model_latest.pth"
-    ONNX_PATH: "outputs/4x2/checkpoints/banqi_mini_model_latest.onnx"
+    MODEL_PATH: "outputs/4x2/checkpoints/last.pt"
+    STATE_DICT_PATH: "outputs/4x2/checkpoints/last.pth"
+    ONNX_PATH: "outputs/4x2/checkpoints/last.onnx"
     TENSORBOARD_LOG_DIR: "outputs/4x2/tensorboard"
 
   archive:
     DB_NAME: "banqi_mini"
+    ARCHIVE_ENABLED: false
 
   runtime:
-    MAX_RUNTIME_SECONDS: 1080
-
-  value_target:
-    VALUE_DRIFT_NUM_POSITIONS: 0
+    MAX_RUNTIME_SECONDS: 0

@@ -22,7 +22,11 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 # 评估常量
-EVAL_SIMS = 64
+# 评估时模型 MCTS sims
+# 使用更低的sims，反映模型先验真实水平
+# LLM注意：通常不应该修改此处，这被认为是一种作弊行为
+# 如果计划修改，希望匹配实际游戏规模，可以考虑重构移动到配置侧
+EVAL_SIMS = 16
 EVAL_MAX_ACTIONS = 16
 EVAL_C_SCALE = 0.25
 EVAL_GUMBEL_SCALE = 1.0

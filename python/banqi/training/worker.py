@@ -191,6 +191,10 @@ class TrainWorker(threading.Thread):
             self.start_total_samples = 0
             self.version = 0
 
+            # 冷启动：立即导出初始模型，供 Rust 自对弈加载，避免自对弈等待
+            # last.pt、训练 worker 又等待自对弈数据，两者互相等待而死锁。
+            self._export_initial_model()
+
         buffer_capacity = cfg.MAX_SAMPLE_BUFFER_SIZE
         self.buffer = DataBuffer(buffer_capacity, self.variant, cfg)
 
@@ -237,6 +241,24 @@ class TrainWorker(threading.Thread):
 
     def last_ckpt_path(self):
         return os.path.join(self.ckpt_dir, "last.ckpt")
+
+    def _export_initial_model(self) -> None:
+        """冷启动时导出初始模型（.pt/.onnx），供 Rust 自对弈加载。
+
+        全新起训时 last.pt 不存在，若不自对弈先导出，Rust 自对弈会一直等待
+        last.pt，而训练 worker 又因拿不到自对弈数据永不导出，形成死锁。
+        这里在模型初始化后立即导出一次初始权重，打破该循环依赖。
+        """
+        pt_path = os.path.join(self.ckpt_dir, "last.pt")
+        onnx_path = os.path.join(self.ckpt_dir, "last.onnx")
+        if os.path.exists(pt_path):
+            return
+        try:
+            self.model.eval()
+            export_model_isolated(self.model, pt_path, onnx_path, self.variant, self.device)
+            print(f"[TR-{self.variant.id}] 💾 冷启动：已导出初始模型 {pt_path}")
+        except Exception as exc:  # noqa: BLE001 - 初始导出失败不阻塞启动，训练仍可推进
+            print(f"[TR-{self.variant.id}] ⚠️ 冷启动初始模型导出失败: {exc}")
 
     def get_inference_model(self):
         if self.ema_enabled and self.ema_model is not None:
