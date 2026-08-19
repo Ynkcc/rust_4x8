@@ -117,7 +117,7 @@ common:
   # ---- 纯规则自对弈训练（TRAIN_MODE="rule_selfplay"）----
   RULE_SELFPLAY_TYPE: "heuristic"  # 规则类型：minimax | heuristic
   RULE_SELFPLAY_DEPTH: 3           # minimax 搜索深度（仅 minimax）
-  RULE_SELFPLAY_SIMS: 64           # 启发式 MCTS 模拟数（仅 heuristic）
+  RULE_SELFPLAY_SIMS: 128          # 启发式 MCTS 模拟数（64 -> 128，增强教师走子质量）
   RULE_SELFPLAY_GAMES: 500         # 每轮生成局数
   RULE_SELFPLAY_ROUNDS: 20         # 纯规则自对弈训练总轮数
   RULE_SELFPLAY_CONCURRENCY: 8     # 生成并发 worker 数（线程或进程，见 BACKEND）
@@ -182,22 +182,22 @@ common:
 # 4x4 变体：仅变体相关字段
 # ---------------------------------------------------------------------------
 4x4:
-  PREDICT_BATCH: 256
-  MCTS_SIMS: 256
-  MAX_CONSIDERED_ACTIONS: 16
-  TEMPERATURE_STEPS: 12
-  GAMES_PER_ITER: 40
-  NUM_WORKERS: 4
-  GAMES_PER_WORKER: 10
-  USE_BATCHED_SELF_PLAY: true
-  BATCH_CONCURRENCY: 16
-  TRAIN_BATCH: 128
-  LEARNING_RATE: 5.0e-4
-  MIN_LR: 1.0e-5
-  LR_DECAY_STEPS: 300000
-  TRAIN_EPOCHS_PER_ROUND: 2
-  MAX_SAMPLE_BUFFER_SIZE: 16000
-  MIN_SAMPLES_TO_START: 128
+  PREDICT_BATCH: 128            # 推理批大小（256 -> 128，匹配并发与吞吐）
+  MCTS_SIMS: 256                # 自对弈 MCTS 模拟数
+  MAX_CONSIDERED_ACTIONS: 16    # 候选动作上限（4x4 棋盘 16 格足够）
+  TEMPERATURE_STEPS: 12         # 随机探索步数
+  GAMES_PER_ITER: 60            # 每轮自对弈总局数（40 -> 60）
+  NUM_WORKERS: 4                # 自对弈 worker 数
+  GAMES_PER_WORKER: 15          # 每个 worker 的对局数（10 -> 15）
+  USE_BATCHED_SELF_PLAY: true   # 开启 Batched 自对弈
+  BATCH_CONCURRENCY: 16         # Batched 自对弈并发度
+  TRAIN_BATCH: 128              # 训练 batch 大小
+  LEARNING_RATE: 5.0e-4         # 初始学习率
+  MIN_LR: 1.0e-5                # 最小学习率
+  LR_DECAY_STEPS: 300000        # 学习率衰减步数
+  TRAIN_EPOCHS_PER_ROUND: 2     # 每轮训练 Epoch 数
+  MAX_SAMPLE_BUFFER_SIZE: 32000 # 样本缓冲区上限（16000 -> 32000，增强数据平滑度）
+  MIN_SAMPLES_TO_START: 1000    # 启动训练最少样本数（128 -> 1000，防止冷启动严重过拟合）
   DATA_AUGMENT_TRANSFORMS: "hflip,vflip,rot180,rot90,rot270,diag,anti_diag"
   MODEL_PATH: "outputs/4x4/checkpoints/banqi4x4_model_latest.pt"
   STATE_DICT_PATH: "outputs/4x4/checkpoints/banqi4x4_model_latest.pth"
@@ -206,7 +206,7 @@ common:
   TENSORBOARD_LOG_DIR: "outputs/4x4/tensorboard"
   DB_NAME: "banqi_4x4"
   ARCHIVE_PREFILL_GAMES: 400
-  MAX_RUNTIME_SECONDS: 3600     # 1 小时
+  MAX_RUNTIME_SECONDS: 0        # 运行时间限制（秒，0=不限时，避免 1小时中断）
   VALUE_DRIFT_EVAL_ROUNDS: 5
   VALUE_DRIFT_NUM_POSITIONS: 500
 

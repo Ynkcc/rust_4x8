@@ -48,6 +48,11 @@ _TEACHER_FNS: Dict[str, tuple] = {
     "game4x4": ("run_game4x4_heuristic_self_play", "run_game4x4_minimax_self_play"),  # 4x4
 }
 
+# 子批大小（局）：避免一次生成整批 RULE_SELFPLAY_GAMES（如 4x4 500 局）期间
+# 队列长期为空、训练永不启动。按此拆分后边生成边入队，形成流水线。
+# 4x4 启发式教师并发 4 约 2.5s/局，子批 25 局 ≈ 1 分钟即可产出第一批数据。
+_SUB_BATCH = 25
+
 
 def _teacher_fns(variant: Variant) -> tuple:
     key = variant.rust_prefix
@@ -71,6 +76,9 @@ def _episode_to_dict(ep, iteration: int, worker_id: int) -> Dict:
     """把 Rust 导出的 `PyGameEpisode` 序列化为与 `TrainWorker` 兼容的 episode dict。"""
     d = dict(ep.to_dict())
     d["iteration"] = iteration
+    # worker.py 用 "round_idx" 作为轮次标记（eval_match / checkpoint 周期判定），
+    # 必须显式写入，否则缺失时 worker 侧回退到 0，导致轮次语义与周期评估失效。
+    d["round_idx"] = iteration
     d["worker_id"] = worker_id
     return d
 
@@ -132,6 +140,7 @@ class RuleTeacherWorker(threading.Thread):
         self.stopped = stopped
         self.worker_id = worker_id
         self.total_games = 0
+        self.round_counter = 0
 
     def _put(self, item: Dict) -> None:
         while not self.stopped():
@@ -149,37 +158,50 @@ class RuleTeacherWorker(threading.Thread):
         temperature = cfg.RULE_SELFPLAY_TEMPERATURE
         concurrency = max(1, cfg.RULE_SELFPLAY_CONCURRENCY)
         games_per_batch = max(1, cfg.RULE_SELFPLAY_GAMES)
+        sub_batch = max(1, min(_SUB_BATCH, games_per_batch))
+        total_rounds = max(0, getattr(cfg, "RULE_SELFPLAY_ROUNDS", 0))
         print(f"{self.tag} 🚀 Rust 教师自对弈线程启动: rule={rule_type} "
               f"depth={depth} sims={sims} temp={temperature} "
-              f"concurrency={concurrency} games/batch={games_per_batch}（不依赖神经网络）")
+              f"concurrency={concurrency} games/batch={games_per_batch} "
+              f"sub_batch={sub_batch} total_rounds={total_rounds}（不依赖神经网络）")
         while not self.stopped():
+            if total_rounds > 0 and self.round_counter >= total_rounds:
+                print(f"{self.tag} 纯规则自对弈完成，共生成 {self.round_counter} 轮（累计 {self.total_games} 局）")
+                break
             t0 = time.time()
-            generated = 0
-            try:
-                eps = generate_teacher_batch(
-                    self.variant, rule_type, depth, sims, temperature,
-                    num_games=games_per_batch, concurrency=concurrency,
-                    worker_id=self.worker_id,
-                )
-            except Exception as exc:  # pragma: no cover
-                print(f"{self.tag} ⚠️ Rust 教师自对弈异常: {exc}")
-                time.sleep(0.5)
-                continue
-            for ep in eps:
-                if self.stopped():
-                    break
-                d = _episode_to_dict(ep, self.total_games // max(1, cfg.GAMES_PER_ITER),
-                                     self.worker_id)
-                if not d.get("num_samples", 0):
+            produced = 0
+            # 子批化：把本轮 games_per_batch 局拆成多个小子批，每个子批生成完
+            # 立即入队，让 TrainWorker 边收数据边训练，避免整批生成期间队列长期为空。
+            while produced < games_per_batch and not self.stopped():
+                n = min(sub_batch, games_per_batch - produced)
+                sub_gen = 0
+                try:
+                    eps = generate_teacher_batch(
+                        self.variant, rule_type, depth, sims, temperature,
+                        num_games=n, concurrency=concurrency,
+                        worker_id=self.worker_id,
+                    )
+                except Exception as exc:  # pragma: no cover
+                    print(f"{self.tag} ⚠️ Rust 教师自对弈异常: {exc}")
+                    time.sleep(0.5)
                     continue
-                self._put(d)
-                self.total_games += 1
-                generated += 1
-            dur = time.time() - t0
-            if eps:
-                print(f"{self.tag} 📊 生成 {generated} 局（累计 {self.total_games}，"
-                      f"耗时 {dur:.1f}s），等待训练消费...")
-            # 让 TrainWorker 有时间消费与训练，避免压满队列
+                for ep in eps:
+                    if self.stopped():
+                        break
+                    d = _episode_to_dict(ep, self.round_counter, self.worker_id)
+                    if not d.get("num_samples", 0):
+                        continue
+                    self._put(d)
+                    self.total_games += 1
+                    sub_gen += 1
+                produced += sub_gen
+                dur = time.time() - t0
+                print(f"{self.tag} 📊 第 {self.round_counter + 1}/{total_rounds if total_rounds > 0 else '∞'} 轮子批完成 {sub_gen} 局"
+                      f"（本轮 {produced}/{games_per_batch}，累计 {self.total_games}，"
+                      f"耗时 {dur:.1f}s）")
+                # 短暂让出，让 TrainWorker 有机会消费与训练
+                time.sleep(0.2)
+            self.round_counter += 1
             time.sleep(2.0)
 
     def stats(self) -> Dict[str, int]:
@@ -209,39 +231,53 @@ def rule_teacher_worker_main(
     depth = cfg.RULE_SELFPLAY_DEPTH
     sims = cfg.RULE_SELFPLAY_SIMS
     temperature = cfg.RULE_SELFPLAY_TEMPERATURE
-    concurrency = max(1, cfg.RULE_SELFPLAY_CONCURRENCY)
+    num_workers = max(1, cfg.RULE_SELFPLAY_CONCURRENCY)
     games_per_batch = max(1, cfg.RULE_SELFPLAY_GAMES)
+    games_per_worker = max(1, games_per_batch // num_workers)
+    sub_batch = max(1, min(_SUB_BATCH, games_per_worker))
+    total_rounds = max(0, getattr(cfg, "RULE_SELFPLAY_ROUNDS", 0))
     total_games = 0
+    round_counter = 0
 
     print(f"{tag} 🚀 Rust 教师自对弈子进程启动: rule={rule_type} "
           f"depth={depth} sims={sims} temp={temperature} "
-          f"concurrency={concurrency} games/batch={games_per_batch}（不依赖神经网络）")
+          f"games/worker={games_per_worker} "
+          f"sub_batch={sub_batch} total_rounds={total_rounds}（不依赖神经网络）")
     while not stop_event.is_set():
+        if total_rounds > 0 and round_counter >= total_rounds:
+            print(f"{tag} 纯规则自对弈完成，共生成 {round_counter} 轮（累计 {total_games} 局）")
+            break
         t0 = time.time()
-        generated = 0
-        try:
-            eps = generate_teacher_batch(
-                variant, rule_type, depth, sims, temperature,
-                num_games=games_per_batch, concurrency=concurrency,
-                worker_id=worker_id,
-            )
-        except Exception as exc:  # pragma: no cover
-            print(f"{tag} ⚠️ Rust 教师自对弈异常: {exc}")
-            time.sleep(0.5)
-            continue
-        for ep in eps:
-            if stop_event.is_set():
-                break
-            d = _episode_to_dict(ep, total_games // max(1, cfg.GAMES_PER_ITER),
-                                 worker_id)
-            if not d.get("num_samples", 0):
+        produced = 0
+        # 子批化：与线程版一致，避免整批生成期间队列长期为空
+        while produced < games_per_worker and not stop_event.is_set():
+            n = min(sub_batch, games_per_worker - produced)
+            sub_gen = 0
+            try:
+                eps = generate_teacher_batch(
+                    variant, rule_type, depth, sims, temperature,
+                    num_games=n, concurrency=1,
+                    worker_id=worker_id,
+                )
+            except Exception as exc:  # pragma: no cover
+                print(f"{tag} ⚠️ Rust 教师自对弈异常: {exc}")
+                time.sleep(0.5)
                 continue
-            # multiprocessing.Queue.put 会阻塞（无 timeout），循环里已检查 stop_event
-            data_q.put(d)
-            total_games += 1
-            generated += 1
-        dur = time.time() - t0
-        if eps:
-            print(f"{tag} 📊 生成 {generated} 局（累计 {total_games}，"
-                  f"耗时 {dur:.1f}s），等待训练消费...")
+            for ep in eps:
+                if stop_event.is_set():
+                    break
+                d = _episode_to_dict(ep, round_counter, worker_id)
+                if not d.get("num_samples", 0):
+                    continue
+                # multiprocessing.Queue.put 会阻塞（无 timeout），循环里已检查 stop_event
+                data_q.put(d)
+                total_games += 1
+                sub_gen += 1
+            produced += sub_gen
+            dur = time.time() - t0
+            print(f"{tag} 📊 第 {round_counter + 1}/{total_rounds if total_rounds > 0 else '∞'} 轮子批完成 {sub_gen} 局"
+                  f"（本轮 {produced}/{games_per_worker}，累计 {total_games}，"
+                  f"耗时 {dur:.1f}s）")
+            time.sleep(0.2)
+        round_counter += 1
         time.sleep(2.0)

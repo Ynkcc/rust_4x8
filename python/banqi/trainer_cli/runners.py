@@ -355,6 +355,7 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
         print(f"  RULE_BACKEND    = {config.RULE_SELFPLAY_BACKEND}（规则自对弈后端）")
         print(f"  RULE_CONCURRENCY= {config.RULE_SELFPLAY_CONCURRENCY}（规则自对弈并发数）")
         print(f"  RULE_DEPTH      = {config.RULE_SELFPLAY_DEPTH}（minimax 搜索深度）")
+        print(f"  RULE_ROUNDS     = {config.RULE_SELFPLAY_ROUNDS}（纯规则自对弈训练总轮数）")
     print("=" * 56)
 
     start_memory_guard()
@@ -395,14 +396,15 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
             producers.extend(procs)
             print(f"{tag} 🚀 Rust 教师自对弈子进程 × {len(procs)} 已启动")
         else:
-            concurrency = config.RULE_SELFPLAY_CONCURRENCY
-            for wid in range(concurrency):
-                producers.append(
-                    RuleTeacherWorker(variant, data_q, lambda: stop_flag[0],
-                                      worker_id=wid)
-                )
-            print(f"{tag} 🚀 Rust 教师自对弈线程 × {concurrency} 已创建"
-                  f"（RULE_SELFPLAY_BACKEND=thread）")
+            # thread 后端：Python 侧只需 1 个 Producer 线程作为 Rust 接口调度器。
+            # Rust 侧的 run_*_self_play 内部会按 RULE_SELFPLAY_CONCURRENCY 参数
+            # 开启线程池并行计算，在释放 GIL 的情况下彻底吃满多核。
+            producers.append(
+                RuleTeacherWorker(variant, data_q, lambda: stop_flag[0], worker_id=0)
+            )
+            print(f"{tag} 🚀 Rust 教师自对弈调度线程已启动"
+                  f"（RULE_SELFPLAY_BACKEND=thread，Rust 内部并发="
+                  f"{config.RULE_SELFPLAY_CONCURRENCY}）")
     else:
         producers.append(_ArchiveFeederWorker(variant, data_q, stop_flag))
 
@@ -453,6 +455,8 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
                 _request_stop()
                 break
             if not all(p.is_alive() for p in producers):
+                while not data_q.empty() and workers[0].is_alive():
+                    time.sleep(0.5)
                 print(f"{tag} 有数据供给进程/线程退出")
                 _request_stop()
                 break

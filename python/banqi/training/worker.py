@@ -249,7 +249,10 @@ class TrainWorker(threading.Thread):
         onnx_path = os.path.join(self.ckpt_dir, "last.onnx")
 
         should_save_ckpt = force or (round_idx % save_every == 0) or (round_idx == 0)
-        should_export = force or (round_idx % export_every == 0) or not os.path.exists(pt_path)
+        # round_idx==0 时仅在 pt 不存在时导出一次；round_idx>0 才按周期导出，
+        # 避免冷启动/rule_selfplay 早期 round 固定时每个训练步都重导 TorchScript/ONNX 拖慢吞吐。
+        should_export = force or (round_idx > 0 and round_idx % export_every == 0) \
+            or not os.path.exists(pt_path)
 
         if not should_save_ckpt and not should_export:
             return
