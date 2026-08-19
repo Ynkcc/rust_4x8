@@ -419,6 +419,7 @@ class TrainWorker(threading.Thread):
 
             # ---- 训练量限制：与新增样本量匹配，避免旧数据反复训练 ----
             capacity_base = getattr(cfg, "MAX_SAMPLE_BUFFER_SIZE", 50000)
+            train_mode = getattr(cfg, "TRAIN_MODE", "selfplay").strip().lower()
             if new_samples >= capacity_base // 4:
                 max_batches = None
             else:
@@ -426,6 +427,16 @@ class TrainWorker(threading.Thread):
                     (new_samples / cfg.TRAIN_BATCH) * cfg.TRAIN_EPOCHS_PER_ROUND + 0.5
                 )
                 max_batches = max(max_batches, 1)
+                # 冷启动蒸馏（rule_selfplay）修复：子批化后每个 episode 只含 1 局样本
+                #（增强后 ~80，远小于一个 TRAIN_BATCH），上式会把每 episode 的训练压成
+                # 1 步，策略头梯度不足、policy loss 无法下降。改为冷启动期（buffer 尚小）
+                # 强制训练 buffer 的完整一个 epoch，让策略头充分拟合教师策略；待 buffer
+                # 增大后自动让位给按新数据量成比例的公式，避免翻转成对旧数据过训练。
+                if train_mode == "rule_selfplay":
+                    buffer_epoch = max(1, len(self.buffer) // max(1, cfg.TRAIN_BATCH))
+                    cold_start_limit = max(1, cfg.TRAIN_BATCH * 4)
+                    if len(self.buffer) < cold_start_limit:
+                        max_batches = max(max_batches, buffer_epoch)
 
             self.model.train()
             epoch_results, total_batches = run_training_epochs(

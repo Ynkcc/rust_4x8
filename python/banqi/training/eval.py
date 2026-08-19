@@ -237,25 +237,29 @@ def eval_match(
     global_step: int,
     tag: str,
 ) -> None:
-    """周期性对战评估：vs 规则对手 + 上一轮模型守门。"""
+    """周期性对战评估：vs 规则对手 + 上一轮模型守门。
+
+    注意：banqi.eval 的 play_match / play_match_stats 接受 torch.nn.Module 或规则
+    标识（heuristic64/minimax3 等），内部经 _resolve_player_spec 自动导出 TorchScript
+    供 Rust 原生评估。因此直接传模型对象即可，不依赖（已不存在的）ModelPredictor 与
+    play_match_vs。
+    """
     from banqi import eval as banqi_eval
     from banqi.nn_model import BanqiNet
-    from banqi.constants import build_constants
 
     n = max(1, cfg.EVAL_MATCH_GAMES)
     opp_str = cfg.EVAL_MATCH_OPPONENTS
     opps = [o.strip() for o in opp_str.split(",") if o.strip()]
     model.eval()
-    cur = banqi_eval.ModelPredictor(model, device)
-    C = build_constants(variant)
     try:
+        # 当前模型 vs 各规则对手
         for opp in opps:
             try:
                 wins, draws, losses, avg_moves = banqi_eval.play_match_stats(
-                    cur,
+                    model,
+                    opp,
                     n=n,
                     model_sims=banqi_eval.EVAL_SIMS,
-                    opponent=opp,
                     variant_id=variant.id,
                 )
                 tot = max(1, wins + draws + losses)
@@ -269,6 +273,7 @@ def eval_match(
                 )
             except Exception as exc:
                 print(f"{tag} ⚠️ 对战评估 vs {opp} 失败: {exc}")
+        # 当前模型 vs 上一轮模型（守门）
         if cfg.EVAL_MATCH_VS_PREV and prev_weights is not None:
             try:
                 prev_model = BanqiNet(variant).to(device)
@@ -276,11 +281,10 @@ def eval_match(
                     {k: v.to(device) for k, v in prev_weights.items()}
                 )
                 prev_model.eval()
-                prev_pred = banqi_eval.ModelPredictor(prev_model, device)
                 n_prev = max(4, n // 2)
-                wins, draws, losses, _ = banqi_eval.play_match_vs(
-                    cur,
-                    prev_pred,
+                wins, draws, losses, _ = banqi_eval.play_match(
+                    model,
+                    prev_model,
                     n=n_prev,
                     model_sims=banqi_eval.EVAL_SIMS,
                     variant_id=variant.id,

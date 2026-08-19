@@ -156,13 +156,13 @@ class RuleTeacherWorker(threading.Thread):
         depth = cfg.RULE_SELFPLAY_DEPTH
         sims = cfg.RULE_SELFPLAY_SIMS
         temperature = cfg.RULE_SELFPLAY_TEMPERATURE
-        concurrency = max(1, cfg.RULE_SELFPLAY_CONCURRENCY)
+        concurrency = max(1, cfg.RULE_SELFPLAY_CONCURRENCY)  # Rust 侧 rayon 线程数（并发完全交给 Rust 内层）
         games_per_batch = max(1, cfg.RULE_SELFPLAY_GAMES)
         sub_batch = max(1, min(_SUB_BATCH, games_per_batch))
         total_rounds = max(0, getattr(cfg, "RULE_SELFPLAY_ROUNDS", 0))
         print(f"{self.tag} 🚀 Rust 教师自对弈线程启动: rule={rule_type} "
               f"depth={depth} sims={sims} temp={temperature} "
-              f"concurrency={concurrency} games/batch={games_per_batch} "
+              f"inner_concurrency={concurrency} games/batch={games_per_batch} "
               f"sub_batch={sub_batch} total_rounds={total_rounds}（不依赖神经网络）")
         while not self.stopped():
             if total_rounds > 0 and self.round_counter >= total_rounds:

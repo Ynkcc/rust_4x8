@@ -67,7 +67,16 @@ impl<G: GameEnv + PyChessEnvCore + Sync> Evaluator<G> for HeuristicEval<G> {
     }
 }
 
-/// 泛型启发式教师自对弈核心：驱动 `run_batched_self_play` 生成 `num_games` 局。
+/// 泛型启发式教师自对弈核心：用 rayon 线程池并行驱动 `num_games` 局独立自对弈。
+///
+/// 并行化说明：原实现用 `run_batched_self_play`（主线程串行推进多棵树 + 共享 eval
+/// worker 并行评估叶子）。但启发式评估极快，瓶颈落在主线程串行的 MCTS 树遍历，
+/// 因此内层 wave 并发几乎无增益（实测并发 4/8/12 吞吐相同，~2.6s/局）。
+///
+/// 改为：每局用独立 `SelfPlayRunner::play_episode` 跑完整同步自对弈（独立 env +
+/// 独立 GumbelMCTS，树遍历本身单线程），用 rayon 线程池并行跑 `num_games` 局——
+/// 树遍历本身并行，吞吐随线程数线性扩展，真正吃满多核。这也让「1 个外层 Python
+/// 调度线程 + Rust 内层多线程」实现彻底并行。
 #[cfg(feature = "pyo3")]
 fn run_heuristic_self_play_core<G: GameEnv + PyChessEnvCore + Sync>(
     py: Python<'_>,
@@ -83,34 +92,32 @@ fn run_heuristic_self_play_core<G: GameEnv + PyChessEnvCore + Sync>(
         prior_scale: 0.5,
         _marker: std::marker::PhantomData,
     };
-    let mut episodes: Vec<PyGameEpisode> = Vec::with_capacity(num_games);
-    let mut game_count = 0;
     let _ = worker_id;
-    while game_count < num_games {
-        let batch: Vec<GameEpisode> = py.detach(|| {
-            crate::pipeline::self_play::run_batched_self_play::<G, HeuristicEval<G>>(
-                &evaluator,
-                cfg,
-                num_games - game_count,
-                concurrency,
-                make_env,
-            )
-        });
-        for ep in batch {
-            if ep.samples.is_empty() {
-                continue;
-            }
-            episodes.push(PyGameEpisode {
-                inner: ep,
-                variant,
-            });
-            game_count += 1;
-            if game_count >= num_games {
-                break;
-            }
-        }
-    }
+    // rayon 局部线程池：线程数取 RULE_SELFPLAY_CONCURRENCY（concurrency 参数），
+    // 每子批调用建一次池，线程数固定、无动态开销。
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(concurrency.max(1))
+        .build()
+        .expect("rayon ThreadPoolBuilder::build failed");
+    let episodes: Vec<GameEpisode> = py.detach(|| {
+        pool.install(|| {
+            (0..num_games)
+                .into_par_iter()
+                .map(|_| {
+                    crate::pipeline::self_play::run_self_play::<G, HeuristicEval<G>>(
+                        &evaluator,
+                        cfg,
+                        make_env,
+                    )
+                })
+                .filter(|ep| !ep.samples.is_empty())
+                .collect()
+        })
+    });
     episodes
+        .into_iter()
+        .map(|ep| PyGameEpisode { inner: ep, variant })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
