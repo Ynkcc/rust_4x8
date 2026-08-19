@@ -57,19 +57,32 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
 
 
 class DataBuffer:
-    """向量化缓冲区（维度来自变体），value 目标按 config.VALUE_TARGET_MODE 计算。"""
+    """向量化环形缓冲区（预分配固定容量 numpy 数组，避免反复分配/释放导致的
+    内存碎片化/RSS 线性增长），value 目标按 config.VALUE_TARGET_MODE 计算。
+
+    样本按环形写入覆盖最旧数据；`len()` 返回当前有效样本数；`get_batch` 用
+    高级索引在预分配数组上切片，不产生新的大分配。
+    """
 
     def __init__(self, capacity: int, variant: Variant, cfg) -> None:
-        self.capacity = capacity
+        self.capacity = max(int(capacity), 1)
         self.variant = variant
         self.cfg = cfg
         self.C = build_constants(variant)
-        self.boards: List[np.ndarray] = []
-        self.scalars: List[np.ndarray] = []
-        self.probs: List[np.ndarray] = []
-        self.values: List[float] = []
-        self.masks: List[np.ndarray] = []
-        self.root_visits: List[int] = []
+        self.capacity = max(self.capacity, self.C.TRAIN_BATCH
+                            if hasattr(self.C, "TRAIN_BATCH") else 32)
+        c = self.capacity
+        C = self.C
+        # 预分配固定容量数组（一次性分配，后续只覆盖写入，不触发反复 malloc/free）
+        self.boards = np.empty((c, C.TOTAL_INPUT_CHANNELS, C.BOARD_ROWS, C.BOARD_COLS),
+                               dtype=np.float32)
+        self.scalars = np.empty((c, C.SCALAR_FEATURE_COUNT), dtype=np.float32)
+        self.probs = np.empty((c, C.ACTION_SPACE_SIZE), dtype=np.float32)
+        self.values = np.empty(c, dtype=np.float32)
+        self.masks = np.empty((c, C.ACTION_SPACE_SIZE), dtype=np.float32)
+        self.root_visits = np.empty(c, dtype=np.int64)
+        self._size = 0          # 当前有效样本数
+        self._head = 0          # 环形写入位置（下一个覆盖点）
         # anneal 模式下 game_result 的权重（0~1），由 TrainWorker 按轮更新
         self.value_result_weight = 0.0
         # 累计丢弃的异常样本数（NaN/Inf/非法策略），供 TB 数据质量监控
@@ -126,12 +139,17 @@ class DataBuffer:
                 dropped += 1
                 continue
 
-            self.boards.append(board)
-            self.scalars.append(scalar_arr)
-            self.probs.append(probs)
-            self.values.append(target_val)
-            self.masks.append(mask)
-            self.root_visits.append(int(s.get('root_visit_count', 0)))
+            # 环形写入：覆盖 head 位置，然后 head 前移（超容量则淘汰最旧样本）
+            i = self._head
+            self.boards[i] = board
+            self.scalars[i] = scalar_arr
+            self.probs[i] = probs
+            self.values[i] = target_val
+            self.masks[i] = mask
+            self.root_visits[i] = int(s.get('root_visit_count', 0))
+            self._head = (self._head + 1) % self.capacity
+            if self._size < self.capacity:
+                self._size += 1
 
         if dropped:
             self.total_dropped += dropped
@@ -140,18 +158,24 @@ class DataBuffer:
                 f"（累计 {self.total_dropped}，NaN/Inf/非法策略），Blocked 来自自对弈或冷存储"
             )
 
-        if len(self.boards) > self.capacity:
-            excess = len(self.boards) - self.capacity
-            for attr in ("boards", "scalars", "probs", "values", "masks", "root_visits"):
-                setattr(self, attr, getattr(self, attr)[excess:])
-
     def __len__(self) -> int:
-        return len(self.boards)
+        return self._size
 
     def get_batch(self, indices):
-        b = torch.from_numpy(np.stack([self.boards[i] for i in indices]))
-        s = torch.from_numpy(np.stack([self.scalars[i] for i in indices]))
-        p = torch.from_numpy(np.stack([self.probs[i] for i in indices]))
-        v = torch.tensor([self.values[i] for i in indices], dtype=torch.float32)
-        m = torch.from_numpy(np.stack([self.masks[i] for i in indices]))
+        """用高级索引在预分配数组上切片（不产生新的大分配，内存稳定）。
+
+        indices 为 [0, len(self)) 内的整数索引（logical 索引），映射到环形
+        存储的实际位置后做 fancy indexing。未满时 logical i 对应物理 i；已满
+        时 logical 0 是最旧样本，对应物理位置 head。
+        """
+        idx = np.asarray(indices, dtype=np.int64)
+        if self._size < self.capacity:
+            actual = idx
+        else:
+            actual = (idx + self._head) % self.capacity
+        b = torch.from_numpy(self.boards[actual])
+        s = torch.from_numpy(self.scalars[actual])
+        p = torch.from_numpy(self.probs[actual])
+        v = torch.from_numpy(self.values[actual])
+        m = torch.from_numpy(self.masks[actual])
         return b, s, p, v, m

@@ -167,6 +167,58 @@ def export_onnx(
         return False
 
 
+def _export_worker_proc(pipe_conn, pt_path: Optional[str], onnx_path: Optional[str], variant_id: str, device_str: str) -> None:
+    """子进程独立导出入口：通过 Pipe 接收共享内存句柄 (share_memory_)。
+
+    torch.jit.trace 会在 PyTorch C++ 内部生成极难释放的 CompilationUnit 缓存。
+    在独立子进程中导出，可以在导出完成后由 OS 物理清空子进程堆内存，彻底消除主进程泄露。
+    """
+    model_state = pipe_conn.recv()
+    from banqi.nn_model import BanqiNet
+    from banqi.variant import get_variant
+    v = get_variant(variant_id)
+    dev = torch.device(device_str)
+    model = BanqiNet(v).to(dev)
+    model.load_state_dict(model_state)
+    if pt_path:
+        export_torchscript(model, pt_path, v, dev)
+    if onnx_path:
+        export_onnx(model, onnx_path, v, dev)
+
+
+def export_model_isolated(
+    model: torch.nn.Module,
+    pt_path: Optional[str],
+    onnx_path: Optional[str],
+    variant: Variant,
+    device: torch.device,
+) -> None:
+    """使用 spawn 独立子进程 + Pipe 共享内存句柄导出 TorchScript/ONNX，零拷贝隔离内存泄露。"""
+    import torch.multiprocessing as tmp
+    raw_model = getattr(model, "_orig_mod", model)
+    # 将模型 state_dict 转为 CPU 共享内存 Tensor，只跨进程发送句柄 (Zero-copy)
+    state_dict = {
+        k: v.detach().cpu().clone().share_memory_()
+        for k, v in raw_model.state_dict().items()
+    }
+    parent_conn, child_conn = tmp.Pipe()
+    ctx = tmp.get_context("spawn")
+    p = ctx.Process(
+        target=_export_worker_proc,
+        args=(child_conn, pt_path, onnx_path, variant.id, str(device)),
+    )
+    p.start()
+    parent_conn.send(state_dict)
+    p.join(timeout=60)
+    if p.is_alive():
+        p.terminate()
+        raise RuntimeError(f"模型隔离导出子进程超时 (60s): {pt_path} / {onnx_path}")
+    if p.exitcode != 0:
+        raise RuntimeError(f"模型隔离导出子进程异常退出 (exitcode={p.exitcode})")
+
+
+
+
 def load_checkpoint(
     model,
     optimizer,

@@ -173,6 +173,9 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "DATA_QUEUE_MAXSIZE": _cast_int,
     "ARCHIVE_QUEUE_MAXSIZE": _cast_int,
     "CHECKPOINT_EVERY_N_ROUNDS": _cast_int,
+    "CKPT_SAVE_EVERY": _cast_int,
+    "CKPT_EXPORT_EVERY": _cast_int,
+
     "MONITOR_ENABLED": _cast_bool,
     "MONITOR_INTERVAL": _cast_float,
     "MONITOR_PER_CORE": _cast_bool,
@@ -381,6 +384,8 @@ class Config:
     DATA_QUEUE_MAXSIZE: int
     ARCHIVE_QUEUE_MAXSIZE: int
     CHECKPOINT_EVERY_N_ROUNDS: int
+    CKPT_SAVE_EVERY: int            # 完整 checkpoint (.pth) 落盘间隔轮次
+    CKPT_EXPORT_EVERY: int          # TorchScript (.pt) / ONNX (.onnx) 导出间隔轮次
     MONITOR_ENABLED: bool
     MONITOR_INTERVAL: float
     MONITOR_PER_CORE: bool

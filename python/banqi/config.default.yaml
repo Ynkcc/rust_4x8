@@ -69,6 +69,9 @@ common:
 
   # ---------------- 检查点 ----------------
   CHECKPOINT_EVERY_N_ROUNDS: 2  # 每 N 轮存一次检查点
+  CKPT_SAVE_EVERY: 1            # 完整 checkpoint (.pth) 落盘间隔轮次
+  CKPT_EXPORT_EVERY: 10         # TorchScript (.pt) / ONNX (.onnx) 导出间隔轮次
+
 
   # ---------------- 监控 ----------------
   MONITOR_ENABLED: true         # 是否启用系统监控

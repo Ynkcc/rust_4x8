@@ -20,7 +20,7 @@ import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
-from banqi.checkpoint import export_torchscript, export_onnx
+from banqi.checkpoint import export_torchscript, export_onnx, export_model_isolated
 from banqi.constants import build_constants
 from banqi.tb_logger import add_scalar
 from banqi.variant import Variant
@@ -235,29 +235,48 @@ class TrainWorker(threading.Thread):
     def get_checkpoint_path(self):
         return self.last_ckpt_path()
 
-    def save_checkpoint(self, new_samples: int = 0, total_samples: Optional[int] = None,
-                        round_idx: int = 0):
-        path = self.last_ckpt_path()
-        self.model.eval()
-        snapshot = {
-            "model_state": self.model.state_dict(),
-            "optimizer_state": self.optimizer.state_dict(),
-            "scheduler_state": self.scheduler.state_dict(),
-            "global_step": self.global_step,
-            "total_samples": total_samples if total_samples is not None else self.start_total_samples,
-            "version": self.version,
-            "pytorch_version": torch.__version__,
-        }
-        torch.save(snapshot, path)
+    def save_checkpoint(
+        self,
+        new_samples: int = 0,
+        total_samples: Optional[int] = None,
+        round_idx: int = 0,
+        force: bool = False,
+    ) -> None:
+        save_every = max(int(getattr(self.cfg, "CKPT_SAVE_EVERY", 1)), 1)
+        export_every = max(int(getattr(self.cfg, "CKPT_EXPORT_EVERY", 10)), 1)
+
         pt_path = os.path.join(self.ckpt_dir, "last.pt")
         onnx_path = os.path.join(self.ckpt_dir, "last.onnx")
-        export_torchscript(self.model, pt_path, self.variant, self.device)
-        export_onnx(self.model, onnx_path, self.variant, self.device)
+
+        should_save_ckpt = force or (round_idx % save_every == 0) or (round_idx == 0)
+        should_export = force or (round_idx % export_every == 0) or not os.path.exists(pt_path)
+
+        if not should_save_ckpt and not should_export:
+            return
+
+        path = self.last_ckpt_path()
+        if should_save_ckpt:
+            self.model.eval()
+            snapshot = {
+                "model_state": self.model.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                "scheduler_state": self.scheduler.state_dict(),
+                "global_step": self.global_step,
+                "total_samples": total_samples if total_samples is not None else self.start_total_samples,
+                "version": self.version,
+                "pytorch_version": torch.__version__,
+            }
+            torch.save(snapshot, path)
+
+        if should_export:
+            export_model_isolated(self.model, pt_path, onnx_path, self.variant, self.device)
+
         with self._last_ckpt_lock:
             self.metrics["last_ckpt_path"] = path
             self.metrics["last_global_step"] = self.global_step
-        print(f"[TR-{self.variant.id}] 💾 checkpoint 已保存: {path} + {pt_path} "
-              f"(global_step={self.global_step}, v{self.version})")
+        print(f"[TR-{self.variant.id}] 💾 checkpoint 已保存/更新: {path} + {pt_path} "
+              f"(global_step={self.global_step}, v{self.version}, force={force})")
+
 
     def _anneal_value_weight(self, round_idx: int):
         if self.anneal_rounds and self.buffer.cfg.VALUE_TARGET_MODE == "anneal":
@@ -275,11 +294,16 @@ class TrainWorker(threading.Thread):
         self._raw_sample_pool.extend(samples)
         if len(self._raw_sample_pool) < n_fixed:
             return
+        # 防止池子无限累积导致内存增长：设一个上限（n_fixed*2），超过即截断
+        max_pool = max(n_fixed * 2, 512)
+        if len(self._raw_sample_pool) > max_pool:
+            self._raw_sample_pool = self._raw_sample_pool[-max_pool:]
         pool = select_balanced_fixed_samples(self._raw_sample_pool, n_fixed)
         fixed = build_fixed_eval(pool, self.variant) if pool else None
+        # 无论构建成功与否都清空池子，避免 build 失败时无界累积
+        self._raw_sample_pool = []
         if fixed is not None:
             self._fixed_eval = fixed
-            self._raw_sample_pool = []
 
     def _permutation(self, transform: str) -> list:
         """获取 Rust 导出的动作置换表（new_policy = old_policy[perm]），带缓存。"""
@@ -478,16 +502,29 @@ class TrainWorker(threading.Thread):
             last_processed_round = round_idx
             version += 1
             self.version = version
+            # 周期内存维护：强制 GC + glibc arena 归还（防 RSS 线性增长）
+            self._maintain_memory()
 
             if last_processed_round >= rounds - 1:
                 print(f"[TR-{self.variant.id}] 达到训练轮数上限 {rounds}，退出训练 worker")
                 break
+
 
     def _maybe_save_early(self, episode_dict):
         # 预热阶段（样本不足）也定期保存，避免长期无 checkpoint
         if (episode_dict.get("round_idx", 0) % 10 == 0) and not os.path.exists(
                 self.last_ckpt_path()):
             self.save_checkpoint(round_idx=episode_dict.get("round_idx", 0))
+
+    def _maintain_memory(self, force: bool = False) -> None:
+        """周期内存维护：手动 GC + 堆内存空闲页释放。"""
+        import gc as _gc
+        import ctypes
+        self._round_mem_count = getattr(self, "_round_mem_count", 0) + 1
+        _gc.collect()
+        if (force or self._round_mem_count % 50 == 0) and hasattr(ctypes.CDLL("libc.so.6"), "malloc_trim"):
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+
 
     def stats(self) -> Dict[str, float]:
         with self._stats_lock:
@@ -506,6 +543,7 @@ class TrainWorker(threading.Thread):
             return list(self.round_history)
 
     def finalize(self) -> None:
-        """最终落盘 checkpoint。"""
-        self.save_checkpoint()
-        print(f"[TR-{self.variant.id}] 🎉 最终 Checkpoint 已保存")
+        """优雅退出/结束训练时触发最终 checkpoint 强制保存与导出。"""
+        self.save_checkpoint(force=True)
+        print(f"[TR-{self.variant.id}] 🎉 最终 Checkpoint 强制保存与导出已完成")
+
