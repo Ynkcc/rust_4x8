@@ -54,6 +54,9 @@ def _variant_id(variant: Variant) -> str:
 def _episode_to_dict(ep, iteration: int, worker_id: int) -> Dict:
     d = dict(ep.to_dict())
     d["iteration"] = iteration
+    # TrainWorker 用 "round_idx" 作为轮次标记（checkpoint 周期 / eval_match / 日志展示）。
+    # 必须显式写入，否则缺失时 worker 侧回退到 0，导致日志恒显示 Round#0。
+    d["round_idx"] = iteration
     d["worker_id"] = worker_id
     return d
 
@@ -333,7 +336,7 @@ def sp_worker_main(
     scheme = "batched"
     vid = _variant_id(variant)
 
-    _torch.set_num_threads(1)  # 每进程 1 torch 线程，防多进程共享核超售
+    _torch.set_num_threads(1)  # 每子进程限 1 个 torch 线程，防多进程共享核超售
     sp_cfg = build_self_play_config(variant)
 
     # ---- MODEL_BACKEND="onnx"：优先走 Rust 持有 ONNX 模型的 run_native_match（免 GIL） ----

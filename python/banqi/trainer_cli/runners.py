@@ -583,25 +583,51 @@ def _run_selfplay(variant_id: str) -> None:
     counting_q = _CountingQueue(data_q)
 
     print(
-        f"{tag} banqi_4x8 {variant.env_const_prefix or '标准'}常量: "
+        f"{tag} banqi_4x8 {variant.id} 常量: "
         f"BOARD=({build_const(variant, 'BOARD_CHANNELS')},"
         f"{build_const(variant, 'BOARD_ROWS')},{build_const(variant, 'BOARD_COLS')}), "
         f"SCALAR={build_const(variant, 'SCALAR_FEATURE_COUNT')}, "
         f"ACTION={build_const(variant, 'ACTION_SPACE_SIZE')}"
     )
 
-    procs = [
-        ctx.Process(
-            target=sp_worker_main,
-            args=(variant_id, wid, data_q, archive_q, stop_event),
-            name=f"SelfPlayProc-{wid}", daemon=True,
-        )
-        for wid in range(config.SELF_PLAY_PROCESSES)
-    ]
-    for p in procs:
-        p.start()
-    print(f"{tag} 🚀 自对弈子进程 × {len(procs)} 已启动 "
-          f"(推理设备={config.INFER_DEVICE}, 独立 GIL/CUDA)")
+    infer_side = (config.INFER_SIDE or "python").strip().lower()
+    if infer_side == "rust":
+        # Rust 侧推理：多线程由 Rust 内部管理（run_native_match 用 rayon 线程池，
+        # num_threads 参数透传 = BATCH_CONCURRENCY）。Python 侧仅 1 个调度线程调用
+        # _run_native_model_loop（只做调度 + 入队），不创建计算线程。
+        # model 格式按 MODEL_BACKEND 选择：onnx -> ONNX_PATH(.onnx)，否则 -> MODEL_PATH(.pt)。
+        from banqi.selfplay.config import build_self_play_config
+        from banqi.selfplay.worker import _run_native_model_loop
+
+        sp_cfg = build_self_play_config(variant)
+        model_backend = (config.MODEL_BACKEND or "torchscript").strip().lower()
+        model_path = config.ONNX_PATH if model_backend == "onnx" else config.MODEL_PATH
+        procs = [
+            threading.Thread(
+                target=_run_native_model_loop,
+                args=(variant, model_path, config, sp_cfg, data_q, archive_q,
+                      stop_event, max(1, config.GAMES_PER_ITER), 0, f"{tag}[Rust]"),
+                name="SelfPlayRust-0", daemon=True,
+            )
+        ]
+        for p in procs:
+            p.start()
+        print(f"{tag} 🚀 Rust 侧推理自对弈已启动（Rust 内部线程池 "
+              f"num_threads={config.BATCH_CONCURRENCY}, 免 GIL, model={model_backend}）")
+    else:
+        # Python 侧推理：spawn 子进程（每子进程独立解释器/GIL，Python run_python_match 推理）
+        procs = [
+            ctx.Process(
+                target=sp_worker_main,
+                args=(variant_id, wid, data_q, archive_q, stop_event),
+                name=f"SelfPlayProc-{wid}", daemon=True,
+            )
+            for wid in range(config.SELF_PLAY_PROCESSES)
+        ]
+        for p in procs:
+            p.start()
+        print(f"{tag} 🚀 自对弈子进程 × {len(procs)} 已启动 "
+              f"(推理设备={config.INFER_DEVICE}, Python 推理, 独立 GIL/CUDA)")
 
     workers: List[threading.Thread] = [TrainWorker(counting_q, stop_flag, variant)]
     if use_archive:
@@ -705,6 +731,24 @@ def _run_selfplay(variant_id: str) -> None:
     print(f"{sep}")
 
 
+_const_dims_cache: Dict = {}
+
+
 def build_const(variant, name: str) -> int:
-    """读取 banqi_4x8 上带变体前缀的维度常量。"""
-    return int(getattr(banqi_4x8, variant.env_const_prefix + name))
+    """从 Rust 统一 `variant_dims(variant_id)` API 取变体维度。
+
+    替代按 env_const_prefix 拼接 `GAME4X4_*` 等模块级常量名（后者已不作为 Python 侧
+    维度来源）。结果按变体缓存。
+    """
+    vid = variant.id
+    if vid not in _const_dims_cache:
+        _const_dims_cache[vid] = dict(banqi_4x8.variant_dims(vid))
+    dims = _const_dims_cache[vid]
+    key = {
+        "BOARD_ROWS": "board_rows",
+        "BOARD_COLS": "board_cols",
+        "BOARD_CHANNELS": "board_channels",
+        "SCALAR_FEATURE_COUNT": "scalar_feature_count",
+        "ACTION_SPACE_SIZE": "action_space_size",
+    }[name]
+    return int(dims[key])

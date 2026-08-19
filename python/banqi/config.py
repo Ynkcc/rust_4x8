@@ -50,6 +50,7 @@ _LOCAL_YAML = os.path.join(_CONFIG_DIR, "config.local.yaml")      # 唯一运行
 
 # 相对 python/ 目录解析的路径字段（统一转换为绝对路径，避免依赖 CWD）
 _PATH_FIELDS = (
+    "OUTPUT_DIR",
     "MODEL_PATH",
     "STATE_DICT_PATH",
     "ONNX_PATH",
@@ -190,6 +191,29 @@ def _load_yaml(path: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """深层递归合并字典，override 覆盖 base。"""
+    res = dict(base)
+    for k, v in override.items():
+        if k in res and isinstance(res[k], dict) and isinstance(v, dict):
+            res[k] = _deep_merge(res[k], v)
+        else:
+            res[k] = v
+    return res
+
+
+def _flatten_fields(d: Dict[str, Any], result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """递归遍历嵌套字典，将所有标量键（大写名）展平为一维字段字典。"""
+    if result is None:
+        result = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            _flatten_fields(v, result)
+        else:
+            result[k] = v
+    return result
+
+
 _config_data: Optional[Dict[str, Dict[str, Any]]] = None
 _config_path: Optional[str] = None
 
@@ -200,17 +224,16 @@ _COMMON_KEY = "common"
 def _get_config_data() -> Dict[str, Dict[str, Any]]:
     """惰性加载本地配置文件（首次 make_config 时）。缺失则报错，绝不兜底。
 
-    配置文件采用「两段式」结构：
-      common:  公共配置（与变体无关），作为所有变体的基础；
-      4x8/4x4/4x2: 变体相关字段，覆盖 common 中的同名项。
-    common 区块为必需，缺失直接报错。
+    支持嵌套模块分组结构（Scheme B）：
+      common:  公共模块分组配置（作为所有变体的基础）；
+      4x8/4x4/4x2: 变体相关分组配置，深层覆盖 common 中的同名项。
     """
     global _config_data, _config_path
     if _config_data is not None:
         return _config_data
     path = os.environ.get("BANQI_CONFIG", "").strip() or _LOCAL_YAML
-    data = _load_yaml(path)
-    if data is None:
+    raw_data = _load_yaml(path)
+    if raw_data is None:
         raise RuntimeError(
             f"[banqi.config] 缺少配置文件: {path}\n"
             f"  本地配置文件是必需的。请先运行:\n"
@@ -219,38 +242,49 @@ def _get_config_data() -> Dict[str, Dict[str, Any]]:
         )
     known = set(Config.__dataclass_fields__) - {"variant_id"}
 
-    def _clean_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
-        kept: Dict[str, Any] = {}
-        for k, v in raw.items():
-            if k in known:
-                kept[k] = v
-            else:
-                _warn_unknown(k)
-        return kept
-
-    # 公共配置为必需
-    if _COMMON_KEY not in data:
+    if _COMMON_KEY not in raw_data:
         raise RuntimeError(
             f"[banqi.config] 配置文件 {path} 缺少 {_COMMON_KEY!r} 区块\n"
             f"  请重新生成 config.local.yaml（python -m banqi.config --write-template）。"
         )
-    if not isinstance(data[_COMMON_KEY], dict):
+    if not isinstance(raw_data[_COMMON_KEY], dict):
         raise RuntimeError(
-            f"[banqi.config] 配置文件 {path} 中 {_COMMON_KEY!r} 必须是字段字典"
+            f"[banqi.config] 配置文件 {path} 中 {_COMMON_KEY!r} 必须是字典结构"
         )
-    common_fields = _clean_fields(data[_COMMON_KEY])
 
+    common_raw = raw_data[_COMMON_KEY]
     cleaned: Dict[str, Dict[str, Any]] = {}
-    for vid, fields in data.items():
+
+    for vid, variant_raw in raw_data.items():
         if vid == _COMMON_KEY:
             continue
-        if not isinstance(fields, dict):
-            _warn_unknown(f"变体 {vid!r} 的配置必须是字段字典")
+        if not isinstance(variant_raw, dict):
+            _warn_unknown(f"变体 {vid!r} 的配置必须是字典结构")
             continue
-        # 合并：common 为基础，变体字段覆盖之
-        merged = dict(common_fields)
-        merged.update(_clean_fields(fields))
-        cleaned[vid] = merged
+        
+        # 1. 递归深层合并 common 与变体差异配置
+        merged_tree = _deep_merge(common_raw, variant_raw)
+        
+        # 2. 展平为扁平的大写字段字典
+        flat_fields = _flatten_fields(merged_tree)
+        
+        # 3. 自动计算与推导字段
+        if "NUM_WORKERS" in flat_fields and "GAMES_PER_WORKER" in flat_fields:
+            flat_fields["GAMES_PER_ITER"] = int(flat_fields["NUM_WORKERS"]) * int(flat_fields["GAMES_PER_WORKER"])
+        
+        # 历史兼容字段自动映射
+        if "CKPT_SAVE_EVERY" in flat_fields:
+            flat_fields["CHECKPOINT_EVERY_N_ROUNDS"] = flat_fields["CKPT_SAVE_EVERY"]
+
+        # 校验未知字段与已知字段过滤
+        kept: Dict[str, Any] = {}
+        for k, v in flat_fields.items():
+            if k in known:
+                kept[k] = v
+            else:
+                _warn_unknown(k)
+        cleaned[vid] = kept
+
     _config_data = cleaned
     _config_path = path
     return cleaned
@@ -280,6 +314,8 @@ class Config:
     NUM_WORKERS: int
     GAMES_PER_WORKER: int
     SELF_PLAY_PROCESSES: int
+    SELF_PLAY_BACKEND: str       # 自对弈并发后端：process | thread（保留兼容，实际推理侧由 INFER_SIDE 决定）
+    INFER_SIDE: str              # 推理执行侧：python（多进程，Python run_python_match 推理）| rust（多线程，Rust run_native_match 管理线程，透传 num_threads）
     BATCH_CONCURRENCY: int
     TRAIN_BATCH: int
     LEARNING_RATE: float
@@ -293,6 +329,7 @@ class Config:
     DATA_AUGMENT_ENABLED: bool
     DATA_AUGMENT_KEEP_ORIGINAL: bool
     DATA_AUGMENT_TRANSFORMS: str
+    OUTPUT_DIR: str
     MODEL_PATH: str
     STATE_DICT_PATH: str
     # ---- 模型后端切换 ----
@@ -439,3 +476,4 @@ if __name__ == "__main__":
               f"archive={c.ARCHIVE_ENABLED} runtime={c.MAX_RUNTIME_SECONDS}s "
               f"model={os.path.basename(c.MODEL_PATH)}")
     print("[banqi.config] all OK")
+
