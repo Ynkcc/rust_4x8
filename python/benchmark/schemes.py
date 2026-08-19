@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import queue
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 
 import numpy as np
 
@@ -22,17 +22,14 @@ from banqi.variant import Variant, get_variant
 from .predictors import CountingPredictor
 from .results import BenchResult
 
-# 变体 -> (单局, 并行, 批量) Rust 绑定函数名
-_SCHEME_FNS: Dict[str, Tuple[str, str, str]] = {
-    "": ("run_self_play_with_predictor",
-         "run_parallel_self_play_with_predictor",
-         "run_batched_self_play_with_predictor"),
-    "mini": ("run_mini_self_play_with_predictor",
-             "run_mini_parallel_self_play_with_predictor",
-             "run_mini_batched_self_play_with_predictor"),
-    "game4x4": ("run_game4x4_self_play_with_predictor",
-                "run_game4x4_parallel_self_play_with_predictor",
-                "run_game4x4_batched_self_play_with_predictor"),
+# 变体 -> 批量（流水线）Rust 绑定函数名。
+# serial/parallel 绑定已移除，统一用 batched 等价模拟：
+#   serial   = batched(concurrency=1)
+#   parallel = batched(concurrency=N)
+_SCHEME_FNS: Dict[str, str] = {
+    "": "run_batched_self_play_with_predictor",
+    "mini": "run_mini_batched_self_play_with_predictor",
+    "game4x4": "run_game4x4_batched_self_play_with_predictor",
 }
 
 
@@ -57,18 +54,17 @@ def _run_scheme(variant_id: str, scheme: str, predictor: Any,
     variant = get_variant(variant_id)
     cfg = make_config(variant_id)
     sp_cfg = build_self_play_config(variant)
-    fn_single, fn_parallel, fn_batched = _SCHEME_FNS[variant.rust_prefix]
+    fn_batched = _SCHEME_FNS[variant.rust_prefix]
 
     if scheme in ("serial", "parallel", "batched"):
-        if scheme == "serial":
-            fn = getattr(banqi_4x8, fn_single)
-            kwargs: Dict[str, Any] = {"num_games": games, "worker_id": worker_id}
-        elif scheme == "parallel":
-            fn = getattr(banqi_4x8, fn_parallel)
-            kwargs = {"num_workers": concurrency, "games_per_worker": max(1, -(-games // concurrency)),
+        fn = getattr(banqi_4x8, fn_batched)
+        if scheme == "serial":  # 等价旧串行：concurrency=1
+            kwargs: Dict[str, Any] = {"num_games": games, "concurrency": 1, "worker_id": worker_id}
+        elif scheme == "parallel":  # 等价旧并行：N 局并发
+            games_per_worker = max(1, -(-games // concurrency))
+            kwargs = {"num_games": concurrency * games_per_worker, "concurrency": concurrency,
                       "worker_id": worker_id}
         else:  # batched
-            fn = getattr(banqi_4x8, fn_batched)
             kwargs = {"num_games": games, "concurrency": concurrency, "worker_id": worker_id}
 
         t0 = time.time()
@@ -98,7 +94,7 @@ def _benchmark_multiproc(variant_id: str, predictor: Any, games: int,
     variant = get_variant(variant_id)
     cfg = make_config(variant_id)
     sp_cfg = build_self_play_config(variant)
-    fn_single, fn_parallel, fn_batched = _SCHEME_FNS[variant.rust_prefix]
+    fn_batched = _SCHEME_FNS[variant.rust_prefix]
 
     n_proc = max(1, concurrency)
     games_per_proc = max(1, -(-games // n_proc))

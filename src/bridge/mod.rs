@@ -18,12 +18,9 @@ use crate::bridge::python::{
     register_augment_functions, run_batched_self_play_with_predictor_impl,
     run_game4x4_batched_self_play_with_predictor_impl,
     run_game4x4_heuristic_self_play_impl, run_game4x4_minimax_self_play_impl,
-    run_game4x4_parallel_self_play_with_predictor_impl, run_game4x4_self_play_with_predictor_impl,
     run_heuristic_self_play_impl, run_mini_batched_self_play_with_predictor_impl,
     run_mini_heuristic_self_play_impl, run_mini_minimax_self_play_impl,
-    run_mini_parallel_self_play_with_predictor_impl, run_mini_self_play_with_predictor_impl,
-    run_minimax_self_play_impl, run_parallel_self_play_with_predictor_impl,
-    run_self_play_with_predictor_impl,
+    run_minimax_self_play_impl,
 };
 #[cfg(feature = "pyo3")]
 use crate::core::env::{
@@ -35,133 +32,6 @@ use crate::core::env::{
 };
 #[cfg(feature = "pyo3")]
 use crate::pipeline::self_play::SelfPlayConfig;
-
-// ---- 串行自对弈（暗棋 / 4x2 迷你 / 4x4） ----
-
-#[cfg(feature = "pyo3")]
-#[pyfunction]
-#[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
-fn run_self_play_with_predictor(
-    _py: Python<'_>,
-    predict_fn: Py<PyAny>,
-    config: Option<PyRef<PySelfPlayConfig>>,
-    num_games: usize,
-    worker_id: usize,
-) -> PyResult<Vec<PyGameEpisode>> {
-    let cfg: SelfPlayConfig = match config {
-        Some(c) => c.inner.clone(),
-        None => SelfPlayConfig::default(),
-    };
-    Ok(run_self_play_with_predictor_impl(predict_fn, cfg, num_games, worker_id))
-}
-
-#[cfg(feature = "pyo3")]
-#[pyfunction]
-#[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
-fn run_mini_self_play_with_predictor(
-    _py: Python<'_>,
-    predict_fn: Py<PyAny>,
-    config: Option<PyRef<PySelfPlayConfig>>,
-    num_games: usize,
-    worker_id: usize,
-) -> PyResult<Vec<PyGameEpisode>> {
-    let cfg: SelfPlayConfig = match config {
-        Some(c) => c.inner.clone(),
-        None => SelfPlayConfig::default(),
-    };
-    Ok(run_mini_self_play_with_predictor_impl(predict_fn, cfg, num_games, worker_id))
-}
-
-#[cfg(feature = "pyo3")]
-#[pyfunction]
-#[pyo3(signature = (predict_fn, config=None, num_games=1, worker_id=0))]
-fn run_game4x4_self_play_with_predictor(
-    _py: Python<'_>,
-    predict_fn: Py<PyAny>,
-    config: Option<PyRef<PySelfPlayConfig>>,
-    num_games: usize,
-    worker_id: usize,
-) -> PyResult<Vec<PyGameEpisode>> {
-    let cfg: SelfPlayConfig = match config {
-        Some(c) => c.inner.clone(),
-        None => SelfPlayConfig::default(),
-    };
-    Ok(run_game4x4_self_play_with_predictor_impl(predict_fn, cfg, num_games, worker_id))
-}
-
-// ---- 并行自对弈（rayon） ----
-
-#[cfg(feature = "pyo3")]
-#[pyfunction]
-#[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
-fn run_parallel_self_play_with_predictor(
-    _py: Python<'_>,
-    predict_fn: Py<PyAny>,
-    config: Option<PyRef<PySelfPlayConfig>>,
-    num_workers: usize,
-    games_per_worker: usize,
-    worker_id: usize,
-) -> PyResult<Vec<PyGameEpisode>> {
-    let cfg: SelfPlayConfig = match config {
-        Some(c) => c.inner.clone(),
-        None => SelfPlayConfig::default(),
-    };
-    Ok(run_parallel_self_play_with_predictor_impl(
-        predict_fn,
-        cfg,
-        num_workers,
-        games_per_worker,
-        worker_id,
-    ))
-}
-
-#[cfg(feature = "pyo3")]
-#[pyfunction]
-#[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
-fn run_mini_parallel_self_play_with_predictor(
-    _py: Python<'_>,
-    predict_fn: Py<PyAny>,
-    config: Option<PyRef<PySelfPlayConfig>>,
-    num_workers: usize,
-    games_per_worker: usize,
-    worker_id: usize,
-) -> PyResult<Vec<PyGameEpisode>> {
-    let cfg: SelfPlayConfig = match config {
-        Some(c) => c.inner.clone(),
-        None => SelfPlayConfig::default(),
-    };
-    Ok(run_mini_parallel_self_play_with_predictor_impl(
-        predict_fn,
-        cfg,
-        num_workers,
-        games_per_worker,
-        worker_id,
-    ))
-}
-
-#[cfg(feature = "pyo3")]
-#[pyfunction]
-#[pyo3(signature = (predict_fn, config=None, num_workers=4, games_per_worker=1, worker_id=0))]
-fn run_game4x4_parallel_self_play_with_predictor(
-    _py: Python<'_>,
-    predict_fn: Py<PyAny>,
-    config: Option<PyRef<PySelfPlayConfig>>,
-    num_workers: usize,
-    games_per_worker: usize,
-    worker_id: usize,
-) -> PyResult<Vec<PyGameEpisode>> {
-    let cfg: SelfPlayConfig = match config {
-        Some(c) => c.inner.clone(),
-        None => SelfPlayConfig::default(),
-    };
-    Ok(run_game4x4_parallel_self_play_with_predictor_impl(
-        predict_fn,
-        cfg,
-        num_workers,
-        games_per_worker,
-        worker_id,
-    ))
-}
 
 // ---- 批量自对弈（流水线） ----
 
@@ -355,18 +225,12 @@ fn run_game4x4_minimax_self_play(
 fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGameEpisode>()?;
     m.add_class::<PySelfPlayConfig>()?;
-    m.add_function(wrap_pyfunction!(run_self_play_with_predictor, m)?)?;
-    m.add_function(wrap_pyfunction!(run_parallel_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_batched_self_play_with_predictor, m)?)?;
 
     // --- 4x2 迷你暗棋自对弈绑定 ---
-    m.add_function(wrap_pyfunction!(run_mini_self_play_with_predictor, m)?)?;
-    m.add_function(wrap_pyfunction!(run_mini_parallel_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_mini_batched_self_play_with_predictor, m)?)?;
 
     // --- 4x4 暗棋自对弈绑定 ---
-    m.add_function(wrap_pyfunction!(run_game4x4_self_play_with_predictor, m)?)?;
-    m.add_function(wrap_pyfunction!(run_game4x4_parallel_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_game4x4_batched_self_play_with_predictor, m)?)?;
     m.add_function(wrap_pyfunction!(run_game4x4_heuristic_self_play, m)?)?;
     m.add_function(wrap_pyfunction!(run_game4x4_minimax_self_play, m)?)?;

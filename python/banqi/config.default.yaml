@@ -139,10 +139,9 @@ common:
   MAX_CONSIDERED_ACTIONS: 24    # 候选动作数上限
   TEMPERATURE_STEPS: 16         # 温度退火步数
   GAMES_PER_ITER: 100           # 每轮迭代对局数
-  NUM_WORKERS: 2                # 自对弈 worker 数
+  NUM_WORKERS: 2                # 自对弈 worker 数（多进程并发）
   GAMES_PER_WORKER: 50          # 每个 worker 的对局数
-  USE_BATCHED_SELF_PLAY: false  # 是否使用 batched 自对弈（GPU 下 batch 更大更占优）
-  BATCH_CONCURRENCY: 8          # batched 自对弈并发度（仅 USE_BATCHED_SELF_PLAY=True 生效）
+  BATCH_CONCURRENCY: 8          # 自对弈并发局数（1=串行，N=并发 N 局并合并大 batch 推理）
 
   # ---------------- 训练 ----------------
   TRAIN_BATCH: 64               # 训练 batch 大小
@@ -187,10 +186,9 @@ common:
   MAX_CONSIDERED_ACTIONS: 16    # 候选动作上限（4x4 棋盘 16 格足够）
   TEMPERATURE_STEPS: 12         # 随机探索步数
   GAMES_PER_ITER: 60            # 每轮自对弈总局数（40 -> 60）
-  NUM_WORKERS: 4                # 自对弈 worker 数
+  NUM_WORKERS: 4                # 自对弈 worker 数（多进程并发）
   GAMES_PER_WORKER: 15          # 每个 worker 的对局数（10 -> 15）
-  USE_BATCHED_SELF_PLAY: true   # 开启 Batched 自对弈
-  BATCH_CONCURRENCY: 16         # Batched 自对弈并发度
+  BATCH_CONCURRENCY: 16         # 自对弈并发局数（1=串行，N=并发 N 局并合并大 batch 推理）
   TRAIN_BATCH: 128              # 训练 batch 大小
   LEARNING_RATE: 5.0e-4         # 初始学习率
   MIN_LR: 1.0e-5                # 最小学习率
@@ -221,8 +219,7 @@ common:
   GAMES_PER_ITER: 60
   NUM_WORKERS: 4
   GAMES_PER_WORKER: 15
-  USE_BATCHED_SELF_PLAY: true   # false -> true（提升吞吐）
-  BATCH_CONCURRENCY: 16         # 4 -> 16（对齐 4x4）
+  BATCH_CONCURRENCY: 16         # 自对弈并发局数（1=串行，N=并发 N 局并合并大 batch 推理）
   TRAIN_BATCH: 32
   LEARNING_RATE: 1.0e-4         # 2.0e-3 -> 5e-4（小网络防震荡）
   MIN_LR: 1.0e-5

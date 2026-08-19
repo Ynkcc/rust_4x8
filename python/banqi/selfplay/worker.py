@@ -1,7 +1,7 @@
 """banqi/selfplay/worker.py — 自对弈生产者线程与多进程子进程入口。
 
 SelfPlayWorker：线程，按变体分派 Rust 绑定生成 episode，压入训练队列与归档队列，
-  并按配置（USE_BATCHED_SELF_PLAY / NUM_WORKERS）选择 batched / parallel / single 方案，
+  统一走 batched（流水线）方案，并发度由 BATCH_CONCURRENCY 控制（1=串行），
   记录逐局统计与 TensorBoard 标量。
 sp_worker_main：多进程（spawn）子进程入口，独立 GIL + 独立 CUDA context，权重经
   Predictor mtime 热重载自动同步，从根本上消除多线程 GIL 串行推理瓶颈。
@@ -31,21 +31,15 @@ from banqi.variant import Variant, get_variant
 
 from .predictor import Predictor
 
-# Rust 绑定函数名分发表（按 variant.rust_prefix）：(单局, 并行, 批量)
-_SPLAY_FNS: Dict[str, tuple] = {
-    "": ("run_self_play_with_predictor",
-         "run_parallel_self_play_with_predictor",
-         "run_batched_self_play_with_predictor"),
-    "mini": ("run_mini_self_play_with_predictor",
-             "run_mini_parallel_self_play_with_predictor",
-             "run_mini_batched_self_play_with_predictor"),
-    "game4x4": ("run_game4x4_self_play_with_predictor",
-                "run_game4x4_parallel_self_play_with_predictor",
-                "run_game4x4_batched_self_play_with_predictor"),
+# Rust 绑定函数名分发表（按 variant.rust_prefix）：批量（流水线）自对弈唯一入口
+_SPLAY_FNS: Dict[str, str] = {
+    "": "run_batched_self_play_with_predictor",
+    "mini": "run_mini_batched_self_play_with_predictor",
+    "game4x4": "run_game4x4_batched_self_play_with_predictor",
 }
 
 
-def _splay_fns(variant: Variant) -> tuple:
+def _splay_fns(variant: Variant) -> str:
     key = variant.rust_prefix
     if key not in _SPLAY_FNS:
         raise KeyError(f"未知 rust_prefix {key!r}，可选: {sorted(_SPLAY_FNS)}")
@@ -82,7 +76,7 @@ class SelfPlayWorker(threading.Thread):
         self.archive_q = archive_q
         self.stop_flag = stop_flag
         self.worker_id = worker_id
-        self._fn_single, self._fn_parallel, self._fn_batched = _splay_fns(variant)
+        self._fn_batched = _splay_fns(variant)
 
         # 统计
         self.total_games = 0
@@ -108,29 +102,13 @@ class SelfPlayWorker(threading.Thread):
         cfg = self.cfg
         while not self.stop_flag[0]:
             t0 = time.time()
-            if cfg.USE_BATCHED_SELF_PLAY and hasattr(banqi_4x8, self._fn_batched):
-                episodes = getattr(banqi_4x8, self._fn_batched)(
-                    predict_fn=self.predictor,
-                    config=self.sp_cfg,
-                    num_games=cfg.GAMES_PER_ITER,
-                    concurrency=cfg.BATCH_CONCURRENCY,
-                    worker_id=self.worker_id,
-                )
-            elif cfg.NUM_WORKERS > 1:
-                episodes = getattr(banqi_4x8, self._fn_parallel)(
-                    predict_fn=self.predictor,
-                    config=self.sp_cfg,
-                    num_workers=cfg.NUM_WORKERS,
-                    games_per_worker=cfg.GAMES_PER_WORKER,
-                    worker_id=self.worker_id,
-                )
-            else:
-                episodes = getattr(banqi_4x8, self._fn_single)(
-                    predict_fn=self.predictor,
-                    config=self.sp_cfg,
-                    num_games=cfg.GAMES_PER_ITER,
-                    worker_id=self.worker_id,
-                )
+            episodes = getattr(banqi_4x8, self._fn_batched)(
+                predict_fn=self.predictor,
+                config=self.sp_cfg,
+                num_games=cfg.GAMES_PER_ITER,
+                concurrency=cfg.BATCH_CONCURRENCY,
+                worker_id=self.worker_id,
+            )
 
             batch_duration = time.time() - t0
 
@@ -254,14 +232,12 @@ def _run_onnx_collector_loop(
     archive_q,
     stop_event,
     gpi: int,
-    scheme: str,
-    inner_workers: int,
     worker_id: int,
     tag: str,
 ) -> None:
     """Rust 持有 ONNX 模型的收集器主循环（免 GIL，模型在 Rust 侧推理）。
 
-    与 Predictor 路径等效：按 scheme 选择 batched / parallel / serial，产出的
+    与 Predictor 路径等效：统一走 batched（concurrency=BATCH_CONCURRENCY），产出的
     episode 语义一致（PyGameEpisode）。权重经 .onnx 文件 mtime 热重载自动同步——
     训练侧保存 checkpoint 后，本循环在下一批开始前 reload 新模型。
     """
@@ -288,21 +264,10 @@ def _run_onnx_collector_loop(
         t0 = time.time()
         _maybe_reload()
         try:
-            if scheme == "batched":
-                episodes = list(collector.run_batched(
-                    config=sp_cfg, num_games=gpi,
-                    concurrency=cfg.BATCH_CONCURRENCY, worker_id=worker_id,
-                ))
-            elif scheme == "parallel" and inner_workers > 1:
-                episodes = list(collector.run_parallel(
-                    config=sp_cfg, num_workers=inner_workers,
-                    games_per_worker=max(1, -(-gpi // inner_workers)),
-                    worker_id=worker_id,
-                ))
-            else:
-                episodes = list(collector.run_serial(
-                    config=sp_cfg, num_games=gpi, worker_id=worker_id,
-                ))
+            episodes = list(collector.run_batched(
+                config=sp_cfg, num_games=gpi,
+                concurrency=cfg.BATCH_CONCURRENCY, worker_id=worker_id,
+            ))
         except Exception as exc:  # pragma: no cover
             print(f"{tag} ⚠️ ONNX 收集器自对弈异常: {exc}，子进程退出")
             break
@@ -342,9 +307,7 @@ def sp_worker_main(
     data_q,
     archive_q,
     stop_event,
-    inner_scheme: str = "",
     games_per_iter: Optional[int] = None,
-    inner_workers: int = 1,
 ) -> None:
     """多进程自对弈子进程入口（target，必须模块级，spawn 才能 pickle）。
 
@@ -353,6 +316,8 @@ def sp_worker_main(
 
     权重同步：Predictor 自带 model_path mtime 热重载——训练侧保存 checkpoint 后，
     各子进程自动加载新权重，无需额外进程间通信。
+
+    自对弈统一走 batched（流水线），并发度由 BATCH_CONCURRENCY 控制（1=串行）。
     """
     import torch as _torch  # noqa: PLC0415
 
@@ -362,12 +327,11 @@ def sp_worker_main(
     cfg = make_config(variant_id)
     tag = f"[SP-{variant.id}#{worker_id}]"
     gpi = games_per_iter or cfg.GAMES_PER_ITER
-    scheme = (inner_scheme or
-              ("batched" if cfg.USE_BATCHED_SELF_PLAY else "parallel"))
+    scheme = "batched"
 
     _torch.set_num_threads(1)  # 每进程 1 torch 线程，防多进程共享核超售
     sp_cfg = build_self_play_config(variant)
-    fn_single, fn_parallel, fn_batched = _splay_fns(variant)
+    fn_batched = _splay_fns(variant)
 
     # ---- MODEL_BACKEND="onnx"：优先走 Rust 持有 ONNX 模型的收集器（免 GIL） ----
     # 模型在 Rust 侧用 ONNX Runtime 推理，不经过 GIL；权重经 .onnx mtime 热重载。
@@ -380,17 +344,17 @@ def sp_worker_main(
         collector = build_onnx_collector(variant, cfg.ONNX_PATH, cfg.INFER_DEVICE)
         if collector is not None:
             print(f"{tag} 🚀 子进程启动: ONNX 后端（RustOnnxCollector），pid={os.getpid()}, "
-                  f"scheme={scheme}, games/iter={gpi}, inner_workers={inner_workers}")
+                  f"scheme={scheme}, games/iter={gpi}")
             _run_onnx_collector_loop(
                 collector, variant, cfg, sp_cfg, data_q, archive_q, stop_event,
-                gpi, scheme, inner_workers, worker_id, tag,
+                gpi, worker_id, tag,
             )
             return
         print(f"{tag} ⚠️ RustOnnxCollector 不可用，回退 Python 推理路径")
 
     predictor, device = build_predictor(variant, cfg.MODEL_PATH, cfg.INFER_DEVICE)
     print(f"{tag} 🚀 子进程启动: device={device}, pid={os.getpid()}, "
-          f"scheme={scheme}, games/iter={gpi}, inner_workers={inner_workers}")
+          f"scheme={scheme}, games/iter={gpi}")
 
     total_games = 0
     iteration = 0
@@ -398,25 +362,12 @@ def sp_worker_main(
     while not stop_event.is_set():
         t0 = time.time()
         try:
-            if scheme == "batched":
-                episodes = getattr(banqi_4x8, fn_batched)(
-                    predict_fn=predictor, config=sp_cfg,
-                    num_games=gpi,
-                    concurrency=cfg.BATCH_CONCURRENCY,
-                    worker_id=worker_id,
-                )
-            elif scheme == "parallel" and inner_workers > 1:
-                episodes = getattr(banqi_4x8, fn_parallel)(
-                    predict_fn=predictor, config=sp_cfg,
-                    num_workers=inner_workers,
-                    games_per_worker=max(1, -(-gpi // inner_workers)),
-                    worker_id=worker_id,
-                )
-            else:
-                episodes = getattr(banqi_4x8, fn_single)(
-                    predict_fn=predictor, config=sp_cfg,
-                    num_games=gpi, worker_id=worker_id,
-                )
+            episodes = getattr(banqi_4x8, fn_batched)(
+                predict_fn=predictor, config=sp_cfg,
+                num_games=gpi,
+                concurrency=cfg.BATCH_CONCURRENCY,
+                worker_id=worker_id,
+            )
         except Exception as exc:  # pragma: no cover
             print(f"{tag} ⚠️ 自对弈异常: {exc}，子进程退出")
             break

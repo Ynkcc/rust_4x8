@@ -151,7 +151,6 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "NUM_WORKERS": _cast_int,
     "GAMES_PER_WORKER": _cast_int,
     "SELF_PLAY_PROCESSES": _cast_int,
-    "USE_BATCHED_SELF_PLAY": _cast_bool,
     "BATCH_CONCURRENCY": _cast_int,
     "TRAIN_BATCH": _cast_int,
     "LEARNING_RATE": _cast_float,
@@ -353,7 +352,6 @@ class Config:
     NUM_WORKERS: int
     GAMES_PER_WORKER: int
     SELF_PLAY_PROCESSES: int
-    USE_BATCHED_SELF_PLAY: bool
     BATCH_CONCURRENCY: int
     TRAIN_BATCH: int
     LEARNING_RATE: float

@@ -54,10 +54,6 @@ pub use self_play::PySelfPlayConfig;
 pub use self_play::{
     run_batched_self_play_with_predictor_impl, run_game4x4_batched_self_play_with_predictor_impl,
     run_game4x4_heuristic_self_play_impl, run_game4x4_minimax_self_play_impl,
-    run_game4x4_parallel_self_play_with_predictor_impl,
-    run_game4x4_self_play_with_predictor_impl, run_heuristic_self_play_impl,
-    run_mini_batched_self_play_with_predictor_impl, run_mini_heuristic_self_play_impl,
-    run_mini_minimax_self_play_impl, run_mini_parallel_self_play_with_predictor_impl,
-    run_mini_self_play_with_predictor_impl, run_minimax_self_play_impl,
-    run_parallel_self_play_with_predictor_impl, run_self_play_with_predictor_impl,
+    run_heuristic_self_play_impl, run_mini_batched_self_play_with_predictor_impl,
+    run_mini_heuristic_self_play_impl, run_mini_minimax_self_play_impl, run_minimax_self_play_impl,
 };
