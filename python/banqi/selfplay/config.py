@@ -159,7 +159,9 @@ def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
     return banqi_4x8.SelfPlayConfig(
         mcts_sims=cfg.MCTS_SIMS,
         max_considered_actions=cfg.MAX_CONSIDERED_ACTIONS,
-        temperature_steps=cfg.TEMPERATURE_STEPS,
         c_scale=c_scale,
         gumbel_scale=gumbel_scale,
+        playout_cap_random_enabled=getattr(cfg, "PLAYOUT_CAP_RANDOM_ENABLED", True),
+        fast_mcts_sims=getattr(cfg, "FAST_MCTS_SIMS", 16),
+        full_search_prob=float(getattr(cfg, "FULL_SEARCH_PROB", 0.25)),
     )

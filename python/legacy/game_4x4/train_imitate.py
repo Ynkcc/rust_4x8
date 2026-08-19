@@ -83,7 +83,7 @@ def gen_teacher(sims, games, conc=4, threads=3):
     def _one(_):
         cfg = banqi_4x8.SelfPlayConfig(
             mcts_sims=sims, max_considered_actions=16,
-            temperature_steps=12)
+            playout_cap_random_enabled=False)  # 教师数据追求高质量，禁用算力随机化
         _, _, _, _, _, episodes = banqi_4x8.run_native_match(
             player_a=f"heuristic{sims}",
             player_b=f"heuristic{sims}",
@@ -112,7 +112,8 @@ def episodes_to_samples(eps):
     samples = []
     for e in eps:
         (boards, scalars, policies, mcts_values, completed_qs,
-         root_visits, game_results, action_masks, actions, health_diffs) = e.get_samples()
+         root_visits, game_results, action_masks, actions, health_diffs,
+         is_full_searches) = e.get_samples()
         for board, scalar, policy, mv, mask in zip(
                 boards, scalars, policies, mcts_values, action_masks):
             samples.append({

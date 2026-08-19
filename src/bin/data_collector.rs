@@ -80,10 +80,13 @@ fn main() -> Result<()> {
     let config = SelfPlayConfig {
         mcts_sims,
         max_considered_actions: 16,
-        temperature_steps: 12,
         scenario: ScenarioType::Standard,
         c_scale: 1.0,
         gumbel_scale: 1.0,
+        // 数据收集器追求高质量训练样本，禁用算力分配随机化（下两字段随之失效）
+        playout_cap_random_enabled: false,
+        fast_mcts_sims: 16,
+        full_search_prob: 0.25,
     };
 
     // 6. 循环收集

@@ -21,27 +21,31 @@ impl PySelfPlayConfig {
     #[pyo3(signature = (
         mcts_sims = 64,
         max_considered_actions = 16,
-        temperature_steps = 12,
         c_scale = 1.0,
         gumbel_scale = 1.0,
+        playout_cap_random_enabled = true,
+        fast_mcts_sims = 16,
+        full_search_prob = 0.25,
     ))]
     fn new(
         mcts_sims: usize,
         max_considered_actions: usize,
-        temperature_steps: usize,
         c_scale: f32,
         gumbel_scale: f32,
+        playout_cap_random_enabled: bool,
+        fast_mcts_sims: usize,
+        full_search_prob: f32,
     ) -> Self {
         Self {
             inner: SelfPlayConfig {
                 mcts_sims,
                 max_considered_actions,
-                // 注意：Dirichlet 噪声注入已移除（Gumbel AlphaZero 探索由
-                // Gumbel 噪声 + Sequential Halving 提供），不再暴露对应参数。
-                temperature_steps,
                 scenario: ScenarioType::Standard,
                 c_scale,
                 gumbel_scale,
+                playout_cap_random_enabled,
+                fast_mcts_sims,
+                full_search_prob,
             },
         }
     }

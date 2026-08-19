@@ -106,7 +106,7 @@ fn eval_worker<G: GameEnv, E: Evaluator<G> + Sync>(
 /// 运行批量自对弈（流水线版）。
 ///
 /// - `evaluator`：评估器（要求 `Sync`，供后台线程共享）
-/// - `config`：自对弈配置（mcts_sims / max_considered_actions / temperature_steps）
+/// - `config`：自对弈配置（mcts_sims / max_considered_actions / gumbel_scale）
 /// - `num_games`：目标对局总数
 /// - `concurrency`：同时推进的并发对局数（越大单批 batch 越大，流水线也越深）
 /// - `make_env`：环境工厂
@@ -159,7 +159,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
             // 初始化本波的游戏树 + 每局的样本收集
             let mut trees: Vec<BatchedTree<'_, G, E>> = Vec::with_capacity(wave);
             let mut episode_data: Vec<
-                Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize)>,
+                Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize, bool)>,
             > = Vec::with_capacity(wave);
             for _ in 0..wave {
                 let env = make_env();
@@ -191,6 +191,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
                                 r.player,
                                 r.action_mask.clone(),
                                 r.action,
+                                true, // 批量流水线未做算力随机化，全部视为 Full Search
                             ));
                         }
                         if trees[i].game_over {

@@ -32,9 +32,11 @@ pub struct GameStats {
 /// 因此 `GameEpisode` 本身不携带游戏泛型参数。
 #[derive(Debug, Clone)]
 pub struct GameEpisode {
-    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码, 实际动作, 终局归一化血量差)
-    /// 最后一项 health_diff 为终局血量差按该样本玩家视角取号（红方视角为正）。
-    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>, usize, f32)>,
+    /// 训练样本列表: (观测状态, 策略概率分布, MCTS根节点价值, completed_Q, 根节点访问次数, 最终回报, 动作掩码, 实际动作, 终局归一化血量差, 是否 Full Search)
+    /// health_diff 为终局血量差按该样本玩家视角取号（红方视角为正）。
+    /// is_full_search=true 表示该样本来自 Full Search（算力随机化下用于训练的选择性标记，
+    /// 见 playout_cap_random_enabled / full_search_prob 字段）。
+    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>, usize, f32, bool)>,
     /// 游戏总步数
     pub game_length: usize,
     /// 获胜方
@@ -95,14 +97,24 @@ pub struct SelfPlayConfig {
     // Gumbel 噪声（Top-K 采样）与 Sequential Halving 提供，根节点子节点
     // prior 不参与任何搜索决策（Top-K 用 logit、根选择不经 PUCT），
     // 注入 Dirichlet 无效，请勿重新添加 dirichlet_alpha / dirichlet_epsilon 字段。
-    /// 温度采样的步数阈值
-    pub temperature_steps: usize,
+    //
+    // 注意：落子不再使用根节点温度（temperature / temperature_steps）。Gumbel
+    // 噪声已在每次搜索时为动作选择注入探索（见 search.rs 的 sample_gumbel_top_k），
+    // 再对 completed_Q 做 softmax 温度采样是多余的随机源，且会让「实际落子」偏离
+    // 搜索选出的最优动作（search_result.action），造成行为与训练目标
+    // improved_policy（logit + σ·Q）脱节。请勿重新添加 temperature_steps 字段。
     /// 训练场景
     pub scenario: ScenarioType,
     /// PUCT 探索系数（c_puct）与训练目标 σ 的缩放因子。默认 1.0。
     pub c_scale: f32,
     /// Gumbel 噪声尺度（根节点 Top-K 采样探索强度）。默认 1.0（标准 Gumbel）。
     pub gumbel_scale: f32,
+    /// 是否启用算力分配随机化 (Playout Cap Randomization)
+    pub playout_cap_random_enabled: bool,
+    /// Fast Search 模拟次数 (如 16)
+    pub fast_mcts_sims: usize,
+    /// Full Search 出现概率 (如 0.25)
+    pub full_search_prob: f32,
 }
 
 impl Default for SelfPlayConfig {
@@ -110,10 +122,12 @@ impl Default for SelfPlayConfig {
         Self {
             mcts_sims: 64,
             max_considered_actions: 16,
-            temperature_steps: 10,
             scenario: ScenarioType::Standard,
             c_scale: 1.0,
             gumbel_scale: 1.0,
+            playout_cap_random_enabled: true,
+            fast_mcts_sims: 16,
+            full_search_prob: 0.25,
         }
     }
 }
@@ -174,16 +188,34 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
 
         // 3. 游戏主循环
         loop {
-            // 注意：这里不再注入根节点 Dirichlet 噪声 —— Gumbel AlphaZero 的
-            // 探索由 Gumbel 噪声 + Sequential Halving 提供，根节点 prior 不参与
-            // 搜索决策，注入无效（详见 src/mcts/search.rs 中的说明）。请勿加回。
+            // 算力随机化：判断本步是 Full Search 还是 Fast Search
+            let is_full_search = if self.config.playout_cap_random_enabled {
+                if step == 0 {
+                    true
+                } else {
+                    rand::random::<f32>() < self.config.full_search_prob
+                }
+            } else {
+                true
+            };
+            let step_sims = if is_full_search {
+                self.config.mcts_sims
+            } else {
+                self.config.fast_mcts_sims
+            };
+
+            let step_mcts_config = GumbelConfig {
+                num_simulations: step_sims,
+                max_considered_actions: self.config.max_considered_actions,
+                c_scale: self.config.c_scale,
+                gumbel_scale: self.config.gumbel_scale,
+            };
+            let mut step_mcts = GumbelMCTS::new(&env, self.evaluator, step_mcts_config);
 
             // --- MCTS 搜索 (同步) ---
-            let search_result = match mcts.run() {
+            let search_result = match step_mcts.run() {
                 Some(result) => result,
                 None => {
-                    // mcts.run() 返回 None = 当前玩家无合法走法 → 该玩家判负。
-                    // 调用环境终止条件获取真实 winner，回填正确的 ±1 胜负。
                     let (_, _, winner) = env.check_game_over_conditions();
                     return crate::pipeline::self_play::finalize_episode(
                         episode_data,
@@ -193,26 +225,15 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                 }
             };
 
-            // --- 温度采样：前 temperature_steps 用 τ=1（探索），之后用 argmax（利用）---
-            let temperature: f32 = if step < self.config.temperature_steps {
-                1.0
-            } else {
-                1e-3
-            };
-            let sampled_action = {
-                // Gumbel AlphaZero 标准动作选择：基于 completed Q 的温度 softmax（π ∝ exp(Q/τ)）
-                let q_policy = mcts.get_root_completed_q_policy(temperature);
-                GumbelMCTS::<G, E>::sample_action_from_policy(
-                    &q_policy,
-                    &search_result.action_mask,
-                )
-            };
-            let action = sampled_action;
-            let completed_q = mcts.get_root_completed_q(action);
+            // --- 落子：直接采用 Gumbel 搜索选出的动作。探索由每次搜索重新抽的
+            // Gumbel 噪声提供（sample_gumbel_top_k），无需根温度采样，详见
+            // SelfPlayConfig 字段注释。---
+            let action = search_result.action;
+            let completed_q = search_result.completed_q;
 
-            // --- 收集样本数据 ---
-            // 注意: improved_policy 仍使用 Gumbel AlphaZero 的 σ(Q) + logit 公式作为训练目标
-            // 实际动作 action 一并记录，用于对局回放 / 文字棋谱还原与交叉校验
+            // --- 全记录：无论 Full/Fast 都收集样本，并标记 is_full_search ---
+            // 算力随机化下 Fast Search 步的样本同样入库，交给 Python 侧「选择性使用」
+            // （losses.py 仅让 Full Search 样本参与训练，Fast 样本保留供未来逻辑使用）。
             episode_data.push((
                 search_result.state,
                 search_result.improved_policy,
@@ -222,6 +243,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                 search_result.player,
                 search_result.action_mask,
                 action,
+                is_full_search,
             ));
 
             // --- 执行动作 ---

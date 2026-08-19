@@ -207,21 +207,18 @@ pub fn ttt_mcts_search(
     predict_fn,
     mcts_sims=64,
     max_considered_actions=9,
-    temperature_steps=6,
     num_games=1,
 ))]
 pub fn run_ttt_self_play_with_predictor(
     predict_fn: Py<PyAny>,
     mcts_sims: usize,
     max_considered_actions: usize,
-    temperature_steps: usize,
     num_games: usize,
 ) -> PyResult<Vec<Py<PyDict>>> {
     let evaluator = PyEvaluator::<TicTacToeEnv>::new(predict_fn);
     let cfg = SelfPlayConfig {
         mcts_sims,
         max_considered_actions,
-        temperature_steps,
         ..Default::default()
     };
 

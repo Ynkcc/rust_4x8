@@ -14,7 +14,7 @@ use crate::core::mcts::{Evaluator, GumbelMCTS};
 /// 该函数同时被三条终止路径调用：MCTS None 分支（无合法走法判负）、
 /// 终局分支（terminated/truncated）、步数上限分支。
 pub fn finalize_episode(
-    episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize)>,
+    episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize, bool)>,
     winner: Option<i32>,
     health_diff_red: Option<f32>,
 ) -> crate::pipeline::self_play::GameEpisode {
@@ -26,7 +26,7 @@ pub fn finalize_episode(
     };
     let samples = episode_data
         .into_iter()
-        .map(|(obs, p, mcts_val, completed_q, root_visit_count, player, mask, action)| {
+        .map(|(obs, p, mcts_val, completed_q, root_visit_count, player, mask, action, is_full_search)| {
             let game_result_val: f32 = if player.val() == 1 {
                 reward_red
             } else {
@@ -48,6 +48,7 @@ pub fn finalize_episode(
                 mask,
                 action,
                 health_diff_val,
+                is_full_search,
             )
         })
         .collect();

@@ -66,9 +66,9 @@ def build_teacher_config(variant: Variant, sims: int) -> "banqi_4x8.SelfPlayConf
     return banqi_4x8.SelfPlayConfig(
         mcts_sims=sims,
         max_considered_actions=16,
-        temperature_steps=0,  # 教师统一按温度采样（temperature 在 minimax 侧传入）
         c_scale=1.0,
         gumbel_scale=1.0,
+        playout_cap_random_enabled=False,
     )
 
 

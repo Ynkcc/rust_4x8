@@ -59,7 +59,6 @@ def main():
     parser.add_argument("--model", default=None, help="模型权重路径（TorchScript .pt），默认 python/banqi_model_latest.pt")
     parser.add_argument("--mcts-sims", type=int, default=64, help="MCTS 模拟次数（默认 64）")
     parser.add_argument("--max-considered", type=int, default=16, help="候选动作数（默认 16）")
-    parser.add_argument("--temperature-steps", type=int, default=12, help="温度采样步数（默认 12）")
     parser.add_argument("--out-dir", default=None, help="输出目录（默认 python/output）")
     parser.add_argument("--save-format", choices=["jsonl", "json"], default="jsonl",
                         help="原始数据保存格式（默认 jsonl）")
@@ -86,7 +85,6 @@ def main():
     sp_cfg = banqi_4x8.SelfPlayConfig(
         mcts_sims=args.mcts_sims,
         max_considered_actions=args.max_considered,
-        temperature_steps=args.temperature_steps,
     )
     print(f"[Record] 开始自对弈一局 (mcts_sims={args.mcts_sims}) ...")
     episodes = banqi_4x8.run_python_match(

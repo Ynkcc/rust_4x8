@@ -29,6 +29,9 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
     #   - 自对弈数据带 actions（MCTS 实际选择的最优动作）作为 fallback
     teacher_actions = episode_dict.get("teacher_actions")
     actions = episode_dict.get("actions")
+    # 算力分配随机化的 Full Search 标记；缺省视为 True（旧数据 / 教师 / 冷存储数据无此键）。
+    # True = 参与训练；False = Fast Search 样本，仅保留供未来处理逻辑使用。
+    is_full_search = episode_dict.get("is_full_search")
     for step_idx, (board, scalar, policy, mcts_val, completed_q,
                     root_visit, game_result, mask) in enumerate(zip(
         episode_dict["boards"], episode_dict["scalars"], episode_dict["policies"],
@@ -52,6 +55,7 @@ def episode_to_samples(episode_dict: Dict) -> List[Dict]:
             "action_mask": mask,
             "teacher_action": teacher_action,
             "health_diff": float(health_diffs[step_idx]),
+            "is_full_search": bool(is_full_search[step_idx]) if is_full_search is not None else True,
         })
     return samples
 
@@ -81,6 +85,8 @@ class DataBuffer:
         self.values = np.empty(c, dtype=np.float32)
         self.masks = np.empty((c, C.ACTION_SPACE_SIZE), dtype=np.float32)
         self.root_visits = np.empty(c, dtype=np.int64)
+        # 算力分配随机化的 Full Search 标记：True=Full（参与训练），False=Fast（仅保留）。
+        self.is_full = np.ones(c, dtype=bool)
         self._size = 0          # 当前有效样本数
         self._head = 0          # 环形写入位置（下一个覆盖点）
         # anneal 模式下 game_result 的权重（0~1），由 TrainWorker 按轮更新
@@ -147,6 +153,7 @@ class DataBuffer:
             self.values[i] = target_val
             self.masks[i] = mask
             self.root_visits[i] = int(s.get('root_visit_count', 0))
+            self.is_full[i] = bool(s.get('is_full_search', True))
             self._head = (self._head + 1) % self.capacity
             if self._size < self.capacity:
                 self._size += 1
@@ -178,4 +185,5 @@ class DataBuffer:
         p = torch.from_numpy(self.probs[actual])
         v = torch.from_numpy(self.values[actual])
         m = torch.from_numpy(self.masks[actual])
-        return b, s, p, v, m
+        f = torch.from_numpy(self.is_full[actual])
+        return b, s, p, v, m, f

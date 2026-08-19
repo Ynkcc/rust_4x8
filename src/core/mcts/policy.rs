@@ -8,7 +8,6 @@
 use super::evaluator::Evaluator;
 use super::search::GumbelMCTS;
 use crate::core::env::GameEnv;
-use rand::prelude::*;
 
 impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// 根据 Logits 和动作掩码计算概率分布
@@ -79,92 +78,15 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         probs
     }
 
-    /// 基于根节点 completed Q 的温度策略（Gumbel AlphaZero 论文标准动作选择）
-    ///
-    /// π(a) ∝ exp(Q_comp(a) / τ)
-    /// - τ = 1: 对 completed Q 做 softmax，鼓励探索
-    /// - τ → 0: 趋向 argmax，确定性选择
-    /// 仅对合法动作计算，非法动作保持 0。
-    ///
-    /// 注意：此处刻意使用 completed Q 而非访问计数 N^(1/τ)（经典 AlphaZero 做法）。
-    /// Sequential Halving 结束后 surviving 候选的访问次数基本均分，基于 N 的策略
-    /// 会退化为近似均匀采样、丢失动作质量信息；而 completed Q 保留了质量排序，
-    /// 符合 Gumbel AlphaZero 论文（Policy improvement by planning with Gumbel）
-    /// 的动作选择方式。请勿替换回基于 visit_count 的实现。
-    pub fn get_root_completed_q_policy(&self, temperature: f32) -> Vec<f32> {
-        let mut policy = vec![0.0; G::action_space_size()];
-
-        let env = match self.arena.get(self.root_idx).env.as_ref() {
-            Some(env) => env,
-            None => return policy,
-        };
-        let mut masks = vec![0; G::action_space_size()];
-        env.action_masks_into(&mut masks);
-
-        let tau = temperature.max(1e-4);
-        let inv_tau = 1.0 / tau;
-
-        // 数值稳定性：先减去最大 completed Q 再做 exp，避免溢出
-        let mut max_q = f32::NEG_INFINITY;
-        for action in 0..G::action_space_size() {
-            if masks[action] == 1 {
-                max_q = max_q.max(self.completed_q(action));
-            }
-        }
-        if !max_q.is_finite() {
-            return policy;
-        }
-
-        let mut sum = 0.0;
-        for action in 0..G::action_space_size() {
-            if masks[action] == 1 {
-                let value = ((self.completed_q(action) - max_q) * inv_tau).exp();
-                policy[action] = value;
-                sum += value;
-            }
-        }
-
-        if sum > 0.0 {
-            for p in policy.iter_mut() {
-                *p /= sum;
-            }
-        }
-        policy
-    }
-
-    /// 从离散概率分布中采样一个动作（仅合法动作）
-    pub fn sample_action_from_policy(probs: &[f32], masks: &[i32]) -> usize {
-        let mut rng = thread_rng();
-        let mut sum = 0.0;
-        for i in 0..probs.len() {
-            if masks[i] == 1 {
-                sum += probs[i];
-            }
-        }
-        if sum <= 0.0 {
-            for i in 0..masks.len() {
-                if masks[i] == 1 {
-                    return i;
-                }
-            }
-            return 0;
-        }
-        let mut r: f32 = rng.gen_range(0.0..sum);
-        for i in 0..probs.len() {
-            if masks[i] == 1 {
-                r -= probs[i];
-                if r <= 0.0 {
-                    return i;
-                }
-            }
-        }
-        for i in (0..probs.len()).rev() {
-            if masks[i] == 1 {
-                return i;
-            }
-        }
-        0
-    }
+    // 注意：根节点温度采样（get_root_completed_q_policy / sample_action_from_policy）
+    // 已移除，请勿重新添加！
+    //
+    // 原因：Gumbel AlphaZero 的探索完全由 Gumbel 噪声提供（search.rs 的
+    // sample_gumbel_top_k 每次搜索重新抽样），落子直接采用 search_result.action。
+    // 若再对 completed_Q 做 softmax 温度采样，会产生与 Gumbel 噪声重复的随机源，
+    // 并使「实际落子」偏离搜索选出的最优动作，与训练目标 improved_policy
+    // （logit + σ·Q）脱节，污染自对弈数据。自对弈路径见 pipeline/self_play。
+    //
 
     /// 获取 Gumbel AlphaZero 的改进策略 (pi_target)
     ///

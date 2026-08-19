@@ -42,10 +42,15 @@ common:
     SELF_PLAY_PROCESSES: 2        # 自对弈进程数（INFER_SIDE=python 多进程时用）
     SELF_PLAY_BACKEND: "thread"   # 并发后端（保留兼容；实际推理侧由 INFER_SIDE 决定）
     INFER_SIDE: "rust"            # 推理执行侧："python"(多进程, Python run_python_match) | "rust"(多线程, Rust run_native_match 管理线程, 透传 num_threads)
+    PLAYOUT_CAP_RANDOM_ENABLED: true  # 是否启用算力分配随机化
+    FAST_MCTS_SIMS: 16            # Fast Search 模拟次数
+    FULL_SEARCH_PROB: 0.25        # Full Search 出现概率 (25%)
 
   # ---------------- 训练公共超参 ----------------
   train:
     WEIGHT_DECAY: 1.0e-4          # 权重衰减
+    EMA_ENABLED: true             # 是否启用权重指数滑动平均 (EMA)
+    EMA_DECAY: 0.999              # EMA 滑动衰减率
     DATA_AUGMENT_ENABLED: true    # 是否启用数据增强
     DATA_AUGMENT_KEEP_ORIGINAL: true  # 是否保留原始样本
 
@@ -126,7 +131,6 @@ common:
     PREDICT_BATCH: 128
     MCTS_SIMS: 128
     MAX_CONSIDERED_ACTIONS: 24
-    TEMPERATURE_STEPS: 16
     NUM_WORKERS: 2
     GAMES_PER_WORKER: 50
     BATCH_CONCURRENCY: 8
@@ -161,7 +165,6 @@ common:
     PREDICT_BATCH: 128
     MCTS_SIMS: 512
     MAX_CONSIDERED_ACTIONS: 16
-    TEMPERATURE_STEPS: 12
     NUM_WORKERS: 4
     GAMES_PER_WORKER: 15
     BATCH_CONCURRENCY: 16
@@ -197,7 +200,6 @@ common:
     PREDICT_BATCH: 64
     MCTS_SIMS: 64
     MAX_CONSIDERED_ACTIONS: 16
-    TEMPERATURE_STEPS: 8
     NUM_WORKERS: 4
     GAMES_PER_WORKER: 15
     BATCH_CONCURRENCY: 16

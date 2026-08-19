@@ -105,8 +105,8 @@ def rust_self_play_generate(net, num_games: int, num_simulations: int,
                             buffer: ReplayBuffer) -> ReplayBuffer:
     """用 Rust 泛型 self_play 生成自对弈样本并填充 buffer。
 
-    Rust 侧已完成：MCTS 搜索、温度采样（前 temperature_steps 步 τ=1 探索）、
-    改进策略 improved_policy（训练目标）与价值标签 game_results（finalize_episode
+    Rust 侧已完成：Gumbel MCTS 搜索（探索由 Gumbel 噪声提供）、改进策略
+    improved_policy（训练目标）与价值标签 game_results（finalize_episode
     每步行动方视角换算）。Python 侧仅负责样本转存 + 训练。
     """
     predict_fn = make_predict_fn(net)
@@ -114,7 +114,6 @@ def rust_self_play_generate(net, num_games: int, num_simulations: int,
         predict_fn=predict_fn,
         mcts_sims=num_simulations,
         max_considered_actions=9,
-        temperature_steps=6,
         num_games=num_games,
     )
     for ep in episodes:

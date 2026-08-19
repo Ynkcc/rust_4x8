@@ -79,7 +79,6 @@ def _override_baseline_config() -> Dict:
         # 自对弈
         "MCTS_SIMS": 24,
         "MAX_CONSIDERED_ACTIONS": 16,
-        "TEMPERATURE_STEPS": 8,
         "GAMES_PER_ITER": 10,
         "NUM_WORKERS": 2,
         "GAMES_PER_WORKER": 5,  # 总对局数 = 2 × 5 = 10 = GAMES_PER_ITER

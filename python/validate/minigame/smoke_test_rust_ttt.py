@@ -140,7 +140,6 @@ def test_ttt_self_play() -> None:
         predict_fn=uniform_predict,
         mcts_sims=48,
         max_considered_actions=9,
-        temperature_steps=6,
         num_games=1,
     )
     check("自对弈返回 1 局", len(episodes) == 1)

@@ -94,7 +94,6 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "PREDICT_BATCH": _cast_int,
     "MCTS_SIMS": _cast_int,
     "MAX_CONSIDERED_ACTIONS": _cast_int,
-    "TEMPERATURE_STEPS": _cast_int,
     "GAMES_PER_ITER": _cast_int,
     "NUM_WORKERS": _cast_int,
     "GAMES_PER_WORKER": _cast_int,
@@ -161,6 +160,13 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     # ---- 模型后端（TorchScript / ONNX）----
     "MODEL_BACKEND": _cast_str,
     "ONNX_PROVIDERS": _cast_str,
+
+    # ---- 权重指数滑动平均 (EMA) & 算力分配随机化 ----
+    "EMA_ENABLED": _cast_bool,
+    "EMA_DECAY": _cast_float,
+    "PLAYOUT_CAP_RANDOM_ENABLED": _cast_bool,
+    "FAST_MCTS_SIMS": _cast_int,
+    "FULL_SEARCH_PROB": _cast_float,
 }
 
 
@@ -309,7 +315,6 @@ class Config:
     PREDICT_BATCH: int
     MCTS_SIMS: int
     MAX_CONSIDERED_ACTIONS: int
-    TEMPERATURE_STEPS: int
     GAMES_PER_ITER: int
     NUM_WORKERS: int
     GAMES_PER_WORKER: int
@@ -323,6 +328,11 @@ class Config:
     LR_DECAY_STEPS: int
     TRAIN_EPOCHS_PER_ROUND: int
     WEIGHT_DECAY: float
+    EMA_ENABLED: bool             # 是否启用 EMA
+    EMA_DECAY: float              # EMA 滑动衰减率 (如 0.999)
+    PLAYOUT_CAP_RANDOM_ENABLED: bool # 是否启用算力分配随机化
+    FAST_MCTS_SIMS: int           # Fast Search MCTS 模拟数
+    FULL_SEARCH_PROB: float       # Full Search 出现概率 (如 0.25)
     MAX_SAMPLE_BUFFER_SIZE: int
     MIN_SAMPLES_TO_START: int
     QUEUE_FETCH_BATCH: int

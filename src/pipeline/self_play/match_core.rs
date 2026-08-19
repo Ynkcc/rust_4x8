@@ -401,7 +401,25 @@ where
         let is_a_turn = (cur == 1) == player_a_is_red;
         let evaluator = if is_a_turn { &eval_a } else { &eval_b };
 
-        let mut mcts = GumbelMCTS::new(&env, evaluator, gumbel_cfg.clone());
+        let is_full_search = if config.playout_cap_random_enabled {
+            if step == 0 {
+                true
+            } else {
+                rand::random::<f32>() < config.full_search_prob
+            }
+        } else {
+            true
+        };
+        let step_sims = if is_full_search {
+            config.mcts_sims
+        } else {
+            config.fast_mcts_sims
+        };
+
+        let mut step_gumbel_cfg = gumbel_cfg.clone();
+        step_gumbel_cfg.num_simulations = step_sims;
+
+        let mut mcts = GumbelMCTS::new(&env, evaluator, step_gumbel_cfg);
         let search_result = match mcts.run() {
             Some(r) => r,
             None => {
@@ -411,18 +429,13 @@ where
             }
         };
 
-        let temperature: f32 = if step < config.temperature_steps {
-            1.0
-        } else {
-            1e-3
-        };
-        let q_policy = mcts.get_root_completed_q_policy(temperature);
-        let action = GumbelMCTS::<G, PlayerEval<G>>::sample_action_from_policy(
-            &q_policy,
-            &search_result.action_mask,
-        );
-        let completed_q = mcts.get_root_completed_q(action);
+        // 落子：直接采用 Gumbel 搜索选出的动作。探索由每次搜索重新抽的 Gumbel
+        // 噪声提供（sample_gumbel_top_k），无需根温度采样，详见 SelfPlayConfig。
+        let action = search_result.action;
+        let completed_q = search_result.completed_q;
 
+        // 全记录：无论 Full/Fast 都收集样本，并标记 is_full_search，交由 Python 侧
+        // 选择性使用（losses.py 仅让 Full Search 样本参与训练）。
         episode_data.push((
             search_result.state,
             search_result.improved_policy,
@@ -432,6 +445,7 @@ where
             search_result.player,
             search_result.action_mask,
             action,
+            is_full_search,
         ));
 
         match env.step(action) {

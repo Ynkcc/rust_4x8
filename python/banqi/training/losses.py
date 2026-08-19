@@ -33,15 +33,21 @@ TrainStepStats = namedtuple(
 _ZERO_STATS = TrainStepStats(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
-def train_step(model, optimizer, batch_data, device) -> TrainStepStats:
+def train_step(model, optimizer, batch_data, device, ema_model=None, ema_decay: float = 0.999) -> TrainStepStats:
     model.train()
-    boards_t, scalars_t, target_probs_t, target_values_t, masks_t = batch_data
+    boards_t, scalars_t, target_probs_t, target_values_t, masks_t, full_t = batch_data
 
     boards_t = boards_t.to(device, non_blocking=True)
     scalars_t = scalars_t.to(device, non_blocking=True)
     target_probs_t = target_probs_t.to(device, non_blocking=True)
     target_values_t = target_values_t.to(device, non_blocking=True).view(-1, 1)
     masks_t = masks_t.to(device, non_blocking=True)
+    # 算力分配随机化的 Full Search 标记：1=Full（参与训练），0=Fast（仅保留，不训练）
+    full_t = full_t.to(device, non_blocking=True).float()
+
+    # ---- 选择性使用：batch 内无 Full Search 样本则不训练（Fast 样本仅保留供未来逻辑）----
+    if bool(full_t.sum() == 0):
+        return _ZERO_STATS
 
     # ---- 来源校验：输入/目标任何非有限都跳过该 batch（不更新权重）----
     # 防止脏数据（NaN/Inf 的 board/scalar/policy/mask/value）进入前向传播，
@@ -73,9 +79,12 @@ def train_step(model, optimizer, batch_data, device) -> TrainStepStats:
     # 配合下方梯度有限性检查，从源头杜绝 NaN 传播。
     masked_logits = logits.masked_fill(masks_t < 0.5, -1e9)
     log_probs = F.log_softmax(masked_logits, dim=1)
-    policy_loss = -torch.sum(target_probs_t * log_probs, dim=1).mean()
-
-    value_loss = F.mse_loss(values, target_values_t)
+    # 选择性使用：仅让 Full Search 样本参与策略/价值 loss（Fast 样本按 0 权重屏蔽）
+    num_full = full_t.sum().clamp_min(1.0)
+    per_sample_policy = -(target_probs_t * log_probs).sum(dim=1)  # (B,)
+    policy_loss = (per_sample_policy * full_t).sum() / num_full
+    per_sample_value = F.mse_loss(values, target_values_t, reduction="none").view(-1)
+    value_loss = (per_sample_value * full_t).sum() / num_full
     total_loss = policy_loss + value_loss
 
     # ---- 数值安全：loss / 前向输出非有限则跳过，不污染权重 ----
@@ -102,6 +111,15 @@ def train_step(model, optimizer, batch_data, device) -> TrainStepStats:
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
 
+    # ---- EMA 影子权重与 BatchNorm 缓冲区更新 ----
+    if ema_model is not None:
+        with torch.no_grad():
+            for p_ema, p in zip(ema_model.parameters(), model.parameters()):
+                p_ema.data.mul_(ema_decay).add_(p.data, alpha=1.0 - ema_decay)
+            for (n_ema, b_ema), (n_src, b_src) in zip(ema_model.named_buffers(), model.named_buffers()):
+                if b_src.dtype.is_floating_point:
+                    b_ema.data.mul_(ema_decay).add_(b_src.data, alpha=1.0 - ema_decay)
+
     # 记录目标分布统计（无需梯度）：策略熵 + 价值目标 mean/std，供 TB 观测
     with torch.no_grad():
         log_p = torch.log(target_probs_t.clamp_min(1e-12))
@@ -121,7 +139,8 @@ def train_step(model, optimizer, batch_data, device) -> TrainStepStats:
 
 
 def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
-                        device, max_batches: Optional[int] = None):
+                        device, max_batches: Optional[int] = None,
+                        ema_model=None, ema_decay: float = 0.999):
     """
     在完整 replay buffer 上训练指定个 epoch。
     scheduler.step() 按 batch 步进以匹配 CosineAnnealingLR 的 T_max (batch 数)。
@@ -151,7 +170,7 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
         for step in range(num_batches):
             batch_indices = indices[step * buffer.cfg.TRAIN_BATCH: (step + 1) * buffer.cfg.TRAIN_BATCH]
             batch_data = buffer.get_batch(batch_indices)
-            s = train_step(model, optimizer, batch_data, device)
+            s = train_step(model, optimizer, batch_data, device, ema_model=ema_model, ema_decay=ema_decay)
             scheduler.step()
             batch_total_l += s.total
             batch_pol_l += s.policy

@@ -42,7 +42,6 @@ def _override_tiny_config() -> None:
     """运行时把 config 单例实例属性收紧到极小值（仅影响本进程，不改 config.py）。"""
     config.MCTS_SIMS = 2
     config.MAX_CONSIDERED_ACTIONS = 4
-    config.TEMPERATURE_STEPS = 1
     config.GAMES_PER_ITER = 2
     config.NUM_WORKERS = 1
     config.GAMES_PER_WORKER = 1

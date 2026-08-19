@@ -255,7 +255,6 @@ def _log_meta_tb(config: Config, variant_id: str, tb_log_dir: str) -> None:
         "variant": variant_id,
         "mcts_sims": config.MCTS_SIMS,
         "max_considered_actions": config.MAX_CONSIDERED_ACTIONS,
-        "temperature_steps": config.TEMPERATURE_STEPS,
         "games_per_iter": config.GAMES_PER_ITER,
         "train_batch": config.TRAIN_BATCH,
         "learning_rate": config.LEARNING_RATE,

@@ -45,7 +45,7 @@ impl PyGameEpisode {
     }
 
     #[allow(clippy::type_complexity)]
-    fn get_samples(slf: PyRef<'_, Self>) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<u32>, Vec<f32>, Vec<Vec<i32>>, Vec<usize>, Vec<f32>) {
+    fn get_samples(slf: PyRef<'_, Self>) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<u32>, Vec<f32>, Vec<Vec<i32>>, Vec<usize>, Vec<f32>, Vec<bool>) {
         let n = slf.inner.samples.len();
         let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);
         let mut scalars: Vec<Vec<f32>> = Vec::with_capacity(n);
@@ -57,8 +57,9 @@ impl PyGameEpisode {
         let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
         let mut actions: Vec<usize> = Vec::with_capacity(n);
         let mut health_diffs: Vec<f32> = Vec::with_capacity(n);
+        let mut is_full_searches: Vec<bool> = Vec::with_capacity(n);
 
-        for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action, health_diff) in &slf.inner.samples {
+        for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action, health_diff, is_full_search) in &slf.inner.samples {
             boards.push(obs.board.as_slice().unwrap().to_vec());
             scalars.push(obs.scalars.as_slice().unwrap().to_vec());
             policies.push(policy.clone());
@@ -69,6 +70,7 @@ impl PyGameEpisode {
             action_masks.push(mask.clone());
             actions.push(*action);
             health_diffs.push(*health_diff);
+            is_full_searches.push(*is_full_search);
         }
 
         (
@@ -82,6 +84,7 @@ impl PyGameEpisode {
             action_masks,
             actions,
             health_diffs,
+            is_full_searches,
         )
     }
 
@@ -145,8 +148,9 @@ fn episode_to_dict_with_shapes<'py>(
     let mut action_masks: Vec<Vec<i32>> = Vec::with_capacity(n);
     let mut actions: Vec<usize> = Vec::with_capacity(n);
     let mut health_diffs: Vec<f32> = Vec::with_capacity(n);
+    let mut is_full_searches: Vec<bool> = Vec::with_capacity(n);
 
-    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action, health_diff) in &episode.samples {
+    for (obs, policy, mcts_val, completed_q, root_visit, game_result, mask, action, health_diff, is_full_search) in &episode.samples {
         boards.push(obs.board.as_slice().unwrap().to_vec());
         scalars.push(obs.scalars.as_slice().unwrap().to_vec());
         policies.push(policy.clone());
@@ -157,6 +161,7 @@ fn episode_to_dict_with_shapes<'py>(
         action_masks.push(mask.clone());
         actions.push(*action);
         health_diffs.push(*health_diff);
+        is_full_searches.push(*is_full_search);
     }
 
     let dict = PyDict::new(py);
@@ -173,6 +178,7 @@ fn episode_to_dict_with_shapes<'py>(
     dict.set_item("health_diffs", health_diffs)?;
     dict.set_item("action_masks", action_masks)?;
     dict.set_item("actions", actions)?;
+    dict.set_item("is_full_search", is_full_searches)?;
     dict.set_item("health_diff_red", episode.health_diff_red)?;
     dict.set_item("board_shape", vec![bc, br, bcol])?;
     dict.set_item("scalar_shape", vec![sc])?;

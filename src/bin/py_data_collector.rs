@@ -67,7 +67,6 @@ fn main() -> Result<()> {
     let mut games = 1usize;
     let mut mcts_sims = 64usize;
     let mut max_considered_actions = 16usize;
-    let mut temperature_steps = 12usize;
     let mut concurrency = 1usize;
     let mut verbose = false;
     let mut estimate_memory = false;
@@ -112,14 +111,6 @@ fn main() -> Result<()> {
                     .parse()
                     .context("无效的 max-considered-actions 数值")?;
             }
-            "--temperature-steps" => {
-                i += 1;
-                temperature_steps = args
-                    .get(i)
-                    .context("缺少 --temperature-steps 参数值")?
-                    .parse()
-                    .context("无效的 temperature-steps 数值")?;
-            }
             "--concurrency" => {
                 i += 1;
                 concurrency = args
@@ -146,7 +137,6 @@ fn main() -> Result<()> {
              \t--games <n>                 生成游戏局数\n\
              \t--mcts-sims <n>             MCTS 模拟次数\n\
              \t--max-considered-actions <n> Gumbel 最大考虑动作数\n\
-             \t--temperature-steps <n>     温度下降步数\n\
              \t--concurrency <n>           并行游戏数\n\
              \t--verbose                   输出单步棋谱\n\
              \t--estimate-memory           估算单局挂起内存\n\
@@ -181,10 +171,13 @@ fn main() -> Result<()> {
     let cfg = SelfPlayConfig {
         mcts_sims,
         max_considered_actions,
-        temperature_steps,
         scenario: banqi_4x8::pipeline::self_play::ScenarioType::Standard,
         c_scale: 1.0,
         gumbel_scale: 1.0,
+        // 数据收集器追求高质量训练样本，禁用算力分配随机化（下两字段随之失效）
+        playout_cap_random_enabled: false,
+        fast_mcts_sims: 16,
+        full_search_prob: 0.25,
     };
 
     let running = Arc::new(AtomicBool::new(true));
@@ -248,7 +241,7 @@ fn main() -> Result<()> {
             println!("   棋谱 (示例):");
             let mut env = DarkChessEnv::new();
             env.reset();
-            for (idx, (_, policy, _, _, _, _, mask, action, _)) in episode.samples.iter().enumerate() {
+            for (idx, (_, policy, _, _, _, _, mask, action, _, _)) in episode.samples.iter().enumerate() {
                 let moves = generate_moves(&env, env.get_current_player());
                 if let Some(mv) = moves.iter().find(|m| m.action == *action) {
                     println!(

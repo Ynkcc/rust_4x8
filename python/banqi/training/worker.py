@@ -138,12 +138,24 @@ class TrainWorker(threading.Thread):
         cfg = self.cfg
         from banqi.nn_model import BanqiNet
 
+        ema_enabled = getattr(cfg, "EMA_ENABLED", True)
+        ema_decay = float(getattr(cfg, "EMA_DECAY", 0.999))
+        self.ema_enabled = ema_enabled
+        self.ema_decay = ema_decay
+        self.ema_model = None
+
         if os.path.exists(self.last_ckpt_path()):  # resume
             print(f"[TR-{self.variant.id}] 从 checkpoint 恢复: {self.last_ckpt_path()}")
             ckpt = torch.load(self.last_ckpt_path(), map_location=self.device, weights_only=False)
             model = BanqiNet(self.variant)
             model.load_state_dict(ckpt["model_state"])
             self.model = model.to(self.device)
+            if ema_enabled:
+                self.ema_model = BanqiNet(self.variant).to(self.device)
+                if "ema_model_state" in ckpt and ckpt["ema_model_state"] is not None:
+                    self.ema_model.load_state_dict(ckpt["ema_model_state"])
+                else:
+                    self.ema_model.load_state_dict(self.model.state_dict())
             self.optimizer = optim.AdamW(
                 self.model.parameters(),
                 lr=cfg.LEARNING_RATE * _compute_lr_scale(ckpt.get("global_step", 0), cfg),
@@ -161,9 +173,12 @@ class TrainWorker(threading.Thread):
             self.start_total_samples = ckpt.get("total_samples", 0)
             self.version = ckpt.get("version", 0) + 1
             print(f"[TR-{self.variant.id}] 恢复 global_step={self.global_step}, "
-                  f"version={self.version}")
+                  f"version={self.version}" + (" (EMA 已启用)" if ema_enabled else ""))
         else:
             self.model = BanqiNet(self.variant).to(self.device)
+            if ema_enabled:
+                self.ema_model = BanqiNet(self.variant).to(self.device)
+                self.ema_model.load_state_dict(self.model.state_dict())
             self.optimizer = optim.AdamW(
                 self.model.parameters(), lr=cfg.LEARNING_RATE,
                 weight_decay=cfg.WEIGHT_DECAY
@@ -224,6 +239,9 @@ class TrainWorker(threading.Thread):
         return os.path.join(self.ckpt_dir, "last.ckpt")
 
     def get_inference_model(self):
+        if self.ema_enabled and self.ema_model is not None:
+            self.ema_model.eval()
+            return self.ema_model
         return self.model
 
     def get_global_step(self):
@@ -260,8 +278,11 @@ class TrainWorker(threading.Thread):
         path = self.last_ckpt_path()
         if should_save_ckpt:
             self.model.eval()
+            if self.ema_model is not None:
+                self.ema_model.eval()
             snapshot = {
                 "model_state": self.model.state_dict(),
+                "ema_model_state": self.ema_model.state_dict() if self.ema_model is not None else None,
                 "optimizer_state": self.optimizer.state_dict(),
                 "scheduler_state": self.scheduler.state_dict(),
                 "global_step": self.global_step,
@@ -272,7 +293,8 @@ class TrainWorker(threading.Thread):
             torch.save(snapshot, path)
 
         if should_export:
-            export_model_isolated(self.model, pt_path, onnx_path, self.variant, self.device)
+            export_target = self.get_inference_model()
+            export_model_isolated(export_target, pt_path, onnx_path, self.variant, self.device)
 
         with self._last_ckpt_lock:
             self.metrics["last_ckpt_path"] = path
@@ -442,6 +464,8 @@ class TrainWorker(threading.Thread):
             epoch_results, total_batches = run_training_epochs(
                 self.model, self.optimizer, self.scheduler, self.buffer,
                 cfg.TRAIN_EPOCHS_PER_ROUND, self.device, max_batches=max_batches,
+                ema_model=self.ema_model if self.ema_enabled else None,
+                ema_decay=self.ema_decay,
             )
             self.model.eval()
 
