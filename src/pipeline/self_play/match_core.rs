@@ -18,7 +18,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::core::env::{DarkChessEnv, Game4x4Env, GameEnv, MiniDarkChessEnv};
-use crate::core::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
 use crate::engine::evaluation::{evaluate, EvalParams};
 use crate::engine::mcts_heuristic::prior_logit;
 use crate::engine::minimax::minimax_best_action;
@@ -112,7 +112,7 @@ struct HeuristicEval<G: GameEnv + AsDarkChessRef> {
 }
 
 impl<G: GameEnv + AsDarkChessRef + Sync> Evaluator<G> for HeuristicEval<G> {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         let params = &self.params;
         let prior_scale = self.prior_scale;
         let n = envs.len();
@@ -134,7 +134,7 @@ impl<G: GameEnv + AsDarkChessRef + Sync> Evaluator<G> for HeuristicEval<G> {
             logits.push(lg);
             values.push(val);
         }
-        (logits, values)
+        EvaluatorOutput { logits, values, health: None }
     }
 }
 
@@ -146,7 +146,7 @@ struct MinimaxEval<G: GameEnv + AsDarkChessRef> {
 }
 
 impl<G: GameEnv + AsDarkChessRef> Evaluator<G> for MinimaxEval<G> {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         let mut logits = Vec::with_capacity(envs.len());
         let mut values = Vec::with_capacity(envs.len());
         for env in envs {
@@ -160,7 +160,7 @@ impl<G: GameEnv + AsDarkChessRef> Evaluator<G> for MinimaxEval<G> {
             logits.push(lg);
             values.push(best_val);
         }
-        (logits, values)
+        EvaluatorOutput { logits, values, health: None }
     }
 }
 
@@ -168,7 +168,7 @@ impl<G: GameEnv + AsDarkChessRef> Evaluator<G> for MinimaxEval<G> {
 struct RandomEval;
 
 impl<G: GameEnv> Evaluator<G> for RandomEval {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         let mut logits = Vec::with_capacity(envs.len());
         let mut values = Vec::with_capacity(envs.len());
         for env in envs {
@@ -183,7 +183,7 @@ impl<G: GameEnv> Evaluator<G> for RandomEval {
             logits.push(lg);
             values.push(0.0);
         }
-        (logits, values)
+        EvaluatorOutput { logits, values, health: None }
     }
 }
 
@@ -198,7 +198,7 @@ enum PlayerEval<G: GameEnv + AsDarkChessRef> {
 }
 
 impl<G: GameEnv + AsDarkChessRef + Sync> Evaluator<G> for PlayerEval<G> {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         match self {
             PlayerEval::Model(e) => e.evaluate(envs),
             #[cfg(feature = "pyo3")]
@@ -247,6 +247,7 @@ where
         max_considered_actions: 16,
         c_scale: 0.25,
         gumbel_scale: 1.0,
+        ..Default::default()
     };
     let mut mcts = GumbelMCTS::new(env, evaluator, config);
     mcts.run().map(|r| r.action)
@@ -388,6 +389,9 @@ where
         max_considered_actions: config.max_considered_actions,
         c_scale: config.c_scale,
         gumbel_scale: config.gumbel_scale,
+        health_enabled: config.health_enabled,
+        health_weight: config.health_weight,
+        health_confidence_exp: config.health_confidence_exp,
     };
 
     let mut episode_data = Vec::new();

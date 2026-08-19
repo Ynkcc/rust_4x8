@@ -4,7 +4,7 @@
 //     输出基于规则的走子先验 Logits 与多特征启发式 Value；
 //   - `HeuristicMctsPolicy`：用该评估器驱动现有 Gumbel MCTS 搜索选择动作。
 
-use crate::core::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
 use crate::core::env::DarkChessEnv;
 
 use crate::engine::evaluation::{EvalParams, evaluate};
@@ -56,7 +56,7 @@ impl Default for HeuristicEvaluator {
 }
 
 impl Evaluator<DarkChessEnv> for HeuristicEvaluator {
-    fn evaluate(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[DarkChessEnv]) -> EvaluatorOutput {
         let mut logits = Vec::with_capacity(envs.len());
         let mut values = Vec::with_capacity(envs.len());
         for env in envs {
@@ -68,7 +68,7 @@ impl Evaluator<DarkChessEnv> for HeuristicEvaluator {
             logits.push(lg);
             values.push(evaluate(env, &self.params));
         }
-        (logits, values)
+        EvaluatorOutput { logits, values, health: None }
     }
 }
 
@@ -109,6 +109,7 @@ impl HeuristicMctsPolicy {
             max_considered_actions: self.max_considered_actions,
             c_scale: 1.0,
             gumbel_scale: 1.0,
+            ..Default::default()
         };
         let mut mcts = GumbelMCTS::new(env, &evaluator, config);
         mcts.run().map(|r| r.action)

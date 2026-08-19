@@ -166,4 +166,8 @@ def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
         playout_cap_random_enabled=getattr(cfg, "PLAYOUT_CAP_RANDOM_ENABLED", True),
         fast_mcts_sims=getattr(cfg, "FAST_MCTS_SIMS", 16),
         full_search_prob=float(getattr(cfg, "FULL_SEARCH_PROB", 0.25)),
+        # 血量差异头：启用时把血量期望并入 MCTS 复合效用
+        health_enabled=bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False)),
+        health_weight=float(getattr(cfg, "HEALTH_UTILITY_WEIGHT", 0.0)),
+        health_confidence_exp=float(getattr(cfg, "HEALTH_UTILITY_CONFIDENCE_EXP", 0.0)),
     )

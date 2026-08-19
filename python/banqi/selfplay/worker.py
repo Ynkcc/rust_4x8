@@ -339,21 +339,26 @@ def sp_worker_main(
     _torch.set_num_threads(1)  # 每子进程限 1 个 torch 线程，防多进程共享核超售
     sp_cfg = build_self_play_config(variant)
 
+    # ---- 血量差异头：自对弈侧读取独立的 HEALTH 模型路径 ----
+    health_enabled = bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False))
+    onnx_path = (getattr(cfg, "HEALTH_ONNX_PATH", "") or cfg.ONNX_PATH) if health_enabled else cfg.ONNX_PATH
+    model_path = (getattr(cfg, "HEALTH_MODEL_PATH", "") or cfg.MODEL_PATH) if health_enabled else cfg.MODEL_PATH
+
     # ---- MODEL_BACKEND="onnx"：优先走 Rust 持有 ONNX 模型的 run_native_match（免 GIL） ----
     # 模型在 Rust 侧用 ONNX Runtime 推理，不经过 GIL；每批重新加载 .onnx 文件实现热更新。
     use_onnx = (cfg.MODEL_BACKEND or "").strip().lower() == "onnx"
-    if use_onnx and cfg.ONNX_PATH and os.path.exists(cfg.ONNX_PATH):
+    if use_onnx and onnx_path and os.path.exists(onnx_path):
         print(f"{tag} 🚀 子进程启动: ONNX 后端（run_native_match 原生推理），pid={os.getpid()}, "
-              f"scheme={scheme}, games/iter={gpi}")
+              f"scheme={scheme}, games/iter={gpi}, health={health_enabled}")
         _run_native_model_loop(
-            variant, cfg.ONNX_PATH, cfg, sp_cfg, data_q, archive_q, stop_event,
+            variant, onnx_path, cfg, sp_cfg, data_q, archive_q, stop_event,
             gpi, worker_id, tag,
         )
         return
     if use_onnx:
         print(f"{tag} ⚠️ ONNX 模型缺失，回退 Python 推理路径")
 
-    predictor, device = build_predictor(variant, cfg.MODEL_PATH, cfg.INFER_DEVICE)
+    predictor, device = build_predictor(variant, model_path, cfg.INFER_DEVICE)
     print(f"{tag} 🚀 子进程启动: device={device}, pid={os.getpid()}, "
           f"scheme={scheme}, games/iter={gpi}")
 

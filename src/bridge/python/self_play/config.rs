@@ -26,6 +26,9 @@ impl PySelfPlayConfig {
         playout_cap_random_enabled = true,
         fast_mcts_sims = 16,
         full_search_prob = 0.25,
+        health_enabled = false,
+        health_weight = 0.0,
+        health_confidence_exp = 0.0,
     ))]
     fn new(
         mcts_sims: usize,
@@ -35,6 +38,9 @@ impl PySelfPlayConfig {
         playout_cap_random_enabled: bool,
         fast_mcts_sims: usize,
         full_search_prob: f32,
+        health_enabled: bool,
+        health_weight: f32,
+        health_confidence_exp: f32,
     ) -> Self {
         Self {
             inner: SelfPlayConfig {
@@ -46,6 +52,9 @@ impl PySelfPlayConfig {
                 playout_cap_random_enabled,
                 fast_mcts_sims,
                 full_search_prob,
+                health_enabled,
+                health_weight,
+                health_confidence_exp,
             },
         }
     }

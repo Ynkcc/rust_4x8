@@ -178,6 +178,7 @@ fn main() -> Result<()> {
         playout_cap_random_enabled: false,
         fast_mcts_sims: 16,
         full_search_prob: 0.25,
+        ..Default::default()
     };
 
     let running = Arc::new(AtomicBool::new(true));

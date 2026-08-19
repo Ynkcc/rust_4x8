@@ -94,6 +94,21 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     fn terminal_health_diff_red(&self) -> Option<f32> {
         None
     }
+
+    /// 终局整型血量差（红方视角：红HP - 黑HP，未归一化）。
+    ///
+    /// 供 MCTS 终局分支计算血量期望（分桶中心为整型差，D = initial_health）。
+    /// 无血量机制的游戏返回 None。
+    fn terminal_health_diff_red_int(&self) -> Option<i32> {
+        None
+    }
+
+    /// 血量差的归一化标尺（= initial_health，D），把整型差映射到 [-1, 1]。
+    ///
+    /// 与离散分类头分桶定义一致（D = (K-1)/2）。无血量机制返回 0。
+    fn health_diff_scale(&self) -> f32 {
+        0.0
+    }
 }
 
 // ============================================================================
@@ -171,6 +186,14 @@ impl GameEnv for DarkChessEnv {
             Some((self.get_hp(Player::Red) - self.get_hp(Player::Black)) as f32 / denom)
         }
     }
+
+    fn terminal_health_diff_red_int(&self) -> Option<i32> {
+        Some(self.get_hp(Player::Red) as i32 - self.get_hp(Player::Black) as i32)
+    }
+
+    fn health_diff_scale(&self) -> f32 {
+        self.config.initial_health as f32
+    }
 }
 
 // ============================================================================
@@ -233,6 +256,14 @@ impl GameEnv for Game4x4Env {
     fn terminal_health_diff_red(&self) -> Option<f32> {
         self.inner.terminal_health_diff_red()
     }
+
+    fn terminal_health_diff_red_int(&self) -> Option<i32> {
+        self.inner.terminal_health_diff_red_int()
+    }
+
+    fn health_diff_scale(&self) -> f32 {
+        self.inner.health_diff_scale()
+    }
 }
 
 // ============================================================================
@@ -294,5 +325,13 @@ impl GameEnv for MiniDarkChessEnv {
 
     fn terminal_health_diff_red(&self) -> Option<f32> {
         self.inner.terminal_health_diff_red()
+    }
+
+    fn terminal_health_diff_red_int(&self) -> Option<i32> {
+        self.inner.terminal_health_diff_red_int()
+    }
+
+    fn health_diff_scale(&self) -> f32 {
+        self.inner.health_diff_scale()
     }
 }

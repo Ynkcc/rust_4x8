@@ -10,7 +10,7 @@
 
 use crate::core::env::{GameEnv, Player, TicTacToeEnv};
 use crate::core::mcts::config::GumbelConfig;
-use crate::core::mcts::evaluator::Evaluator;
+use crate::core::mcts::evaluator::{Evaluator, EvaluatorOutput};
 use crate::core::mcts::search::GumbelMCTS;
 use rand::prelude::*;
 use std::cell::RefCell;
@@ -94,14 +94,14 @@ impl TttMinimaxEvaluator {
 }
 
 impl Evaluator<TicTacToeEnv> for TttMinimaxEvaluator {
-    fn evaluate(&self, envs: &[TicTacToeEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[TicTacToeEnv]) -> EvaluatorOutput {
         let logits = vec![vec![0.0f32; 9]; envs.len()];
         let mut cache = self.cache.borrow_mut();
         let values: Vec<f32> = envs
             .iter()
             .map(|e| minimax_cached(e, &mut cache) as f32)
             .collect();
-        (logits, values)
+        EvaluatorOutput { logits, values, health: None }
     }
 }
 
@@ -121,6 +121,7 @@ fn play_ttt(mcts_is_red: bool, opponent: Opponent, sims: usize) -> i32 {
         max_considered_actions: 9,
         c_scale: 1.0,
         gumbel_scale: 1.0,
+        ..Default::default()
     };
     let mut env = TicTacToeEnv::new();
     let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
@@ -245,6 +246,7 @@ fn ttt_mcts_single_step_matches_minimax() {
                     max_considered_actions: 9,
                     c_scale: 1.0,
                     gumbel_scale: 1.0,
+                    ..Default::default()
                 };
                 let mut mcts = GumbelMCTS::new(&env, &eval, config);
                 if let Some(r) = mcts.run() {
@@ -316,6 +318,7 @@ fn ttt_mcts_initial_search_produces_valid_action() {
         max_considered_actions: 9,
         c_scale: 1.0,
         gumbel_scale: 1.0,
+        ..Default::default()
     };
     let env = TicTacToeEnv::new();
     let mut mcts = GumbelMCTS::new(&env, &evaluator, config);

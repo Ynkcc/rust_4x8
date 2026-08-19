@@ -15,7 +15,7 @@
 //! 3. 需要选择动作时调用 `choose_action(&env)`
 
 use crate::core::env::GameEnv;
-use crate::core::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tch::{CModule, Device, Tensor};
@@ -66,9 +66,13 @@ impl<G: GameEnv> TchEvaluator<G> {
 }
 
 impl<G: GameEnv> Evaluator<G> for TchEvaluator<G> {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         if envs.is_empty() {
-            return (Vec::new(), Vec::new());
+            return EvaluatorOutput {
+                logits: Vec::new(),
+                values: Vec::new(),
+                health: None,
+            };
         }
 
         // 动作空间由环境类型决定（4x8/4x4/4x2 各自的 GameEnv 关联常量）。
@@ -116,7 +120,8 @@ impl<G: GameEnv> Evaluator<G> for TchEvaluator<G> {
                 .forward_is(&[board_ivalue, scalars_ivalue])
                 .expect("TorchScript forward failed");
 
-            let (policy_logits, value_t) = match outputs {
+            // 兼容 2 输出（旧模型）与 3 输出（带血量差异头）。
+            let (policy_logits, value_t, health_t) = match outputs {
                 tch::IValue::Tuple(mut tensors) if tensors.len() == 2 => {
                     let value_t = match tensors.pop().unwrap() {
                         tch::IValue::Tensor(t) => t,
@@ -126,9 +131,24 @@ impl<G: GameEnv> Evaluator<G> for TchEvaluator<G> {
                         tch::IValue::Tensor(t) => t,
                         _ => panic!("Expected Tensor for policy"),
                     };
-                    (policy_logits, value_t)
+                    (policy_logits, value_t, None)
                 }
-                _ => panic!("Expected tuple of 2 tensors from model"),
+                tch::IValue::Tuple(mut tensors) if tensors.len() == 3 => {
+                    let health = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for health"),
+                    };
+                    let value_t = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for value"),
+                    };
+                    let policy_logits = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for policy"),
+                    };
+                    (policy_logits, value_t, Some(health))
+                }
+                _ => panic!("Expected tuple of 2 or 3 tensors from model"),
             };
 
             // 模型输出的策略 logits 长度即该模型的动作空间；若小于环境动作空间
@@ -159,11 +179,24 @@ impl<G: GameEnv> Evaluator<G> for TchEvaluator<G> {
                 .view([batch_size as i64])
                 .copy_data(&mut values, values_len);
 
-            (logits_vec, values)
+            // 血量差异头：[B, K] 分桶 logits；旧模型为 None。
+            let health = health_t.map(|h| {
+                let k = h.size()[1] as usize;
+                let mut health_flat = vec![0.0f32; batch_size * k];
+                let n = health_flat.len();
+                h.to_device(Device::Cpu).copy_data(&mut health_flat, n);
+                health_flat.chunks(k).map(|c| c.to_vec()).collect()
+            });
+
+            EvaluatorOutput {
+                logits: logits_vec,
+                values,
+                health,
+            }
         })
     }
 
-    fn evaluate_logits(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate_logits(&self, envs: &[G]) -> EvaluatorOutput {
         self.evaluate(envs)
     }
 }
@@ -213,6 +246,7 @@ pub fn choose_action_once<G: GameEnv>(
         max_considered_actions: 16,
         c_scale: 1.0,
         gumbel_scale: 1.0,
+        ..Default::default()
     };
 
     let mut mcts = GumbelMCTS::new(env, &evaluator, config);

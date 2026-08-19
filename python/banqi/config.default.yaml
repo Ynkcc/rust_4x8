@@ -21,14 +21,14 @@
 # ---------------------------------------------------------------------------
 common:
   # ---------------- gRPC 自对弈服务端 ----------------
-  grpc_server:
-    ENABLED: false                # 是否启动后台 gRPC 自对弈服务端
-    HOST: "0.0.0.0"               # 监听地址（供 Rust Worker 连接）
-    PORT: 50051                   # 监听端口
-    MAX_WORKERS: 10               # 服务端并发工作线程数
-    WORKER_HOST: ""               # Rust Worker 的 gRPC serve 地址（训练端拉取样本用；空=不拉取）
-    WORKER_PORT: 50052            # Rust Worker 的 gRPC serve 端口
-    PULL_ENABLED: true            # 是否启动样本拉取线程（主动 PullGameData）
+  # grpc_server:
+  #   ENABLED: false                # 是否启动后台 gRPC 自对弈服务端
+  #   HOST: "0.0.0.0"               # 监听地址（供 Rust Worker 连接）
+  #   PORT: 50051                   # 监听端口
+  #   MAX_WORKERS: 10               # 服务端并发工作线程数
+  #   WORKER_HOST: ""               # Rust Worker 的 gRPC serve 地址（训练端拉取样本用；空=不拉取）
+  #   WORKER_PORT: 50052            # Rust Worker 的 gRPC serve 端口
+  #   PULL_ENABLED: true            # 是否启动样本拉取线程（主动 PullGameData）
 
   # ---------------- 设备 ----------------
   device:
@@ -171,6 +171,10 @@ common:
     MODEL_PATH: "outputs/4x8/checkpoints/banqi_model_latest.pt"
     STATE_DICT_PATH: "outputs/4x8/checkpoints/banqi_model_latest.pth"
     ONNX_PATH: "outputs/4x8/checkpoints/banqi_model_latest.onnx"
+    # 血量差异头模型（HEALTH_VALUE_HEAD_ENABLED=true 时使用，与标准模型文件物理隔离）
+    HEALTH_MODEL_PATH: "outputs/4x8/checkpoints/banqi_model_latest_health.pt"
+    HEALTH_STATE_DICT_PATH: "outputs/4x8/checkpoints/banqi_model_latest_health.pth"
+    HEALTH_ONNX_PATH: "outputs/4x8/checkpoints/banqi_model_latest_health.onnx"
     TENSORBOARD_LOG_DIR: "outputs/4x8/tensorboard"
 
   archive:
@@ -205,6 +209,9 @@ common:
     MODEL_PATH: "outputs/4x4/checkpoints/last.pt"
     STATE_DICT_PATH: "outputs/4x4/checkpoints/last.ckpt"
     ONNX_PATH: "outputs/4x4/checkpoints/last.onnx"
+    HEALTH_MODEL_PATH: "outputs/4x4/checkpoints/last_health.pt"
+    HEALTH_STATE_DICT_PATH: "outputs/4x4/checkpoints/last_health.ckpt"
+    HEALTH_ONNX_PATH: "outputs/4x4/checkpoints/last_health.onnx"
     TENSORBOARD_LOG_DIR: "outputs/4x4/tensorboard"
 
   archive:
@@ -240,6 +247,9 @@ common:
     MODEL_PATH: "outputs/4x2/checkpoints/last.pt"
     STATE_DICT_PATH: "outputs/4x2/checkpoints/last.pth"
     ONNX_PATH: "outputs/4x2/checkpoints/last.onnx"
+    HEALTH_MODEL_PATH: "outputs/4x2/checkpoints/last_health.pt"
+    HEALTH_STATE_DICT_PATH: "outputs/4x2/checkpoints/last_health.pth"
+    HEALTH_ONNX_PATH: "outputs/4x2/checkpoints/last_health.onnx"
     TENSORBOARD_LOG_DIR: "outputs/4x2/tensorboard"
 
   archive:

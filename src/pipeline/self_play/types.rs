@@ -116,6 +116,12 @@ pub struct SelfPlayConfig {
     pub fast_mcts_sims: usize,
     /// Full Search 出现概率 (如 0.25)
     pub full_search_prob: f32,
+    /// 是否启用血量差异头参与 MCTS 搜索（复合效用 U = Q_win + λ·Q_hp）
+    pub health_enabled: bool,
+    /// 复合效用中血量期望权重 λ（0 = 纯胜率）
+    pub health_weight: f32,
+    /// λ 随 |v_win| 的自适应幂指数（0 = 常量 λ）
+    pub health_confidence_exp: f32,
 }
 
 impl Default for SelfPlayConfig {
@@ -129,6 +135,9 @@ impl Default for SelfPlayConfig {
             playout_cap_random_enabled: true,
             fast_mcts_sims: 16,
             full_search_prob: 0.25,
+            health_enabled: false,
+            health_weight: 0.0,
+            health_confidence_exp: 0.0,
         }
     }
 }
@@ -181,6 +190,9 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
             max_considered_actions: self.config.max_considered_actions,
             c_scale: self.config.c_scale,
             gumbel_scale: self.config.gumbel_scale,
+            health_enabled: self.config.health_enabled,
+            health_weight: self.config.health_weight,
+            health_confidence_exp: self.config.health_confidence_exp,
         };
         let mut mcts = GumbelMCTS::new(&env, self.evaluator, mcts_config.clone());
 
@@ -210,6 +222,9 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                 max_considered_actions: self.config.max_considered_actions,
                 c_scale: self.config.c_scale,
                 gumbel_scale: self.config.gumbel_scale,
+                health_enabled: self.config.health_enabled,
+                health_weight: self.config.health_weight,
+                health_confidence_exp: self.config.health_confidence_exp,
             };
             let mut step_mcts = GumbelMCTS::new(&env, self.evaluator, step_mcts_config);
 

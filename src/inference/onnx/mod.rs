@@ -19,7 +19,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 
 use crate::core::env::GameEnv;
-use crate::core::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
+use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
 
 // ============================================================================
 // ONNX 模型封装
@@ -59,8 +59,9 @@ impl OnnxModel {
     ///   - board_data:   batch * channels * rows * cols
     ///   - scalars_data: batch * scalar_count
     ///
-    /// 返回 `(policy_logits[B, A_model], values[B])`（A_model 为模型输出动作维度，
-    /// 可能小于环境动作空间，由 `OnnxEvaluator` 负责补齐）。
+    /// 返回 `(policy_logits[B, A_model], values[B], health[B, K] | None)`
+    /// （A_model 为模型输出动作维度，可能小于环境动作空间，由 `OnnxEvaluator` 负责补齐；
+    /// health 仅在模型带血量差异头时返回 Some，否则 None）。
     pub fn run(
         &self,
         board_data: &[f32],
@@ -70,7 +71,7 @@ impl OnnxModel {
         board_rows: usize,
         board_cols: usize,
         scalar_count: usize,
-    ) -> Result<(Vec<Vec<f32>>, Vec<f32>), String> {
+    ) -> Result<(Vec<Vec<f32>>, Vec<f32>, Option<Vec<Vec<f32>>>), String> {
         let board_tensor = Tensor::from_array((
             [batch_size, board_channels, board_rows, board_cols],
             board_data.to_vec().into_boxed_slice(),
@@ -107,7 +108,22 @@ impl OnnxModel {
         let mut values = vec![0.0f32; batch_size];
         copy_tensor(&outputs[1], &mut values)?;
 
-        Ok((logits, values))
+        // 血量差异头：模型输出第三个输出时解析为 [B, K] 分桶 logits，否则 None。
+        let health = if outputs.len() >= 3 {
+            let k = extract_dim(&outputs[2], 1, "health")?;
+            let mut health_flat = vec![0.0f32; batch_size * k];
+            copy_tensor(&outputs[2], &mut health_flat)?;
+            Some(
+                health_flat
+                    .chunks(k)
+                    .map(|c| c.to_vec())
+                    .collect::<Vec<Vec<f32>>>(),
+            )
+        } else {
+            None
+        };
+
+        Ok((logits, values, health))
     }
 }
 
@@ -190,9 +206,13 @@ impl<G: GameEnv> OnnxEvaluator<G> {
 }
 
 impl<G: GameEnv> Evaluator<G> for OnnxEvaluator<G> {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         if envs.is_empty() {
-            return (Vec::new(), Vec::new());
+            return EvaluatorOutput {
+                logits: Vec::new(),
+                values: Vec::new(),
+                health: None,
+            };
         }
 
         // 维度从首个环境运行时观测推导（兼容 4x8 / 4x4 / 4x2 三种棋盘）。
@@ -214,7 +234,7 @@ impl<G: GameEnv> Evaluator<G> for OnnxEvaluator<G> {
             scalars_data.extend_from_slice(&scalar_buf);
         }
 
-        let (raw_logits, values) = match self.model.run(
+        let (raw_logits, values, health) = match self.model.run(
             &board_data,
             &scalars_data,
             batch_size,
@@ -228,8 +248,11 @@ impl<G: GameEnv> Evaluator<G> for OnnxEvaluator<G> {
                 // Evaluator 接口无 Result；推理失败时退化为均匀 logits（受合法
                 // 动作掩码约束），记录日志避免静默。
                 eprintln!("[onnx] 推理失败: {e}");
-                let logits = vec![vec![0.0f32; action_space]; batch_size];
-                return (logits, vec![0.0f32; batch_size]);
+                return EvaluatorOutput {
+                    logits: vec![vec![0.0f32; action_space]; batch_size],
+                    values: vec![0.0f32; batch_size],
+                    health: None,
+                };
             }
         };
 
@@ -246,10 +269,14 @@ impl<G: GameEnv> Evaluator<G> for OnnxEvaluator<G> {
             })
             .collect();
 
-        (logits, values)
+        EvaluatorOutput {
+            logits,
+            values,
+            health,
+        }
     }
 
-    fn evaluate_logits(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate_logits(&self, envs: &[G]) -> EvaluatorOutput {
         self.evaluate(envs)
     }
 }
@@ -295,6 +322,7 @@ pub fn onnx_choose_action_once<G: GameEnv>(
         max_considered_actions: 16,
         c_scale: 1.0,
         gumbel_scale: 1.0,
+        ..Default::default()
     };
     let mut mcts = GumbelMCTS::new(env, &evaluator, config);
     mcts.run().map(|result| result.action)

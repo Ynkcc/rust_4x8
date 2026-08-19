@@ -18,7 +18,7 @@
 
 use crate::core::env::{GameEnv, Observation, Player};
 use crate::core::mcts::batched::BatchedTree;
-use crate::core::mcts::{Evaluator, GumbelConfig, PendingEval};
+use crate::core::mcts::{Evaluator, GumbelConfig, PendingEval, health_logits_expectation};
 use crate::pipeline::self_play::finalize_episode;
 use crate::pipeline::self_play::GameEpisode;
 use std::collections::{HashMap, VecDeque};
@@ -32,11 +32,12 @@ struct EvalRequest<G: GameEnv> {
     envs: Vec<G>,
 }
 
-/// 评估响应：按请求顺序返回 logits 与 values。
+/// 评估响应：按请求顺序返回 logits 与 values（含可选的血量分桶 logits）。
 struct EvalResponse {
     id: u64,
     logits: Vec<Vec<f32>>,
     values: Vec<f32>,
+    health: Option<Vec<Vec<f32>>>,
 }
 
 /// 共享请求队列（多消费者）：多个评估线程从这里取批。
@@ -89,12 +90,13 @@ fn eval_worker<G: GameEnv, E: Evaluator<G> + Sync>(
                 q = queue.cvar.wait(q).unwrap();
             }
         };
-        let (logits, values) = evaluator.evaluate(&req.envs);
+        let out = evaluator.evaluate(&req.envs);
         if tx
             .send(EvalResponse {
                 id: req.id,
-                logits,
-                values,
+                logits: out.logits,
+                values: out.values,
+                health: out.health,
             })
             .is_err()
         {
@@ -128,6 +130,9 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
         max_considered_actions: config.max_considered_actions,
         c_scale: config.c_scale,
         gumbel_scale: config.gumbel_scale,
+        health_enabled: config.health_enabled,
+        health_weight: config.health_weight,
+        health_confidence_exp: config.health_confidence_exp,
     };
 
     // 共享请求队列 + 响应通道
@@ -256,10 +261,12 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
                             if !active[t] {
                                 continue;
                             }
-                            let mut applied: Vec<(&PendingEval<G>, &[f32], f32)> =
+                            let mut applied: Vec<(&PendingEval<G>, &[f32], f32, f32)> =
                                 Vec::with_capacity(idxs.len());
                             for &k in &idxs {
-                                applied.push((&evals[k], &resp.logits[k], resp.values[k]));
+                                let health =
+                                    health_logits_expectation(resp.health.as_deref(), k).unwrap_or(0.0);
+                                applied.push((&evals[k], &resp.logits[k], resp.values[k], health));
                             }
                             trees[t].apply(&applied);
                             blocked[t] = None;
@@ -284,12 +291,20 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
                                     }
                                     for (t, idxs) in by_tree {
                                         if active[t] {
-                                            let mut applied: Vec<(&PendingEval<G>, &[f32], f32)> =
+                                            let mut applied: Vec<(&PendingEval<G>, &[f32], f32, f32)> =
                                                 Vec::with_capacity(idxs.len());
                                             for &k in &idxs {
-                                                applied.push(
-                                                    (&evals[k], &resp.logits[k], resp.values[k]),
-                                                );
+                                                let health = health_logits_expectation(
+                                                    resp.health.as_deref(),
+                                                    k,
+                                                )
+                                                .unwrap_or(0.0);
+                                                applied.push((
+                                                    &evals[k],
+                                                    &resp.logits[k],
+                                                    resp.values[k],
+                                                    health,
+                                                ));
                                             }
                                             trees[t].apply(&applied);
                                             blocked[t] = None;

@@ -44,6 +44,8 @@ class Predictor:
         self.model = model.to(device)
         self.device = device
         self.model_path: Optional[str] = model_path
+        # 血量差异头开关（与模型结构一致，决定 predict 是否返回第 3 个输出）
+        self.health_enabled = bool(getattr(model, "enable_health", False))
         self._mtime: float = 0.0
         self._last_reload_check: float = 0.0
         self.model.eval()
@@ -77,7 +79,11 @@ class Predictor:
                 print(f"[SP-{self.variant.id}] 权重加载失败 (保持旧模型): {exc}")
 
     def __call__(self, board: np.ndarray, scalars: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """返回 (policy_logits (N, A) float32, values (N,) float32)，匹配绑定契约。"""
+        """返回 (policy_logits (N, A) float32, values (N,) float32[, health (N, K)])。
+
+        血量差异头启用时多返回第 3 个元素 health（匹配 Rust PyEvaluator 契约）；
+        关闭时保持 2 元组。
+        """
         self._maybe_reload_weights()
         batch = board.shape[0]
         if not HAS_TORCH:
@@ -97,11 +103,20 @@ class Predictor:
 
         policy_list: List[np.ndarray] = []
         value_list: List[np.ndarray] = []
+        health_list: List[np.ndarray] = [] if self.health_enabled else None
         for i in range(0, batch, chunk):
-            pl, vl = self._infer(board[i: i + chunk], scalars[i: i + chunk])
-            policy_list.append(pl)
-            value_list.append(vl)
+            out = self._infer(board[i: i + chunk], scalars[i: i + chunk])
+            policy_list.append(out[0])
+            value_list.append(out[1])
+            if self.health_enabled:
+                health_list.append(out[2])
         # 模型输出恒为 float32：concatenate 保持 dtype，无需再 astype 拷贝一次
+        if self.health_enabled:
+            return (
+                np.concatenate(policy_list, axis=0),
+                np.concatenate(value_list, axis=0),
+                np.concatenate(health_list, axis=0),
+            )
         return (
             np.concatenate(policy_list, axis=0),
             np.concatenate(value_list, axis=0),
@@ -111,7 +126,14 @@ class Predictor:
         with torch.inference_mode():
             b = torch.from_numpy(np.ascontiguousarray(board)).to(self.device, non_blocking=True)
             s = torch.from_numpy(np.ascontiguousarray(scalars)).to(self.device, non_blocking=True)
-            logits, value = self.model(b, s)
+            out = self.model(b, s)
+            logits, value = out[0], out[1]
+            if self.health_enabled:
+                return (
+                    logits.detach().cpu().numpy(),
+                    value.detach().cpu().numpy().reshape(-1),
+                    out[2].detach().cpu().numpy(),
+                )
             # 模型输出恒为 float32：直接 .numpy()，去掉冗余 astype 的全量拷贝
             return (
                 logits.detach().cpu().numpy(),

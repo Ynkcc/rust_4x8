@@ -33,7 +33,7 @@ use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
 use banqi_4x8::core::env::DarkChessEnv;
-use banqi_4x8::core::mcts::Evaluator;
+use banqi_4x8::core::mcts::{Evaluator, EvaluatorOutput};
 use banqi_4x8::engine::mcts_heuristic::HeuristicEvaluator;
 use banqi_4x8::pipeline::self_play::serialize::episode_to_dict_json;
 use banqi_4x8::pipeline::self_play::{GameEpisode, ScenarioType, SelfPlayConfig, run_self_play};
@@ -114,7 +114,7 @@ enum WorkerEvaluator {
 }
 
 impl Evaluator<DarkChessEnv> for WorkerEvaluator {
-    fn evaluate(&self, envs: &[DarkChessEnv]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[DarkChessEnv]) -> EvaluatorOutput {
         match self {
             Self::Heuristic(h) => h.evaluate(envs),
             #[cfg(feature = "torch")]
@@ -508,6 +508,7 @@ async fn main() -> Result<()> {
             playout_cap_random_enabled: playout_cap_random,
             fast_mcts_sims: 16,
             full_search_prob: 0.25,
+            ..Default::default()
         };
 
         batch_index += 1;

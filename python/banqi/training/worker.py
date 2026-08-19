@@ -177,7 +177,7 @@ class TrainWorker(threading.Thread):
 
             def get_model_path():
                 # 提供 TorchScript 模型（worker 拉取后由 tch CModule 加载）
-                pt = os.path.join(self.ckpt_dir, f"{self._artifact_basename()}.pt")
+                pt = self._pt_path()
                 return pt if os.path.exists(pt) else None
 
             def get_config():
@@ -301,12 +301,26 @@ class TrainWorker(threading.Thread):
         self.global_step = 0
         self.metrics["global_step"] = 0
 
-    def _artifact_basename(self) -> str:
-        """checkpoint / 模型文件名基名：启用血量头时用独立后缀，与标准模型文件隔离。"""
-        return "last_health" if self.health_enabled else "last"
+    def _ckpt_path(self) -> str:
+        """checkpoint 路径（worker 内部，用于断点续训）：启用血量头时用独立后缀物理隔离。"""
+        return os.path.join(self.ckpt_dir, "last_health.ckpt" if self.health_enabled else "last.ckpt")
+
+    def _pt_path(self) -> str:
+        """TorchScript 模型导出路径（供自对弈推理）。"""
+        if self.health_enabled:
+            return (getattr(self.cfg, "HEALTH_MODEL_PATH", "") or
+                    os.path.join(self.ckpt_dir, "last_health.pt"))
+        return os.path.join(self.ckpt_dir, "last.pt")
+
+    def _onnx_path(self) -> str:
+        """ONNX 模型导出路径（供 run_native_match 免 GIL 推理）。"""
+        if self.health_enabled:
+            return (getattr(self.cfg, "HEALTH_ONNX_PATH", "") or
+                    os.path.join(self.ckpt_dir, "last_health.onnx"))
+        return os.path.join(self.ckpt_dir, "last.onnx")
 
     def last_ckpt_path(self):
-        return os.path.join(self.ckpt_dir, f"{self._artifact_basename()}.ckpt")
+        return self._ckpt_path()
 
     def _export_initial_model(self) -> None:
         """冷启动时导出初始模型（.pt/.onnx），供 Rust 自对弈加载。
@@ -315,9 +329,8 @@ class TrainWorker(threading.Thread):
         last.pt，而训练 worker 又因拿不到自对弈数据永不导出，形成死锁。
         这里在模型初始化后立即导出一次初始权重，打破该循环依赖。
         """
-        base = self._artifact_basename()
-        pt_path = os.path.join(self.ckpt_dir, f"{base}.pt")
-        onnx_path = os.path.join(self.ckpt_dir, f"{base}.onnx")
+        pt_path = self._pt_path()
+        onnx_path = self._onnx_path()
         if os.path.exists(pt_path):
             return
         try:
@@ -352,9 +365,8 @@ class TrainWorker(threading.Thread):
         save_every = max(int(getattr(self.cfg, "CKPT_SAVE_EVERY", 1)), 1)
         export_every = max(int(getattr(self.cfg, "CKPT_EXPORT_EVERY", 10)), 1)
 
-        base = self._artifact_basename()
-        pt_path = os.path.join(self.ckpt_dir, f"{base}.pt")
-        onnx_path = os.path.join(self.ckpt_dir, f"{base}.onnx")
+        pt_path = self._pt_path()
+        onnx_path = self._onnx_path()
 
         should_save_ckpt = force or (round_idx % save_every == 0) or (round_idx == 0)
         # round_idx==0 时仅在 pt 不存在时导出一次；round_idx>0 才按周期导出，

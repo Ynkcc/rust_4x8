@@ -54,6 +54,9 @@ _PATH_FIELDS = (
     "MODEL_PATH",
     "STATE_DICT_PATH",
     "ONNX_PATH",
+    "HEALTH_MODEL_PATH",
+    "HEALTH_STATE_DICT_PATH",
+    "HEALTH_ONNX_PATH",
     "TENSORBOARD_LOG_DIR",
     "ARCHIVE_TRAIN_DIR",
     "MONITOR_CSV_PATH",
@@ -354,6 +357,11 @@ class Config:
     ONNX_PATH: str            # ONNX 模型路径（相对 python/ 目录，MODEL_BACKEND="onnx" 时使用）
     ONNX_PROVIDERS: str       # onnxruntime 执行提供者，逗号分隔（如 "CUDAExecutionProvider,CPUExecutionProvider"）
     INFER_DEVICE: str
+    # 血量差异头模型路径（HEALTH_VALUE_HEAD_ENABLED=true 时由训练侧写出、自对弈侧读取，
+    # 与标准模型文件物理隔离，便于 A/B 对比与回退）
+    HEALTH_MODEL_PATH: str
+    HEALTH_STATE_DICT_PATH: str
+    HEALTH_ONNX_PATH: str
     TRAIN_DEVICE: str
     INFER_CPU_AUX_WORKERS: int
     INFER_CPU_FRACTION: float

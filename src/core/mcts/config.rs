@@ -26,6 +26,16 @@ pub struct GumbelConfig {
     // （Top-K 用 logit、根选择不经 PUCT、训练目标用 logit + σ·Q）。
     // 曾存在 Dirichlet 噪声注入及配套的 train 标记字段，因无效已移除，
     // 请勿重新添加。
+    // --------------------------------------------------------------------
+    // 血量差异头（可选）：启用后把血量期望并入动作选择效用
+    //   U = Q_win + λ(|Q_win|) · Q_hp
+    // health_enabled=false（默认）时复合效用退化为纯胜率 Q_win，行为与旧版逐位等价。
+    /// 是否启用血量差异头参与搜索（复合效用）
+    pub health_enabled: bool,
+    /// 复合效用中血量期望权重 λ（0 = 纯胜率）
+    pub health_weight: f32,
+    /// λ 随 |v_win| 的自适应幂指数；0 = 常量 λ
+    pub health_confidence_exp: f32,
 }
 
 impl Default for GumbelConfig {
@@ -41,6 +51,9 @@ impl Default for GumbelConfig {
             max_considered_actions: 16,
             c_scale: 1.0,
             gumbel_scale: 1.0,
+            health_enabled: false,
+            health_weight: 0.0,
+            health_confidence_exp: 0.0,
         }
     }
 }

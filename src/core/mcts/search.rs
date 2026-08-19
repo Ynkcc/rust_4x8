@@ -165,6 +165,25 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         self.completed_q(action)
     }
 
+    /// 计算根节点指定动作的补全复合效用（completed utility），用于 Sequential
+    /// Halving 淘汰。与 `completed_q`（纯胜率，作为训练目标）解耦：health_enabled
+    /// 时并入血量期望，否则与 `completed_q` 一致。
+    pub(crate) fn completed_utility(&self, action: usize) -> f32 {
+        let root = self.arena.get(self.root_idx);
+        if let Some((_, child_idx)) = root
+            .children
+            .iter()
+            .find(|(act, _)| *act == action)
+            .map(|(act, idx)| (*act, *idx))
+        {
+            let child_player = self.arena.get(child_idx).player();
+            let u = self.node_utility_value(child_idx);
+            value_from_perspective(root.player, child_player, u)
+        } else {
+            0.0
+        }
+    }
+
     /// 选择路径并收集待评估项
     ///
     /// 从根节点的特定动作出发，执行模拟直到到达叶子节点或游戏结束。
@@ -205,6 +224,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                 // 保证本次调用要么产出 batch、要么产生回传，不静默丢弃。
                 let leaf_player = self.arena.get(current_idx).player();
                 let leaf_value = self.node_q_value(current_idx);
+                let leaf_health = self.node_health_value(current_idx);
                 let path_clone = path.clone();
                 Self::backprop_from_path(
                     &mut self.arena,
@@ -212,6 +232,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     &path_clone,
                     leaf_player,
                     leaf_value,
+                    leaf_health,
                 );
                 return SelectPathOutcome::EarlyReturn;
             }
@@ -296,6 +317,22 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     Some(w) if w == leaf_player.opposite().val() => -1.0,
                     _ => 0.0, // 平局 (Some(0)) 或 winner=None
                 };
+                // 终局血量期望：整型血量差（红方视角）转到 leaf_player 视角后按 D 归一化。
+                let leaf_health = if self.config.health_enabled {
+                    match (env.terminal_health_diff_red_int(), env.health_diff_scale()) {
+                        (Some(d), s) if s > 0.0 => {
+                            let v = if leaf_player.val() == 1 {
+                                d as f32
+                            } else {
+                                -(d as f32)
+                            };
+                            (v / s).clamp(-1.0, 1.0)
+                        }
+                        _ => 0.0,
+                    }
+                } else {
+                    0.0
+                };
                 let path_clone = path.clone();
                 Self::backprop_from_path(
                     &mut self.arena,
@@ -303,6 +340,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     &path_clone,
                     leaf_player,
                     leaf_value,
+                    leaf_health,
                 );
                 return SelectPathOutcome::TerminalBackprop;
             }
@@ -328,9 +366,10 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             let puct_coeff = self.config.c_scale.max(0.1);
             for (act, child_idx) in children_clone.iter() {
                 let child = self.arena.get(*child_idx);
-                let child_q = self.node_q_value(*child_idx);
+                // 复合效用：health_enabled 时并入血量期望，否则退化为纯胜率 Q。
+                let child_utility = self.node_utility_value(*child_idx);
                 let child_player = child.player();
-                let adjusted_q = value_from_perspective(parent_player, child_player, child_q);
+                let adjusted_q = value_from_perspective(parent_player, child_player, child_utility);
                 let u_score = puct_coeff * child.prior * sqrt_total / (1.0 + child.visit_count as f32);
                 let score = adjusted_q + u_score;
                 if score > best_score {
@@ -375,20 +414,35 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             .env
             .as_ref()
             .expect("Root must have env");
-        let (logits_batch, values) = self.evaluator.evaluate(std::slice::from_ref(&env));
-        let logits = &logits_batch[0];
-        let value = values[0];
+        let out = self.evaluator.evaluate(std::slice::from_ref(&env));
+        let logits = &out.logits[0];
+        let value = out.values[0];
+        let health_mu = if self.config.health_enabled {
+            out.health_expectation(0).unwrap_or(0.0)
+        } else {
+            0.0
+        };
 
         let mut masks = vec![0; G::action_space_size()];
         env.action_masks_into(&mut masks);
         let probs = self.compute_probs_from_logits(logits, &masks);
 
-        Self::build_children_from_eval(&mut self.arena, self.root_idx, &env, &probs, logits, value);
+        Self::build_children_from_eval(
+            &mut self.arena,
+            self.root_idx,
+            &env,
+            &probs,
+            logits,
+            value,
+            health_mu,
+        );
 
         let root = self.arena.get_mut(self.root_idx);
         root.initial_value = value;
+        root.initial_health = health_mu;
         root.visit_count += 1;
         root.value_sum += value;
+        root.health_sum += health_mu;
     }
 
     /// 执行 Gumbel MCTS 搜索主循环
@@ -494,11 +548,16 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                 if !batch.is_empty() {
                     total_phase_usage += batch.len();
                     let envs: Vec<G> = batch.iter().map(|pending| pending.env).collect();
-                    let (logits_batch, values) = self.evaluator.evaluate(&envs);
+                    let out = self.evaluator.evaluate(&envs);
 
                     for (idx, pending) in batch.into_iter().enumerate() {
-                        let logits = &logits_batch[idx];
-                        let value = values[idx];
+                        let logits = &out.logits[idx];
+                        let value = out.values[idx];
+                        let health_mu = if self.config.health_enabled {
+                            out.health_expectation(idx).unwrap_or(0.0)
+                        } else {
+                            0.0
+                        };
                         let mut masks = vec![0; G::action_space_size()];
                         pending.env.action_masks_into(&mut masks);
                         let probs = self.compute_probs_from_logits(logits, &masks);
@@ -507,6 +566,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                         {
                             let leaf = self.arena.get_mut(leaf_idx);
                             leaf.initial_value = value;
+                            leaf.initial_health = health_mu;
                         }
                         Self::build_children_from_eval(
                             &mut self.arena,
@@ -515,6 +575,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                             &probs,
                             logits,
                             value,
+                            health_mu,
                         );
                         Self::backprop_from_path(
                             &mut self.arena,
@@ -522,6 +583,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                             &pending.path,
                             pending.leaf_player,
                             value,
+                            health_mu,
                         );
                     }
                 }
@@ -560,11 +622,11 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                 }
             }
 
-            // 根据 completed_Q 排序并淘汰
+            // 根据补全复合效用（completed utility）排序并淘汰
             if remaining.len() > 1 {
                 let mut scored: Vec<(usize, f32)> = remaining
                     .iter()
-                    .map(|&a| (a, self.completed_q(a)))
+                    .map(|&a| (a, self.completed_utility(a)))
                     .collect();
                 scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 

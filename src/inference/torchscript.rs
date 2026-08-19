@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use crate::core::env::GameEnv;
-use crate::core::mcts::Evaluator;
+use crate::core::mcts::{Evaluator, EvaluatorOutput};
 use tch::{CModule, Device, Kind, Tensor};
 use std::marker::PhantomData;
 
@@ -47,9 +47,13 @@ impl<G: GameEnv> LocalEvaluator<G> {
 }
 
 impl<G: GameEnv> Evaluator<G> for LocalEvaluator<G> {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         if envs.is_empty() {
-            return (Vec::new(), Vec::new());
+            return EvaluatorOutput {
+                logits: Vec::new(),
+                values: Vec::new(),
+                health: None,
+            };
         }
 
         tch::no_grad(|| {
@@ -90,7 +94,8 @@ impl<G: GameEnv> Evaluator<G> for LocalEvaluator<G> {
                 .forward_is(&[board_ivalue, scalar_ivalue])
                 .expect("TorchScript forward failed");
 
-            let (policy_logits, value) = match outputs {
+            // 兼容 2 输出（旧模型）与 3 输出（带血量差异头）。
+            let (policy_logits, value, health_t) = match outputs {
                 tch::IValue::Tuple(mut tensors) if tensors.len() == 2 => {
                     let value = match tensors.pop().unwrap() {
                         tch::IValue::Tensor(t) => t,
@@ -100,9 +105,24 @@ impl<G: GameEnv> Evaluator<G> for LocalEvaluator<G> {
                         tch::IValue::Tensor(t) => t,
                         _ => panic!("Expected Tensor for policy"),
                     };
-                    (policy_logits, value)
+                    (policy_logits, value, None)
                 }
-                _ => panic!("Expected tuple of 2 tensors from model"),
+                tch::IValue::Tuple(mut tensors) if tensors.len() == 3 => {
+                    let health = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for health"),
+                    };
+                    let value = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for value"),
+                    };
+                    let policy_logits = match tensors.pop().unwrap() {
+                        tch::IValue::Tensor(t) => t,
+                        _ => panic!("Expected Tensor for policy"),
+                    };
+                    (policy_logits, value, Some(health))
+                }
+                _ => panic!("Expected tuple of 2 or 3 tensors from model"),
             };
 
             let action_space = G::action_space_size();
@@ -123,7 +143,20 @@ impl<G: GameEnv> Evaluator<G> for LocalEvaluator<G> {
                 .view([batch_size as i64])
                 .copy_data(&mut values, values_len);
 
-            (logits_vec, values)
+            // 血量差异头：[B, K] 分桶 logits；旧模型为 None。
+            let health = health_t.map(|h| {
+                let k = h.size()[1] as usize;
+                let mut health_flat = vec![0.0f32; batch_size * k];
+                let n = health_flat.len();
+                h.to_device(Device::Cpu).copy_data(&mut health_flat, n);
+                health_flat.chunks(k).map(|c| c.to_vec()).collect()
+            });
+
+            EvaluatorOutput {
+                logits: logits_vec,
+                values,
+                health,
+            }
         })
     }
 }

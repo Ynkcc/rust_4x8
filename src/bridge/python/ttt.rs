@@ -155,6 +155,7 @@ pub fn ttt_mcts_search(
         max_considered_actions,
         c_scale: 1.0,
         gumbel_scale: 1.0,
+        ..Default::default()
     };
     let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
     let result = mcts.run();

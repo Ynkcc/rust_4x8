@@ -138,22 +138,22 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
     }
 
     /// 应用一批评估结果。`evals` 必须与最近一次 `collect` 产生顺序一致。
+    /// 每个元素为 `(pending, logits, value, health_expectation)`。
     pub fn apply(
         &mut self,
-        evals: &[(&PendingEval<G>, &[f32], f32)],
+        evals: &[(&PendingEval<G>, &[f32], f32, f32)],
     ) {
         match self.stage {
             Stage::Root => {
                 // 根评估：构建子节点并准备搜索
                 debug_assert_eq!(evals.len(), 1);
-                let (pending, logits, value) = evals[0];
-                let _ = pending;
-                self.apply_root_eval(logits, value);
+                let (_pending, logits, value, health) = evals[0];
+                self.apply_root_eval(logits, value, health);
                 self.stage = Stage::Searching;
                 self.ensure_search_prepared();
             }
             Stage::Searching => {
-                for (pending, logits, value) in evals {
+                for (pending, logits, value, health) in evals {
                     let mut masks = vec![0; G::action_space_size()];
                     pending.env.action_masks_into(&mut masks);
                     let probs = self.tree.compute_probs_from_logits(logits, &masks);
@@ -165,6 +165,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                     {
                         let leaf = self.tree.arena.get_mut(leaf_idx);
                         leaf.initial_value = *value;
+                        leaf.initial_health = *health;
                     }
                     GumbelMCTS::<G, E>::build_children_from_eval(
                         &mut self.tree.arena,
@@ -173,6 +174,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                         &probs,
                         logits,
                         *value,
+                        *health,
                     );
                     GumbelMCTS::<G, E>::backprop_from_path(
                         &mut self.tree.arena,
@@ -180,6 +182,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                         &pending.path,
                         pending.leaf_player,
                         *value,
+                        *health,
                     );
                 }
                 // 本轮收集已耗尽：若阶段轮次用完则推进阶段
@@ -198,7 +201,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
             let mut scored: Vec<(usize, f32)> = self
                 .candidates
                 .iter()
-                .map(|&a| (a, self.tree.completed_q(a)))
+                .map(|&a| (a, self.tree.completed_utility(a)))
                 .collect();
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             self.candidates = scored.into_iter().take(keep_count).map(|(a, _)| a).collect();
@@ -274,7 +277,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
         true
     }
 
-    fn apply_root_eval(&mut self, logits: &[f32], value: f32) {
+    fn apply_root_eval(&mut self, logits: &[f32], value: f32, health: f32) {
         let root_idx = self.tree.root_idx;
         let env = *self
             .tree
@@ -286,11 +289,21 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
         let mut masks = vec![0; G::action_space_size()];
         env.action_masks_into(&mut masks);
         let probs = self.tree.compute_probs_from_logits(logits, &masks);
-        GumbelMCTS::<G, E>::build_children_from_eval(&mut self.tree.arena, root_idx, &env, &probs, logits, value);
+        GumbelMCTS::<G, E>::build_children_from_eval(
+            &mut self.tree.arena,
+            root_idx,
+            &env,
+            &probs,
+            logits,
+            value,
+            health,
+        );
         let root = self.tree.arena.get_mut(root_idx);
         root.initial_value = value;
+        root.initial_health = health;
         root.visit_count += 1;
         root.value_sum += value;
+        root.health_sum += health;
     }
 
     /// 尝试从 Ready 状态产出决策动作并执行，进入下一步（Idle → 下次 collect 触发新根评估）。

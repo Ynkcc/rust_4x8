@@ -4,12 +4,12 @@
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyModule};
+use pyo3::types::{PyByteArray, PyModule, PyTuple};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::core::env::GameEnv;
-use crate::core::mcts::Evaluator;
+use crate::core::mcts::{Evaluator, EvaluatorOutput};
 
 /// 连续失败阈值：超过此值时 panic，避免用垃圾数据持续搜索
 const MAX_CONSECUTIVE_FAILURES: u32 = 10;
@@ -72,7 +72,7 @@ impl<G: GameEnv> PyEvaluator<G> {
         boards_flat: Vec<f32>,
         scalars_flat: Vec<f32>,
         batch_size: usize,
-    ) -> PyResult<(Vec<Vec<f32>>, Vec<f32>)> {
+    ) -> PyResult<(Vec<Vec<f32>>, Vec<f32>, Option<Vec<Vec<f32>>>)> {
         Python::attach(|py| {
             let np = self.get_numpy(py)?;
 
@@ -97,13 +97,27 @@ impl<G: GameEnv> PyEvaluator<G> {
                     PyRuntimeError::new_err(format!("predictor call failed: {}", e))
                 })?;
 
-            let (policy_logits_py, values_py) = result.extract::<(Py<PyAny>, Py<PyAny>)>(py).map_err(|e| {
-                eprintln!("Failed to extract (policy, value) from predictor result: {}", e);
+            // 兼容 2 输出（旧模型）与 3 输出（带血量差异头）。
+            let tup = result.bind(py).cast::<PyTuple>().map_err(|e| {
+                eprintln!("Failed to extract tuple from predictor result: {}", e);
                 PyRuntimeError::new_err(format!(
-                    "predictor should return (policy_logits, values) tuple: {}",
+                    "predictor should return (policy_logits, values[, health]) tuple: {}",
                     e
                 ))
             })?;
+            let n = tup.len();
+            if n != 2 && n != 3 {
+                return Err(PyRuntimeError::new_err(format!(
+                    "predictor should return a 2- or 3-tuple, got {n} elements"
+                )));
+            }
+            let policy_logits_py = tup.get_item(0)?.unbind();
+            let values_py = tup.get_item(1)?.unbind();
+            let health_py = if n == 3 {
+                Some(tup.get_item(2)?.unbind())
+            } else {
+                None
+            };
 
             // 优先用 PyBuffer 零拷贝读取 numpy 输出（无 Python 对象装箱 / 逐元素转换）。
             // 若 predictor 返回的不是 buffer 协议对象（如 list-of-lists），回退逐元素提取。
@@ -133,7 +147,18 @@ impl<G: GameEnv> PyEvaluator<G> {
 
             let policy_vec = Self::normalize_policy_shape(policy_vec, batch_size);
 
-            Ok((policy_vec, values_vec))
+            let health_vec = match health_py {
+                Some(h) => match Self::extract_health_via_buffer(py, h.bind(py), batch_size) {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        eprintln!("Failed to extract health logits (treated as absent)");
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            Ok((policy_vec, values_vec, health_vec))
         })
     }
 
@@ -183,6 +208,33 @@ impl<G: GameEnv> PyEvaluator<G> {
             let mut row = Vec::with_capacity(action_space);
             row.extend_from_slice(&flat[start..end]);
             row.resize(action_space, 0.0);
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    /// 用 PyBuffer 从 numpy 输出中提取血量分桶 logits（零拷贝，shape `[batch, K]`）。
+    fn extract_health_via_buffer(
+        py: Python<'_>,
+        obj: &Bound<'_, PyAny>,
+        batch_size: usize,
+    ) -> PyResult<Vec<Vec<f32>>> {
+        let buf = PyBuffer::<f32>::get(obj)?;
+        if !buf.is_c_contiguous() {
+            return Err(PyRuntimeError::new_err("health buffer is not C-contiguous"));
+        }
+        let k = buf.shape().get(1).copied().unwrap_or(0);
+        if k == 0 {
+            return Err(PyRuntimeError::new_err("health output has no dim 1"));
+        }
+        let flat = buf.to_vec(py)?;
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let start = i * k;
+            let end = (start + k).min(flat.len());
+            let mut row = Vec::with_capacity(k);
+            row.extend_from_slice(&flat[start..end]);
+            row.resize(k, 0.0);
             out.push(row);
         }
         Ok(out)
@@ -274,9 +326,13 @@ impl<G: GameEnv> PyEvaluator<G> {
 }
 
 impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
-    fn evaluate(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
         if envs.is_empty() {
-            return (Vec::new(), Vec::new());
+            return EvaluatorOutput {
+                logits: Vec::new(),
+                values: Vec::new(),
+                health: None,
+            };
         }
 
         let batch_size = envs.len();
@@ -297,9 +353,13 @@ impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
         }
 
         match self.call_python(boards_flat, scalars_flat, batch_size) {
-            Ok((logits, values)) => {
+            Ok((logits, values, health)) => {
                 self.record_success();
-                (logits, values)
+                EvaluatorOutput {
+                    logits,
+                    values,
+                    health,
+                }
             }
             Err(e) => {
                 let fail_count = self.consecutive_failures.load(Ordering::Relaxed) + 1;
@@ -308,15 +368,16 @@ impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
                     fail_count, MAX_CONSECUTIVE_FAILURES, e
                 );
                 self.record_failure();
-                (
-                    vec![vec![0.0; G::action_space_size()]; batch_size],
-                    vec![0.0; batch_size],
-                )
+                EvaluatorOutput {
+                    logits: vec![vec![0.0; G::action_space_size()]; batch_size],
+                    values: vec![0.0; batch_size],
+                    health: None,
+                }
             }
         }
     }
 
-    fn evaluate_logits(&self, envs: &[G]) -> (Vec<Vec<f32>>, Vec<f32>) {
+    fn evaluate_logits(&self, envs: &[G]) -> EvaluatorOutput {
         self.evaluate(envs)
     }
 }

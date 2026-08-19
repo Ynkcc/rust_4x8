@@ -600,7 +600,11 @@ def _run_selfplay(variant_id: str) -> None:
 
         sp_cfg = build_self_play_config(variant)
         model_backend = (config.MODEL_BACKEND or "torchscript").strip().lower()
-        model_path = config.ONNX_PATH if model_backend == "onnx" else config.MODEL_PATH
+        # 血量差异头：自对弈侧读取独立的 HEALTH 模型路径（与 selfplay/worker.py 保持一致）
+        health_enabled = bool(getattr(config, "HEALTH_VALUE_HEAD_ENABLED", False))
+        health_onnx_path = (getattr(config, "HEALTH_ONNX_PATH", "") or config.ONNX_PATH) if health_enabled else config.ONNX_PATH
+        health_model_path = (getattr(config, "HEALTH_MODEL_PATH", "") or config.MODEL_PATH) if health_enabled else config.MODEL_PATH
+        model_path = health_onnx_path if model_backend == "onnx" else health_model_path
         procs = [
             threading.Thread(
                 target=_run_native_model_loop,

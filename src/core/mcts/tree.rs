@@ -66,21 +66,25 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     ///
     /// # 返回
     ///
-    /// 返回从当前节点视角看到的价值 (已根据玩家视角翻转)。
+    /// 返回 `(从当前节点视角看到的价值, 从当前节点视角看到的血量期望)`，
+    /// 均已根据玩家视角翻转。
     pub(crate) fn backprop_from_path(
         arena: &mut MctsArena<G>,
         node_idx: usize,
         path: &[PathStep],
         leaf_player: Player,
         leaf_value: f32,
-    ) -> f32 {
+        leaf_health: f32,
+    ) -> (f32, f32) {
         if path.is_empty() {
             // 到达目标节点（叶子节点）
             let node = arena.get_mut(node_idx);
             let value = value_from_perspective(node.player(), leaf_player, leaf_value);
+            let health = value_from_perspective(node.player(), leaf_player, leaf_health);
             node.visit_count += 1;
             node.value_sum += value;
-            return value;
+            node.health_sum += health;
+            return (value, health);
         }
 
         let first_step = path[0];
@@ -88,7 +92,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
 
         // 在分支内一次性取得子节点索引与子玩家，避免事后用
         // get_node_idx_by_path 再次沿路径查找同一子节点。
-        let (child_value, child_player) = match first_step {
+        let (child_value, child_health, child_player) = match first_step {
             PathStep::Action(action) => {
                 let current = arena.get(node_idx);
                 let child_idx = current
@@ -98,8 +102,15 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     .map(|(_, idx)| *idx)
                     .expect("Backprop child not found");
                 let child_player = arena.get(child_idx).player();
-                let v = Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value);
-                (v, child_player)
+                let (v, h) = Self::backprop_from_path(
+                    arena,
+                    child_idx,
+                    rest_path,
+                    leaf_player,
+                    leaf_value,
+                    leaf_health,
+                );
+                (v, h, child_player)
             }
             PathStep::ChanceOutcome(outcome_id) => {
                 let current = arena.get(node_idx);
@@ -110,18 +121,27 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     .map(|(_, _, idx)| *idx)
                     .expect("Backprop outcome not found");
                 let child_player = arena.get(child_idx).player();
-                let v = Self::backprop_from_path(arena, child_idx, rest_path, leaf_player, leaf_value);
-                (v, child_player)
+                let (v, h) = Self::backprop_from_path(
+                    arena,
+                    child_idx,
+                    rest_path,
+                    leaf_player,
+                    leaf_value,
+                    leaf_health,
+                );
+                (v, h, child_player)
             }
         };
 
         // 更新当前节点
-        let my_value =
-            value_from_perspective(arena.get(node_idx).player(), child_player, child_value);
+        let node_player = arena.get(node_idx).player();
+        let my_value = value_from_perspective(node_player, child_player, child_value);
+        let my_health = value_from_perspective(node_player, child_player, child_health);
         let node = arena.get_mut(node_idx);
         node.visit_count += 1;
         node.value_sum += my_value;
-        my_value
+        node.health_sum += my_health;
+        (my_value, my_health)
     }
 
     /// 获取节点的 Q 值（包含 N=0 的初始化规则）
@@ -151,6 +171,48 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         }
     }
 
+    /// 获取节点的血量期望 Q 值（包含 N=0 的初始化规则，与 `node_q_value` 并行）。
+    pub(crate) fn node_health_value(&self, node_idx: usize) -> f32 {
+        let node = self.arena.get(node_idx);
+        if node.visit_count > 0 {
+            return node.health_sum / node.visit_count as f32;
+        }
+
+        // N=0：优先使用已访问子节点的平均值
+        let mut sum = 0.0;
+        let mut count = 0u32;
+        for (_, child_idx) in node.children.iter() {
+            let child = self.arena.get(*child_idx);
+            if child.visit_count > 0 {
+                let child_q = child.health_sum / child.visit_count as f32;
+                let adjusted = value_from_perspective(node.player, child.player, child_q);
+                sum += adjusted;
+                count += 1;
+            }
+        }
+
+        if count > 0 {
+            sum / count as f32
+        } else {
+            node.initial_health
+        }
+    }
+
+    /// 计算节点的复合效用 U = Q_win + λ(|Q_win|) · Q_hp。
+    ///
+    /// `health_enabled=false` 或 `health_weight=0` 时退化为纯胜率 `node_q_value`，
+    /// 与旧版行为逐位等价。λ 随 |Q_win| 按 `health_confidence_exp` 幂增长（0 = 常量 λ）。
+    pub(crate) fn node_utility_value(&self, node_idx: usize) -> f32 {
+        let q_win = self.node_q_value(node_idx);
+        if !self.config.health_enabled || self.config.health_weight <= 0.0 {
+            return q_win;
+        }
+        let q_hp = self.node_health_value(node_idx);
+        let conf = q_win.abs().clamp(0.0, 1.0);
+        let lambda = self.config.health_weight * conf.powf(self.config.health_confidence_exp);
+        q_win + lambda * q_hp
+    }
+
     /// 根据评估结果构建子节点
     ///
     /// 当一个叶子节点被评估后，使用评估得到的概率 (`probs`) 初始化其子节点。
@@ -164,9 +226,10 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// * `probs` - 动作概率 (Policy)
     /// * `logits` - 动作 Logits
     /// * `parent_value` - 父节点（`node_idx`）的评估值（从父节点玩家视角）
+    /// * `parent_health` - 父节点（`node_idx`）的血量期望（从父节点玩家视角）
     ///
-    /// 子节点的 `initial_value` 继承父节点评估值（从子节点玩家视角换算），
-    /// 即 Gumbel AlphaZero 标准的 Q(s,a) ≈ V(s) 先验。没有该先验时，
+    /// 子节点的 `initial_value` / `initial_health` 继承父节点评估值（从子节点玩家
+    /// 视角换算），即 Gumbel AlphaZero 标准的 Q(s,a) ≈ V(s) 先验。没有该先验时，
     /// 未访问子节点（N=0）的 completed_q 恒为 0，Sequential Halving 在
     /// 浅搜索下无法区分候选，可能淘汰最优动作。
     pub(crate) fn build_children_from_eval(
@@ -176,6 +239,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         probs: &[f32],
         logits: &[f32],
         parent_value: f32,
+        parent_health: f32,
     ) {
         let mut masks = vec![0; G::action_space_size()];
         env.action_masks_into(&mut masks);
@@ -210,6 +274,8 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                 let child_player = child_node.player();
                 child_node.initial_value =
                     value_from_perspective(child_player, parent_player, parent_value);
+                child_node.initial_health =
+                    value_from_perspective(child_player, parent_player, parent_health);
                 let child_idx = arena.allocate(child_node);
                 children_to_add.push((action_idx, child_idx));
             }

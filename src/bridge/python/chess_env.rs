@@ -187,6 +187,7 @@ macro_rules! define_chess_env {
                     max_considered_actions,
                     c_scale: c_scale as f32,
                     gumbel_scale: gumbel_scale as f32,
+                    ..Default::default()
                 };
                 let mut mcts = GumbelMCTS::new(&self.inner, &evaluator, config);
                 Ok(mcts.run().map(|r| r.action))
@@ -214,7 +215,8 @@ macro_rules! define_chess_env {
             /// 返回 `None` 表示无合法动作（终局）。
             fn greedy_action(&self, predict_fn: Py<PyAny>) -> PyResult<Option<usize>> {
                 let evaluator = PyEvaluator::<$env>::new(predict_fn);
-                let (logits_batch, _values) = evaluator.evaluate(std::slice::from_ref(&self.inner));
+                let out = evaluator.evaluate(std::slice::from_ref(&self.inner));
+                let logits_batch = &out.logits;
                 let mut masks = vec![0i32; <$env>::action_space_size()];
                 self.inner.action_masks_into(&mut masks);
                 let mut best: Option<usize> = None;

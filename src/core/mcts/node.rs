@@ -67,6 +67,9 @@ pub struct MctsNode<G: GameEnv> {
     /// 价值总和 (W)
     /// 表示从该节点开始的所有模拟的累计价值。
     pub value_sum: f32,
+    /// 血量期望总和（该节点视角，与 value_sum 并行）
+    /// 仅 `GumbelConfig.health_enabled` 时使用；否则恒 0，不影响搜索。
+    pub health_sum: f32,
     /// 先验概率 (P)
     /// 由神经网络输出的在该状态下采取某动作的概率。
     pub prior: f32,
@@ -100,6 +103,9 @@ pub struct MctsNode<G: GameEnv> {
     /// 节点的初始价值 (来自网络预测的 V)
     /// 当访问次数为 0 时，用于初始化 Q 值。
     pub initial_value: f32,
+    /// 节点的初始血量期望 (来自网络预测的 μ，[-1,1])
+    /// 当访问次数为 0 时，用于初始化血量 Q。
+    pub initial_health: f32,
     /// 是否为终局状态
     pub is_terminal: bool,
 }
@@ -133,6 +139,7 @@ impl<G: GameEnv> MctsNode<G> {
         Self {
             visit_count: 0,
             value_sum: 0.0,
+            health_sum: 0.0,
             prior,
             logit,
             children: Vec::new(),
@@ -144,6 +151,7 @@ impl<G: GameEnv> MctsNode<G> {
             player,
             state,
             initial_value: 0.0,
+            initial_health: 0.0,
             is_terminal,
         }
     }
@@ -162,6 +170,17 @@ impl<G: GameEnv> MctsNode<G> {
             0.0
         } else {
             self.value_sum / self.visit_count as f32
+        }
+    }
+
+    /// 计算当前节点的平均血量期望 (动作价值)
+    ///
+    /// 公式: Q_hp = W_hp / N；访问次数为 0 时返回 0.0。
+    pub fn q_health_value(&self) -> f32 {
+        if self.visit_count == 0 {
+            0.0
+        } else {
+            self.health_sum / self.visit_count as f32
         }
     }
 }
