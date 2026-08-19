@@ -29,7 +29,7 @@ import banqi_4x8 as b
 # ---------------------------------------------------------------------------
 def uniform_predict(boards: np.ndarray, scalars: np.ndarray):
     batch = boards.shape[0]
-    logits = np.zeros((batch, b.TTT_ACTION_SPACE_SIZE), dtype=np.float32)
+    logits = np.zeros((batch, b.variant_dims("ttt")["action_space_size"]), dtype=np.float32)
     values = np.zeros(batch, dtype=np.float32)
     return logits, values
 
@@ -37,7 +37,7 @@ def uniform_predict(boards: np.ndarray, scalars: np.ndarray):
 def nested_values_predict(boards: np.ndarray, scalars: np.ndarray):
     """返回 values 为 (batch, 1)（PyTorch 网络默认形状），验证弹性提取。"""
     batch = boards.shape[0]
-    logits = np.zeros((batch, b.TTT_ACTION_SPACE_SIZE), dtype=np.float32)
+    logits = np.zeros((batch, b.variant_dims("ttt")["action_space_size"]), dtype=np.float32)
     values = np.zeros((batch, 1), dtype=np.float32)
     return logits, values
 

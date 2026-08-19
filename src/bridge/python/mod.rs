@@ -14,6 +14,8 @@ mod augment;
 #[cfg(feature = "pyo3")]
 mod decode;
 #[cfg(feature = "pyo3")]
+pub mod variant;
+#[cfg(feature = "pyo3")]
 mod episode;
 #[cfg(feature = "pyo3")]
 mod self_play;
@@ -33,6 +35,8 @@ pub mod eval;
 
 #[cfg(feature = "pyo3")]
 pub use decode::{config_for_variant, decode_scalar_state, describe_record};
+#[cfg(feature = "pyo3")]
+pub use variant::{SelfPlayVariant, variant_dims};
 #[cfg(feature = "pyo3")]
 pub use augment::register_augment_functions;
 #[cfg(feature = "pyo3")]

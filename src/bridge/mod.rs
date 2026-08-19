@@ -20,16 +20,8 @@ use pyo3::prelude::*;
 
 #[cfg(feature = "pyo3")]
 use crate::bridge::python::{
-    PyGameEpisode, PySelfPlayConfig, describe_record, decode_scalar_state,
-    register_augment_functions,
-};
-#[cfg(feature = "pyo3")]
-use crate::core::env::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, GAME4X4_ACTION_SPACE_SIZE,
-    GAME4X4_BOARD_CHANNELS, GAME4X4_BOARD_COLS, GAME4X4_BOARD_ROWS, GAME4X4_SCALAR_FEATURE_COUNT,
-    MINI_ACTION_SPACE_SIZE, MINI_BOARD_CHANNELS, MINI_BOARD_COLS, MINI_BOARD_ROWS,
-    MINI_SCALAR_FEATURE_COUNT, SCALAR_FEATURE_COUNT, TTT_ACTION_SPACE_SIZE, TTT_BOARD_CHANNELS,
-    TTT_BOARD_COLS, TTT_BOARD_ROWS, TTT_SCALAR_FEATURE_COUNT,
+    PyGameEpisode, PySelfPlayConfig, describe_record, decode_scalar_state, register_augment_functions,
+    variant_dims,
 };
 
 // ---- pymodule 入口 ----
@@ -63,29 +55,8 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::bridge::python::chess_env::PyMiniDarkChess>()?;
     m.add_class::<crate::bridge::python::chess_env::PyGame4x4>()?;
 
-    m.add("BOARD_ROWS", BOARD_ROWS)?;
-    m.add("BOARD_COLS", BOARD_COLS)?;
-    m.add("BOARD_CHANNELS", BOARD_CHANNELS)?;
-    m.add("SCALAR_FEATURE_COUNT", SCALAR_FEATURE_COUNT)?;
-    m.add("ACTION_SPACE_SIZE", ACTION_SPACE_SIZE)?;
-
-    m.add("MINI_BOARD_ROWS", MINI_BOARD_ROWS)?;
-    m.add("MINI_BOARD_COLS", MINI_BOARD_COLS)?;
-    m.add("MINI_BOARD_CHANNELS", MINI_BOARD_CHANNELS)?;
-    m.add("MINI_SCALAR_FEATURE_COUNT", MINI_SCALAR_FEATURE_COUNT)?;
-    m.add("MINI_ACTION_SPACE_SIZE", MINI_ACTION_SPACE_SIZE)?;
-
-    m.add("GAME4X4_BOARD_ROWS", GAME4X4_BOARD_ROWS)?;
-    m.add("GAME4X4_BOARD_COLS", GAME4X4_BOARD_COLS)?;
-    m.add("GAME4X4_BOARD_CHANNELS", GAME4X4_BOARD_CHANNELS)?;
-    m.add("GAME4X4_SCALAR_FEATURE_COUNT", GAME4X4_SCALAR_FEATURE_COUNT)?;
-    m.add("GAME4X4_ACTION_SPACE_SIZE", GAME4X4_ACTION_SPACE_SIZE)?;
-
-    m.add("TTT_ACTION_SPACE_SIZE", TTT_ACTION_SPACE_SIZE)?;
-    m.add("TTT_BOARD_ROWS", TTT_BOARD_ROWS)?;
-    m.add("TTT_BOARD_COLS", TTT_BOARD_COLS)?;
-    m.add("TTT_BOARD_CHANNELS", TTT_BOARD_CHANNELS)?;
-    m.add("TTT_SCALAR_FEATURE_COUNT", TTT_SCALAR_FEATURE_COUNT)?;
+    // --- 统一变体维度查询（替代散落的模块级常量） ---
+    m.add_function(wrap_pyfunction!(variant_dims, m)?)?;
 
     Ok(())
 }

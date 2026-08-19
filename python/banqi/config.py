@@ -18,10 +18,9 @@
 config.default.yaml 仅是生成 config.local.yaml 的模板（--write-template），
 运行时不会读取，也不作为任何兜底。
 
-环境变量覆盖规则（统一）：
-  1. 优先读「变体前缀 + 字段名」：G4X4_XXX / MINI_XXX（4x8 无前缀）
-  2. 其次读兼容旧名（如 G4X4_DATA_AUGMENT、G4X4_LR、MONGODB_URI 等历史变量）
-  3. 最后读无前缀字段名（DATA_AUGMENT_ENABLED、MONITOR_ENABLED…）
+环境变量覆盖规则（统一）：所有字段一律以「无前缀字段名」读取，名称直接
+对应 Config 字段（如 LEARNING_RATE、DATA_AUGMENT_ENABLED、MONGO_URI…）。
+不再支持变体前缀（G4X4_* / MINI_*）与历史旧名别名（MONGODB_URI 等）。
 
 路径字段（MODEL_PATH / STATE_DICT_PATH）：配置文件中写相对 python/ 目录的
 相对路径即可，绝对路径也可直接用。
@@ -42,8 +41,6 @@ import warnings
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from banqi.variant import get_variant
-
 # python/ 目录（banqi/config.py 位于 python/banqi/）
 _PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # banqi/ 包目录：本地配置文件所在位置
@@ -62,57 +59,7 @@ _PATH_FIELDS = (
     "ARCHIVE_PREFILL_DIR",
 )
 
-# 历史环境变量别名：字段名 -> 依次尝试的旧变量名（保留既有脚本的 env 兼容）
-_LEGACY_ENV: Dict[str, List[str]] = {
-    "DATA_AUGMENT_ENABLED": ["DATA_AUGMENT_ENABLED", "G4X4_DATA_AUGMENT"],
-    "DATA_AUGMENT_KEEP_ORIGINAL": ["DATA_AUGMENT_KEEP_ORIGINAL", "G4X4_AUGMENT_KEEP_ORIGINAL"],
-    "DATA_AUGMENT_TRANSFORMS": ["DATA_AUGMENT_TRANSFORMS", "G4X4_AUGMENT_TRANSFORMS"],
-    "LEARNING_RATE": ["LEARNING_RATE", "G4X4_LR"],
-    "TRAIN_EPOCHS_PER_ROUND": ["TRAIN_EPOCHS_PER_ROUND", "G4X4_EPOCHS_PER_ROUND"],
-    "MAX_SAMPLE_BUFFER_SIZE": ["MAX_SAMPLE_BUFFER_SIZE", "G4X4_BUFFER_SIZE"],
-    "GAMES_PER_ITER": ["GAMES_PER_ITER", "G4X4_GAMES_PER_ITER"],
-    "MAX_RUNTIME_SECONDS": ["MAX_RUNTIME_SECONDS", "G4X4_MAX_RUNTIME", "MINI_MAX_RUNTIME"],
-    "MONITOR_ENABLED": ["MONITOR_ENABLED", "G4X4_MONITOR"],
-    "MONITOR_INTERVAL": ["MONITOR_INTERVAL", "G4X4_MONITOR_INTERVAL"],
-    "MONITOR_PER_CORE": ["MONITOR_PER_CORE", "G4X4_MONITOR_PER_CORE"],
-    "MONITOR_CSV_PATH": ["MONITOR_CSV_PATH", "G4X4_MONITOR_CSV"],
-    "TENSORBOARD_ENABLED": ["TENSORBOARD_ENABLED", "G4X4_TB"],
-    "TENSORBOARD_LOG_DIR": ["TENSORBOARD_LOG_DIR", "G4X4_TB_LOG_DIR"],
-    "TENSORBOARD_LOG_SYS": ["TENSORBOARD_LOG_SYS", "G4X4_TB_LOG_SYS"],
-    "ARCHIVE_ENABLED": ["ARCHIVE_ENABLED", "G4X4_ARCHIVE"],
-    "MONGO_URI": ["MONGO_URI", "G4X4_MONGO_URI", "MONGODB_URI"],
-    "DB_NAME": ["DB_NAME", "G4X4_DB_NAME"],
-    "MODEL_PATH": ["MODEL_PATH", "G4X4_MODEL_PATH", "MINI_MODEL_PATH"],
-    "STATE_DICT_PATH": ["STATE_DICT_PATH", "G4X4_STATE_DICT_PATH", "MINI_STATE_DICT_PATH"],
-    "MODEL_BACKEND": ["MODEL_BACKEND", "G4X4_MODEL_BACKEND", "MINI_MODEL_BACKEND"],
-    "ONNX_PATH": ["ONNX_PATH", "G4X4_ONNX_PATH", "MINI_ONNX_PATH"],
-    "ONNX_PROVIDERS": ["ONNX_PROVIDERS", "G4X4_ONNX_PROVIDERS", "MINI_ONNX_PROVIDERS"],
-    "VALUE_TARGET_MODE": ["VALUE_TARGET_MODE", "G4X4_VALUE_TARGET"],
-    "VALUE_ANNEAL_START": ["VALUE_ANNEAL_START", "G4X4_ANNEAL_START"],
-    "VALUE_ANNEAL_INCREMENT": ["VALUE_ANNEAL_INCREMENT", "G4X4_ANNEAL_INCREMENT"],
-    "VALUE_ANNEAL_STEP_ROUNDS": ["VALUE_ANNEAL_STEP_ROUNDS", "G4X4_ANNEAL_STEP"],
-    "VALUE_DRIFT_EVAL_ROUNDS": ["VALUE_DRIFT_EVAL_ROUNDS", "G4X4_VALUE_DRIFT_EVAL"],
-    "VALUE_DRIFT_NUM_POSITIONS": ["VALUE_DRIFT_NUM_POSITIONS", "G4X4_VALUE_DRIFT_N"],
-    "EVAL_MATCH_ROUNDS": ["EVAL_MATCH_ROUNDS", "G4X4_EVAL_MATCH_ROUNDS"],
-    "EVAL_MATCH_GAMES": ["EVAL_MATCH_GAMES", "G4X4_EVAL_MATCH_GAMES"],
-    "EVAL_MATCH_OPPONENTS": ["EVAL_MATCH_OPPONENTS", "G4X4_EVAL_MATCH_OPPONENTS"],
-    "EVAL_MATCH_VS_PREV": ["EVAL_MATCH_VS_PREV", "G4X4_EVAL_MATCH_VS_PREV"],
-    "ARCHIVE_PREFILL_GAMES": ["ARCHIVE_PREFILL_GAMES", "G4X4_ARCHIVE_PREFILL"],
-    "ARCHIVE_PREFILL_DIR": ["ARCHIVE_PREFILL_DIR", "G4X4_ARCHIVE_PREFILL_DIR"],
-    # ---- 训练模式（TRAIN_MODE 分流） ----
-    "TRAIN_MODE": ["TRAIN_MODE", "G4X4_TRAIN_MODE", "MINI_TRAIN_MODE"],
-    "ARCHIVE_TRAIN_DIR": ["ARCHIVE_TRAIN_DIR", "G4X4_ARCHIVE_TRAIN_DIR", "MINI_ARCHIVE_TRAIN_DIR"],
-    "ARCHIVE_TRAIN_GAMES": ["ARCHIVE_TRAIN_GAMES", "G4X4_ARCHIVE_TRAIN_GAMES", "MINI_ARCHIVE_TRAIN_GAMES"],
-    "ARCHIVE_TRAIN_ROUNDS": ["ARCHIVE_TRAIN_ROUNDS", "G4X4_ARCHIVE_TRAIN_ROUNDS", "MINI_ARCHIVE_TRAIN_ROUNDS"],
-    "RULE_SELFPLAY_TYPE": ["RULE_SELFPLAY_TYPE", "G4X4_RULE_SELFPLAY_TYPE", "MINI_RULE_SELFPLAY_TYPE"],
-    "RULE_SELFPLAY_DEPTH": ["RULE_SELFPLAY_DEPTH", "G4X4_RULE_SELFPLAY_DEPTH", "MINI_RULE_SELFPLAY_DEPTH"],
-    "RULE_SELFPLAY_SIMS": ["RULE_SELFPLAY_SIMS", "G4X4_RULE_SELFPLAY_SIMS", "MINI_RULE_SELFPLAY_SIMS"],
-    "RULE_SELFPLAY_GAMES": ["RULE_SELFPLAY_GAMES", "G4X4_RULE_SELFPLAY_GAMES", "MINI_RULE_SELFPLAY_GAMES"],
-    "RULE_SELFPLAY_ROUNDS": ["RULE_SELFPLAY_ROUNDS", "G4X4_RULE_SELFPLAY_ROUNDS", "MINI_RULE_SELFPLAY_ROUNDS"],
-    "RULE_SELFPLAY_CONCURRENCY": ["RULE_SELFPLAY_CONCURRENCY", "G4X4_RULE_SELFPLAY_CONCURRENCY", "MINI_RULE_SELFPLAY_CONCURRENCY"],
-    "RULE_SELFPLAY_TEMPERATURE": ["RULE_SELFPLAY_TEMPERATURE", "G4X4_RULE_SELFPLAY_TEMPERATURE", "MINI_RULE_SELFPLAY_TEMPERATURE"],
-    "RULE_SELFPLAY_BACKEND": ["RULE_SELFPLAY_BACKEND", "G4X4_RULE_SELFPLAY_BACKEND", "MINI_RULE_SELFPLAY_BACKEND"],
-}
+
 
 
 # --------------------------------------------------------------------------- #
@@ -309,29 +256,10 @@ def _get_config_data() -> Dict[str, Dict[str, Any]]:
     return cleaned
 
 
-def _alias_applies(prefix: str, alias: str) -> bool:
-    """旧别名是否适用于该变体：G4X4_* / MINI_* 只归对应变体，其余通用。"""
-    if alias.startswith("G4X4_"):
-        return prefix == "G4X4_"
-    if alias.startswith("MINI_"):
-        return prefix == "MINI_"
-    return True
-
-
-def _resolve_env(variant_id: str, name: str, default: Any) -> Any:
-    """按「变体前缀 + 字段名」→ 适用的旧别名 → 通用字段名 的顺序读环境变量。"""
-    p = get_variant(variant_id).env_prefix
-    keys: List[str] = []
-    if p:
-        keys.append(p + name)
-    keys.extend(
-        a for a in _LEGACY_ENV.get(name, []) if _alias_applies(p, a)
-    )
-    if name not in keys:
-        keys.append(name)
-    for k in keys:
-        if k in os.environ:
-            return _CASTS.get(name, _cast_str)(os.environ[k])
+def _resolve_env(name: str, default: Any) -> Any:
+    """统一：直接以字段名读取环境变量（无变体前缀、无旧别名）。"""
+    if name in os.environ:
+        return _CASTS.get(name, _cast_str)(os.environ[name])
     return default
 
 
@@ -484,7 +412,7 @@ def make_config(variant_id: str) -> Config:
                 and not os.path.isabs(value)
             ):
                 value = os.path.join(_PY_DIR, value)
-            setattr(c, name, _resolve_env(variant_id, name, value))
+            setattr(c, name, _resolve_env(name, value))
         _config_cache[variant_id] = c
     return _config_cache[variant_id]
 

@@ -11,8 +11,7 @@ from typing import List, Optional, Tuple
 from banqi.config import Config
 from banqi.variant import get_variant, Variant
 
-# env 前缀：{variant.env_prefix} 用于读取 {PREFIX}MODEL_PATH 等进程级覆盖
-# 默认变体 4x8 的 env 前缀为空字符串（无前缀）。
+# 环境变量一律以无前缀字段名覆盖 Config（见 banqi/config.py），不支持变体前缀。
 
 # 互斥的 mode 分组（同组只能单选其一）。用于 detect_mode_conflicts 校验。
 _MODE_GROUPS = [

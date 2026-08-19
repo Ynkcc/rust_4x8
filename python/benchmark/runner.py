@@ -75,14 +75,14 @@ def benchmark_cell(variant_id: str, scheme: str,
         # 临时覆盖 MCTS 模拟数（模拟负载更接近真实），通过 env 注入 config 已读取，故直接改 cfg 拷贝无效；
         # 这里改为直接修改 sp_cfg 的 mcts_sims 在 schemes.build_self_play_config 内读取 config，
         # 故需经 env 传递：
-        os.environ[f"{variant.env_prefix}MCTS_SIMS"] = str(BENCH_MCTS_SIMS)
+        os.environ["MCTS_SIMS"] = str(BENCH_MCTS_SIMS)
         predictor = CountingPredictor(raw)
     else:
         os.environ.pop("BENCH_SIMULATED", None)
         raw, _ = _build_predictor(variant, _resolve_model_path(model_path), device)
         predictor = CountingPredictor(raw)
         # 真实基准同样用代表性模拟数（必要时覆盖）
-        os.environ[f"{variant.env_prefix}MCTS_SIMS"] = str(BENCH_MCTS_SIMS)
+        os.environ["MCTS_SIMS"] = str(BENCH_MCTS_SIMS)
 
     return _run_scheme(variant_id, scheme, predictor, games, concurrency)
 

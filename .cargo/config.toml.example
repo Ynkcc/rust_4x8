@@ -1,0 +1,7 @@
+[target.'cfg(target_os = "linux")']
+rustflags = [
+    "-C", "link-arg=-Wl,-rpath,path/to/torch/lib"
+]
+
+[env]
+LIBTORCH = { value = "path/to/torch", relative = false }

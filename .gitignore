@@ -37,3 +37,5 @@ python/outputs
 *.swp
 *~
 *.tmp
+# ---- 本地 cargo 配置（不提交，含机器相关路径） ----
+.cargo/config.toml

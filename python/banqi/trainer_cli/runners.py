@@ -326,7 +326,7 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
     print(f"{tag} 📝 运行日志记录至: {log_file}")
 
     if HAS_TORCH:
-        threads_env = os.getenv(variant.env_prefix + "TORCH_THREADS")
+        threads_env = os.getenv("TORCH_THREADS")
         if threads_env:
             torch.set_num_threads(int(threads_env))
             print(f"{tag} torch.set_num_threads = {threads_env}")
@@ -523,7 +523,7 @@ def _run_selfplay(variant_id: str) -> None:
     print(f"{tag} 📝 运行日志记录至: {log_file}")
 
     if HAS_TORCH:
-        threads_env = os.getenv(variant.env_prefix + "TORCH_THREADS")
+        threads_env = os.getenv("TORCH_THREADS")
         if threads_env:
             torch.set_num_threads(int(threads_env))
             print(f"{tag} torch.set_num_threads = {threads_env}")

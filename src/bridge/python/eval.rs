@@ -20,7 +20,7 @@ use crate::pipeline::self_play::{
     AsDarkChessRef, MatchParams, PlayerSpec, SeedableEnv, SelfPlayConfig, run_match_core,
 };
 
-use crate::bridge::python::{PyEvaluator, PyGameEpisode, PySelfPlayConfig};
+use crate::bridge::python::{PyEvaluator, PyGameEpisode, PySelfPlayConfig, SelfPlayVariant};
 
 #[cfg(feature = "torch")]
 use crate::inference::torchscript::LocalEvaluator;
@@ -179,20 +179,20 @@ pub fn run_native_match(
         Some(c) => c.inner.clone(),
         None => SelfPlayConfig::default(),
     };
-    match variant_id {
-        "4x2" | "mini" => run_native_for_variant::<MiniDarkChessEnv>(
+    match SelfPlayVariant::parse(variant_id)? {
+        SelfPlayVariant::Dark4x8 => run_native_for_variant::<DarkChessEnv>(
             py, player_a, player_b, n, model_sims, heuristic_sims, seed, num_threads, &cfg,
-            record_episodes, 1,
+            record_episodes, SelfPlayVariant::Dark4x8.episode_code(),
         ),
-        "4x4" => run_native_for_variant::<Game4x4Env>(
+        SelfPlayVariant::Mini4x2 => run_native_for_variant::<MiniDarkChessEnv>(
             py, player_a, player_b, n, model_sims, heuristic_sims, seed, num_threads, &cfg,
-            record_episodes, 2,
+            record_episodes, SelfPlayVariant::Mini4x2.episode_code(),
         ),
-        "4x8" | "dark" => run_native_for_variant::<DarkChessEnv>(
+        SelfPlayVariant::Game4x4 => run_native_for_variant::<Game4x4Env>(
             py, player_a, player_b, n, model_sims, heuristic_sims, seed, num_threads, &cfg,
-            record_episodes, 0,
+            record_episodes, SelfPlayVariant::Game4x4.episode_code(),
         ),
-        _ => Err(PyValueError::new_err(format!("未知的变体 ID: {variant_id}"))),
+        SelfPlayVariant::Ttt => Err(PyValueError::new_err("run_native_match 不支持 ttt 变体")),
     }
 }
 
@@ -252,14 +252,34 @@ pub fn run_python_match(
         Some(c) => c.inner.clone(),
         None => SelfPlayConfig::default(),
     };
-    match variant_id {
-        "4x2" | "mini" => {
-            run_python_for_variant::<MiniDarkChessEnv>(py, predict_fn, &cfg, num_games, 1)
+    match SelfPlayVariant::parse(variant_id)? {
+        SelfPlayVariant::Dark4x8 => {
+            run_python_for_variant::<DarkChessEnv>(
+                py,
+                predict_fn,
+                &cfg,
+                num_games,
+                SelfPlayVariant::Dark4x8.episode_code(),
+            )
         }
-        "4x4" => run_python_for_variant::<Game4x4Env>(py, predict_fn, &cfg, num_games, 2),
-        "4x8" | "dark" => {
-            run_python_for_variant::<DarkChessEnv>(py, predict_fn, &cfg, num_games, 0)
+        SelfPlayVariant::Mini4x2 => {
+            run_python_for_variant::<MiniDarkChessEnv>(
+                py,
+                predict_fn,
+                &cfg,
+                num_games,
+                SelfPlayVariant::Mini4x2.episode_code(),
+            )
         }
-        _ => Err(PyValueError::new_err(format!("未知的变体 ID: {variant_id}"))),
+        SelfPlayVariant::Game4x4 => {
+            run_python_for_variant::<Game4x4Env>(
+                py,
+                predict_fn,
+                &cfg,
+                num_games,
+                SelfPlayVariant::Game4x4.episode_code(),
+            )
+        }
+        SelfPlayVariant::Ttt => Err(PyValueError::new_err("run_python_match 不支持 ttt 变体")),
     }
 }

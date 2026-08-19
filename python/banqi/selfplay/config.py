@@ -154,9 +154,8 @@ def build_mixed_predictor(
 def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
     """构建 SelfPlayConfig（与 py/mod.rs 契约一致），c_scale/gumbel_scale 支持 env 覆盖。"""
     cfg = make_config(variant.id)
-    p = variant.env_prefix
-    c_scale = float(os.getenv(p + "C_SCALE", os.getenv("C_SCALE", "1.0")))
-    gumbel_scale = float(os.getenv(p + "GUMBEL_SCALE", os.getenv("GUMBEL_SCALE", "1.0")))
+    c_scale = float(os.getenv("C_SCALE", "1.0"))
+    gumbel_scale = float(os.getenv("GUMBEL_SCALE", "1.0"))
     return banqi_4x8.SelfPlayConfig(
         mcts_sims=cfg.MCTS_SIMS,
         max_considered_actions=cfg.MAX_CONSIDERED_ACTIONS,
