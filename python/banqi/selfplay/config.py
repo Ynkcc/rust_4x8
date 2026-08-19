@@ -66,7 +66,8 @@ def build_predictor(variant: Variant, model_path: Optional[str],
         device = _resolve_device(device_str)
     print(f"[SP-{variant.id}] device = {device}")
 
-    model = BanqiNet(variant)
+    enable_health = bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False))
+    model = BanqiNet(variant, enable_health=enable_health)
     if HAS_TORCH:
         model = model.to(device)
     predictor = Predictor(model, device, model_path, variant)
@@ -132,11 +133,12 @@ def build_mixed_predictor(
         f"[SP-{variant.id}] 启用 GPU+CPU 混合推理: GPU={device}, "
         f"CPU线程={cpu_workers}, CPU比例={cpu_fraction:.2f}"
     )
-    gpu_model = BanqiNet(variant).to(device)
+    enable_health = bool(getattr(make_config(variant.id), "HEALTH_VALUE_HEAD_ENABLED", False))
+    gpu_model = BanqiNet(variant, enable_health=enable_health).to(device)
     gpu_predictor = Predictor(gpu_model, device, model_path, variant)
 
     cpu_device = torch.device("cpu")
-    cpu_model = BanqiNet(variant).to(cpu_device)
+    cpu_model = BanqiNet(variant, enable_health=enable_health).to(cpu_device)
     cpu_predictor = Predictor(cpu_model, cpu_device, model_path, variant)
 
     return (

@@ -141,6 +141,10 @@ _CASTS: Dict[str, Callable[[str], Any]] = {
     "VALUE_ANNEAL_STEP_ROUNDS": _cast_int,
     "VALUE_DRIFT_EVAL_ROUNDS": _cast_int,
     "VALUE_DRIFT_NUM_POSITIONS": _cast_int,
+    "HEALTH_VALUE_HEAD_ENABLED": _cast_bool,
+    "HEALTH_LOSS_WEIGHT": _cast_float,
+    "HEALTH_UTILITY_WEIGHT": _cast_float,
+    "HEALTH_UTILITY_CONFIDENCE_EXP": _cast_float,
     "EVAL_MATCH_ROUNDS": _cast_int,
     "EVAL_MATCH_GAMES": _cast_int,
     "EVAL_MATCH_OPPONENTS": _cast_str,
@@ -381,6 +385,13 @@ class Config:
     VALUE_ANNEAL_STEP_ROUNDS: int
     VALUE_DRIFT_EVAL_ROUNDS: int
     VALUE_DRIFT_NUM_POSITIONS: int
+    # ============ 血量差异价值头（离散分类，可选） ============
+    # 网络新增第三头预测终局整型血量差分布（K=2*INITIAL_HEALTH+1 分桶）。
+    # HEALTH_VALUE_HEAD_ENABLED=false 时模型结构与旧版逐位等价。
+    HEALTH_VALUE_HEAD_ENABLED: bool       # 是否启用血量差异分类头
+    HEALTH_LOSS_WEIGHT: float             # 训练时血量头交叉熵 loss 权重 α
+    HEALTH_UTILITY_WEIGHT: float          # MCTS 复合效用中血量期望权重 λ（0=禁用血量影响搜索，P3 使用）
+    HEALTH_UTILITY_CONFIDENCE_EXP: float  # λ 随 |v_win| 的自适应幂指数；0=常量 λ（P3 使用）
     # ============ 对战评估（TensorBoard eval/*，通用） ============
     # 周期性把当前模型与规则对手（启发式 MCTS / minimax）及上一轮模型对弈，
     # 记录 eval/* 指标到 TensorBoard。EVAL_MATCH_ROUNDS=0 时关闭。

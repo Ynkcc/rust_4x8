@@ -126,6 +126,8 @@ class TrainWorker(threading.Thread):
         self.ckpt_dir = ckpt_dir or variant.checkpoints_dir
         self.run_dir = run_dir
         self.device = device or _resolve_device(getattr(cfg, "TRAIN_DEVICE", "auto"))
+        # 血量差异价值头开关：开启时使用独立 _health 模型文件，与标准模型物理隔离。
+        self.health_enabled = bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False))
         os.makedirs(self.ckpt_dir, exist_ok=True)
 
         # 监控：每轮训练时长、最近 ckpt 路径、最近一次 epoch loss 分解
@@ -148,6 +150,7 @@ class TrainWorker(threading.Thread):
         self.total_loss_sum = 0.0
         self.total_policy_loss_sum = 0.0
         self.total_value_loss_sum = 0.0
+        self.total_health_loss_sum = 0.0
         self.round_history: deque = deque(maxlen=1000)
 
         self._warmup_done = False
@@ -174,7 +177,7 @@ class TrainWorker(threading.Thread):
 
             def get_model_path():
                 # 提供 TorchScript 模型（worker 拉取后由 tch CModule 加载）
-                pt = os.path.join(self.ckpt_dir, "last.pt")
+                pt = os.path.join(self.ckpt_dir, f"{self._artifact_basename()}.pt")
                 return pt if os.path.exists(pt) else None
 
             def get_config():
@@ -210,11 +213,11 @@ class TrainWorker(threading.Thread):
         if os.path.exists(self.last_ckpt_path()):  # resume
             print(f"[TR-{self.variant.id}] 从 checkpoint 恢复: {self.last_ckpt_path()}")
             ckpt = torch.load(self.last_ckpt_path(), map_location=self.device, weights_only=False)
-            model = BanqiNet(self.variant)
+            model = BanqiNet(self.variant, enable_health=self.health_enabled)
             model.load_state_dict(ckpt["model_state"])
             self.model = model.to(self.device)
             if ema_enabled:
-                self.ema_model = BanqiNet(self.variant).to(self.device)
+                self.ema_model = BanqiNet(self.variant, enable_health=self.health_enabled).to(self.device)
                 if "ema_model_state" in ckpt and ckpt["ema_model_state"] is not None:
                     self.ema_model.load_state_dict(ckpt["ema_model_state"])
                 else:
@@ -236,9 +239,9 @@ class TrainWorker(threading.Thread):
             print(f"[TR-{self.variant.id}] 恢复 global_step={self.global_step}, "
                   f"version={self.version}" + (" (EMA 已启用)" if ema_enabled else ""))
         else:
-            self.model = BanqiNet(self.variant).to(self.device)
+            self.model = BanqiNet(self.variant, enable_health=self.health_enabled).to(self.device)
             if ema_enabled:
-                self.ema_model = BanqiNet(self.variant).to(self.device)
+                self.ema_model = BanqiNet(self.variant, enable_health=self.health_enabled).to(self.device)
                 self.ema_model.load_state_dict(self.model.state_dict())
             self.optimizer = optim.AdamW(
                 self.model.parameters(), lr=cfg.LEARNING_RATE,
@@ -298,8 +301,12 @@ class TrainWorker(threading.Thread):
         self.global_step = 0
         self.metrics["global_step"] = 0
 
+    def _artifact_basename(self) -> str:
+        """checkpoint / 模型文件名基名：启用血量头时用独立后缀，与标准模型文件隔离。"""
+        return "last_health" if self.health_enabled else "last"
+
     def last_ckpt_path(self):
-        return os.path.join(self.ckpt_dir, "last.ckpt")
+        return os.path.join(self.ckpt_dir, f"{self._artifact_basename()}.ckpt")
 
     def _export_initial_model(self) -> None:
         """冷启动时导出初始模型（.pt/.onnx），供 Rust 自对弈加载。
@@ -308,8 +315,9 @@ class TrainWorker(threading.Thread):
         last.pt，而训练 worker 又因拿不到自对弈数据永不导出，形成死锁。
         这里在模型初始化后立即导出一次初始权重，打破该循环依赖。
         """
-        pt_path = os.path.join(self.ckpt_dir, "last.pt")
-        onnx_path = os.path.join(self.ckpt_dir, "last.onnx")
+        base = self._artifact_basename()
+        pt_path = os.path.join(self.ckpt_dir, f"{base}.pt")
+        onnx_path = os.path.join(self.ckpt_dir, f"{base}.onnx")
         if os.path.exists(pt_path):
             return
         try:
@@ -344,8 +352,9 @@ class TrainWorker(threading.Thread):
         save_every = max(int(getattr(self.cfg, "CKPT_SAVE_EVERY", 1)), 1)
         export_every = max(int(getattr(self.cfg, "CKPT_EXPORT_EVERY", 10)), 1)
 
-        pt_path = os.path.join(self.ckpt_dir, "last.pt")
-        onnx_path = os.path.join(self.ckpt_dir, "last.onnx")
+        base = self._artifact_basename()
+        pt_path = os.path.join(self.ckpt_dir, f"{base}.pt")
+        onnx_path = os.path.join(self.ckpt_dir, f"{base}.onnx")
 
         should_save_ckpt = force or (round_idx % save_every == 0) or (round_idx == 0)
         # round_idx==0 时仅在 pt 不存在时导出一次；round_idx>0 才按周期导出，
@@ -556,6 +565,8 @@ class TrainWorker(threading.Thread):
                 cfg.TRAIN_EPOCHS_PER_ROUND, self.device, max_batches=max_batches,
                 ema_model=self.ema_model if self.ema_enabled else None,
                 ema_decay=self.ema_decay,
+                health_enabled=self.health_enabled,
+                health_loss_weight=getattr(cfg, "HEALTH_LOSS_WEIGHT", 0.0),
             )
             self.model.eval()
 
@@ -572,22 +583,25 @@ class TrainWorker(threading.Thread):
                     self.total_loss_sum += last_losses[0] * total_batches
                     self.total_policy_loss_sum += last_losses[1] * total_batches
                     self.total_value_loss_sum += last_losses[2] * total_batches
+                    self.total_health_loss_sum += last_losses[3] * total_batches
                     self.round_history.append({
                         "round": round_idx,
                         "train_loss": last_losses[0],
                         "policy_loss": last_losses[1],
                         "value_loss": last_losses[2],
-                        "grad_norm": last_losses[3],
-                        "entropy": last_losses[4],
+                        "health_loss": last_losses[3],
+                        "grad_norm": last_losses[4],
+                        "entropy": last_losses[5],
                         "lr": current_lr,
                         "global_step": self.global_step,
                     })
 
                 print(f"[TR-{self.variant.id}] round {round_idx}: "
                       f"epoch_avg_loss={last_losses[0]:.4f} "
-                      f"(policy={last_losses[1]:.4f}, value={last_losses[2]:.4f}) "
-                      f"grad_norm={last_losses[3]:.3f} entropy={last_losses[4]:.3f} "
-                      f"value_mean={last_losses[5]:.3f} value_std={last_losses[6]:.3f} "
+                      f"(policy={last_losses[1]:.4f}, value={last_losses[2]:.4f}"
+                      f"{', health=' + format(last_losses[3], '.4f') if self.health_enabled else ''}) "
+                      f"grad_norm={last_losses[4]:.3f} entropy={last_losses[5]:.3f} "
+                      f"value_mean={last_losses[6]:.3f} value_std={last_losses[7]:.3f} "
                       f"lr={current_lr:.2e} duration={self.metrics['train_duration']:.1f}s "
                       f"buffer={len(self.buffer)} global_step={self.global_step}")
 
@@ -597,10 +611,12 @@ class TrainWorker(threading.Thread):
                 add_scalar("train/loss", last_losses[0], step)
                 add_scalar("train/policy_loss", last_losses[1], step)
                 add_scalar("train/value_loss", last_losses[2], step)
-                add_scalar("train/grad_norm", last_losses[3], step)
-                add_scalar("train/policy_entropy", last_losses[4], step)
-                add_scalar("train/value_mean", last_losses[5], step)
-                add_scalar("train/value_std", last_losses[6], step)
+                if self.health_enabled:
+                    add_scalar("train/health_loss", last_losses[3], step)
+                add_scalar("train/grad_norm", last_losses[4], step)
+                add_scalar("train/policy_entropy", last_losses[5], step)
+                add_scalar("train/value_mean", last_losses[6], step)
+                add_scalar("train/value_std", last_losses[7], step)
                 add_scalar("train/lr", current_lr, step)
                 add_scalar("train/buffer_size", len(self.buffer), step)
                 add_scalar("queue/backlog", self._safe_qsize(), step)
@@ -663,6 +679,7 @@ class TrainWorker(threading.Thread):
                 "avg_loss": self.total_loss_sum / total,
                 "avg_policy_loss": self.total_policy_loss_sum / total,
                 "avg_value_loss": self.total_value_loss_sum / total,
+                "avg_health_loss": self.total_health_loss_sum / total,
             }
 
     def round_history_snapshot(self) -> List[Dict]:

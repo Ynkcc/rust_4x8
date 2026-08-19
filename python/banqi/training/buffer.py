@@ -85,6 +85,8 @@ class DataBuffer:
         self.values = np.empty(c, dtype=np.float32)
         self.masks = np.empty((c, C.ACTION_SPACE_SIZE), dtype=np.float32)
         self.root_visits = np.empty(c, dtype=np.int64)
+        # 整型血量差（己方视角）分桶索引：d + INITIAL_HEALTH ∈ [0, HEALTH_DIFF_BINS)
+        self.health_labels = np.empty(c, dtype=np.int64)
         # 算力分配随机化的 Full Search 标记：True=Full（参与训练），False=Fast（仅保留）。
         self.is_full = np.ones(c, dtype=bool)
         self._size = 0          # 当前有效样本数
@@ -126,6 +128,11 @@ class DataBuffer:
             probs = np.array(s['policy_probs'], dtype=np.float32)
             mask = np.array(s['action_mask'], dtype=np.float32)
             target_val = self._target_value(s)
+            # 整型血量差标签：由归一化值反推（Rust 精确整数，见 Constants.health_diff_int），
+            # 映射到分桶索引 d + INITIAL_HEALTH；血量差缺失/非有限时落到中位桶（0 差）。
+            health_norm = float(s.get('health_diff', 0.0))
+            health_bin = self.C.health_diff_int(health_norm) + self.C.INITIAL_HEALTH
+            health_bin = max(0, min(self.C.HEALTH_DIFF_BINS - 1, health_bin))
 
             # ---- NaN/Inf 与非法策略/价值目标过滤（来源校验，防污染训练）----
             # 丢弃含非有限值的 board/scalar/policy/mask/value，以及 policy 含
@@ -139,6 +146,7 @@ class DataBuffer:
                 or not np.isfinite(probs).all()
                 or not np.isfinite(mask).all()
                 or not np.isfinite(target_val)
+                or not np.isfinite(health_norm)
                 or (probs < 0.0).any()
                 or probs.sum() <= 0.0
             ):
@@ -153,6 +161,7 @@ class DataBuffer:
             self.values[i] = target_val
             self.masks[i] = mask
             self.root_visits[i] = int(s.get('root_visit_count', 0))
+            self.health_labels[i] = health_bin
             self.is_full[i] = bool(s.get('is_full_search', True))
             self._head = (self._head + 1) % self.capacity
             if self._size < self.capacity:
@@ -186,4 +195,5 @@ class DataBuffer:
         v = torch.from_numpy(self.values[actual])
         m = torch.from_numpy(self.masks[actual])
         f = torch.from_numpy(self.is_full[actual])
-        return b, s, p, v, m, f
+        h = torch.from_numpy(self.health_labels[actual]).long()
+        return b, s, p, v, m, f, h

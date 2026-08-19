@@ -276,7 +276,9 @@ def eval_match(
         # 当前模型 vs 上一轮模型（守门）
         if cfg.EVAL_MATCH_VS_PREV and prev_weights is not None:
             try:
-                prev_model = BanqiNet(variant).to(device)
+                prev_model = BanqiNet(
+                    variant, enable_health=bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False))
+                ).to(device)
                 prev_model.load_state_dict(
                     {k: v.to(device) for k, v in prev_weights.items()}
                 )

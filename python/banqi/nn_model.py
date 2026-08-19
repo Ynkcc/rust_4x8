@@ -43,12 +43,14 @@ class BanqiNet(nn.Module):
     """AlphaZero 策略-价值网络，结构由 variant 决定。
 
     输入: board (N, C, R, C)，scalars (N, S)
-    输出: policy_logits (N, A)，value (N, 1) [tanh]
+    输出: policy_logits (N, A)，value (N, 1) [tanh]，
+          以及（enable_health 时）health_logits (N, K)，K=2*INITIAL_HEALTH+1 个整型血量差分桶。
     """
 
-    def __init__(self, variant: Variant) -> None:
+    def __init__(self, variant: Variant, enable_health: bool = False) -> None:
         super().__init__()
         self.variant_id = variant.id
+        self.enable_health = bool(enable_health)
         c: Constants = build_constants(variant)
         hidden = c.HIDDEN_CHANNELS
         rows, cols = c.BOARD_ROWS, c.BOARD_COLS
@@ -87,9 +89,23 @@ class BanqiNet(nn.Module):
         self.value_fc1 = nn.Linear(self.value_fc_input, c.VALUE_FC1_HIDDEN)
         self.value_fc2 = nn.Linear(c.VALUE_FC1_HIDDEN, 1)
 
+        # 5. 血量差异头（可选，离散分类，非标量回归）
+        #    输出 K=HEALTH_DIFF_BINS 个 logits（整型血量差 -D..+D 的分桶分布），
+        #    标签为 One-hot 桶索引；关闭时完全不加该头，与旧模型逐位等价。
+        if self.enable_health:
+            self.health_channels = c.VALUE_HEAD_CHANNELS
+            self.health_conv = nn.Conv2d(
+                hidden, self.health_channels, kernel_size=1, bias=False
+            )
+            self.health_bn = nn.BatchNorm2d(self.health_channels)
+            self.health_flat_size = self.health_channels * rows * cols
+            self.health_fc_input = self.health_flat_size + scalar
+            self.health_fc1 = nn.Linear(self.health_fc_input, c.VALUE_FC1_HIDDEN)
+            self.health_fc2 = nn.Linear(c.VALUE_FC1_HIDDEN, c.HEALTH_DIFF_BINS)
+
     def forward(
         self, board: torch.Tensor, scalars: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = self.conv_input(board)
         x = self.bn_input(x)
         x = F.relu(x)
@@ -109,6 +125,17 @@ class BanqiNet(nn.Module):
         v = F.relu(v)
         v = v.view(v.size(0), -1)
         value = torch.tanh(self.value_fc2(F.relu(self.value_fc1(torch.cat([v, scalars], dim=1)))))
+
+        # 血量头：K 维 logits（离散分桶），不经过 tanh（损失侧 softmax + CE）
+        if self.enable_health:
+            h = self.health_conv(x)
+            h = self.health_bn(h)
+            h = F.relu(h)
+            h = h.view(h.size(0), -1)
+            health_logits = self.health_fc2(
+                F.relu(self.health_fc1(torch.cat([h, scalars], dim=1)))
+            )
+            return policy_logits, value, health_logits
 
         return policy_logits, value
 
@@ -150,15 +177,23 @@ if __name__ == "__main__":
     from banqi.variant import VARIANTS
     for vid, v in VARIANTS.items():
         c = build_constants(v)
-        model = BanqiNet(v).eval()
-        batch = 2
-        board = torch.randn(batch, c.TOTAL_INPUT_CHANNELS, c.BOARD_ROWS, c.BOARD_COLS)
-        scalars = torch.randn(batch, c.SCALAR_FEATURE_COUNT)
-        with torch.inference_mode():
-            logits, value = model(board, scalars)
-        assert logits.shape == (batch, c.ACTION_SPACE_SIZE), f"{vid} logits shape"
-        assert value.shape == (batch, 1), f"{vid} value shape"
-        print(f"[banqi.nn_model] {vid}: input={tuple(board.shape[1:])} "
-              f"scalar={c.SCALAR_FEATURE_COUNT} action={c.ACTION_SPACE_SIZE} "
-              f"params={count_params(model)} -> logits={tuple(logits.shape)} value={tuple(value.shape)}")
+        for enable_health in (False, True):
+            model = BanqiNet(v, enable_health=enable_health).eval()
+            batch = 2
+            board = torch.randn(batch, c.TOTAL_INPUT_CHANNELS, c.BOARD_ROWS, c.BOARD_COLS)
+            scalars = torch.randn(batch, c.SCALAR_FEATURE_COUNT)
+            with torch.inference_mode():
+                out = model(board, scalars)
+            logits, value = out[0], out[1]
+            assert logits.shape == (batch, c.ACTION_SPACE_SIZE), f"{vid} logits shape"
+            assert value.shape == (batch, 1), f"{vid} value shape"
+            extra = ""
+            if enable_health:
+                health = out[2]
+                assert health.shape == (batch, c.HEALTH_DIFF_BINS), f"{vid} health shape"
+                extra = f" health={tuple(health.shape)} bins={c.HEALTH_DIFF_BINS}"
+            print(f"[banqi.nn_model] {vid} health={enable_health}: "
+                  f"input={tuple(board.shape[1:])} scalar={c.SCALAR_FEATURE_COUNT} "
+                  f"action={c.ACTION_SPACE_SIZE} params={count_params(model)} "
+                  f"-> logits={tuple(logits.shape)} value={tuple(value.shape)}{extra}")
     print("[banqi.nn_model] all OK")

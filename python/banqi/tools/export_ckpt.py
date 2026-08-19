@@ -37,7 +37,6 @@ def export_checkpoint_file(ckpt_path: str, variant_id: str | None = None) -> boo
     print(f"📦 导出目标: {ckpt_path} (变体: {variant.id})")
 
     device = torch.device("cpu")
-    model = BanqiNet(variant)
 
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     if isinstance(ckpt, dict) and "model_state" in ckpt:
@@ -49,6 +48,9 @@ def export_checkpoint_file(ckpt_path: str, variant_id: str | None = None) -> boo
     else:
         raise ValueError(f"无法识别的 checkpoint 格式: {type(ckpt)}")
 
+    # 由权重 key 检测是否带血量差异头（health_*），保证结构匹配
+    enable_health = any(k.startswith("health_") for k in state_dict)
+    model = BanqiNet(variant, enable_health=enable_health)
     model.load_state_dict(state_dict)
     model.eval()
 

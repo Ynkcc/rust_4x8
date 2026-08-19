@@ -35,6 +35,13 @@ class Constants:
         self.PIECE_COUNTS = v.piece_counts
         self.PIECE_VALUES = v.piece_values
         self.INITIAL_HEALTH = v.initial_health
+        # ---- 整型血量差（离散分类头） ----
+        # 未归一化的血量差 d = 己方HP - 对方HP ∈ [-D, +D]，D = INITIAL_HEALTH。
+        # 离散分类头输出 K = 2D+1 个桶；桶 i 的整数中心 = i - D，One-hot 目标 index = d + D。
+        self.HEALTH_DIFF_BINS = 2 * v.initial_health + 1
+        # 归一化血量差的除分母，与 Rust `terminal_health_diff_red` 完全一致：
+        #   normalized = (红HP - 黑HP) / (initial_health + max(piece_values))
+        self.HEALTH_DIFF_DENOM = v.initial_health + max(v.piece_values)
         self.SOLDIERS_COUNT, self.CANNONS_COUNT, self.HORSES_COUNT, \
             self.CHARIOTS_COUNT, self.ELEPHANTS_COUNT, self.ADVISORS_COUNT, \
             self.GENERALS_COUNT = v.piece_counts
@@ -49,6 +56,19 @@ class Constants:
         self.VALUE_HEAD_CHANNELS = v.value_head_channels
         self.POLICY_FC1_HIDDEN = v.policy_fc1_hidden
         self.VALUE_FC1_HIDDEN = v.value_fc1_hidden
+
+    def health_diff_int(self, normalized: float) -> int:
+        """由归一化血量差精确反推整型血量差（按己方视角）。
+
+        Rust 侧 `terminal_health_diff_red` 返回 `diff / HEALTH_DIFF_DENOM`，其中
+        `diff` 是整型血量差；因此 `round(normalized * DENOM)` 可精确恢复（无量化误差）。
+        非有限输入（NaN/Inf）归 0（中位桶），由调用方按异常样本过滤处理。
+        """
+        n = float(normalized)
+        if n != n or n in (float("inf"), float("-inf")):  # NaN / ±Inf
+            return 0
+        val = int(round(n * self.HEALTH_DIFF_DENOM))
+        return max(-self.INITIAL_HEALTH, min(self.INITIAL_HEALTH, val))
 
     def as_dict(self) -> Dict[str, Any]:
         return {k: getattr(self, k) for k in dir(self)

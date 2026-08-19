@@ -23,6 +23,7 @@ def _model_config(c: Constants) -> dict:
         "board_cols": c.BOARD_COLS,
         "scalar_features": c.SCALAR_FEATURE_COUNT,
         "action_space": c.ACTION_SPACE_SIZE,
+        "health_diff_bins": c.HEALTH_DIFF_BINS,
     }
 
 
@@ -126,11 +127,23 @@ def export_onnx(
 
     输入名固定为 "board" / "scalars"，输出名固定为 "policy_logits" / "value"
     （与 Rust 侧 src/onnx/mod.rs 的契约一致），batch 维度动态。
+    启用血量差异头时追加第三输出 "health"（[B, K]，K=HEALTH_DIFF_BINS）。
     失败时打印原因并返回 False（不抛异常，避免中断主训练流程）。
     """
     c = build_constants(variant)
     trace_model = getattr(model, "_orig_mod", model)
     onnx_temp = onnx_path + ".tmp"
+    health_enabled = bool(getattr(trace_model, "enable_health", False))
+    output_names = ["policy_logits", "value"]
+    dynamic_axes = {
+        "board": {0: "batch"},
+        "scalars": {0: "batch"},
+        "policy_logits": {0: "batch"},
+        "value": {0: "batch"},
+    }
+    if health_enabled:
+        output_names.append("health")
+        dynamic_axes["health"] = {0: "batch"}
     try:
         model.eval()
         with torch.inference_mode():
@@ -147,13 +160,8 @@ def export_onnx(
                 # 下常量折叠，输出与 .pt TorchScript 完全等价。
                 dynamo=False,
                 input_names=["board", "scalars"],
-                output_names=["policy_logits", "value"],
-                dynamic_axes={
-                    "board": {0: "batch"},
-                    "scalars": {0: "batch"},
-                    "policy_logits": {0: "batch"},
-                    "value": {0: "batch"},
-                },
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
                 opset_version=13,
                 do_constant_folding=True,
             )
@@ -167,7 +175,7 @@ def export_onnx(
         return False
 
 
-def _export_worker_proc(pipe_conn, pt_path: Optional[str], onnx_path: Optional[str], variant_id: str, device_str: str) -> None:
+def _export_worker_proc(pipe_conn, pt_path: Optional[str], onnx_path: Optional[str], variant_id: str, device_str: str, enable_health: bool) -> None:
     """子进程独立导出入口：通过 Pipe 接收共享内存句柄 (share_memory_)。
 
     torch.jit.trace 会在 PyTorch C++ 内部生成极难释放的 CompilationUnit 缓存。
@@ -178,7 +186,7 @@ def _export_worker_proc(pipe_conn, pt_path: Optional[str], onnx_path: Optional[s
     from banqi.variant import get_variant
     v = get_variant(variant_id)
     dev = torch.device(device_str)
-    model = BanqiNet(v).to(dev)
+    model = BanqiNet(v, enable_health=enable_health).to(dev)
     model.load_state_dict(model_state)
     if pt_path:
         export_torchscript(model, pt_path, v, dev)
@@ -196,6 +204,7 @@ def export_model_isolated(
     """使用 spawn 独立子进程 + Pipe 共享内存句柄导出 TorchScript/ONNX，零拷贝隔离内存泄露。"""
     import torch.multiprocessing as tmp
     raw_model = getattr(model, "_orig_mod", model)
+    enable_health = bool(getattr(raw_model, "enable_health", False))
     # 将模型 state_dict 转为 CPU 共享内存 Tensor，只跨进程发送句柄 (Zero-copy)
     state_dict = {
         k: v.detach().cpu().clone().share_memory_()
@@ -205,7 +214,7 @@ def export_model_isolated(
     ctx = tmp.get_context("spawn")
     p = ctx.Process(
         target=_export_worker_proc,
-        args=(child_conn, pt_path, onnx_path, variant.id, str(device)),
+        args=(child_conn, pt_path, onnx_path, variant.id, str(device), enable_health),
     )
     p.start()
     parent_conn.send(state_dict)
@@ -275,6 +284,7 @@ def _check_dimensions(cfg: Optional[dict], c: Constants) -> None:
         "board_cols": c.BOARD_COLS,
         "scalar_features": c.SCALAR_FEATURE_COUNT,
         "action_space": c.ACTION_SPACE_SIZE,
+        "health_diff_bins": c.HEALTH_DIFF_BINS,
     }
     for k, val in expect.items():
         got = cfg.get(k)
