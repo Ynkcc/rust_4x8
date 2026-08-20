@@ -563,13 +563,15 @@ class TrainWorker(threading.Thread):
             self._anneal_value_weight(round_idx)
 
             # ---- 训练量限制：与累积新增样本量匹配，避免旧数据反复训练 ----
-            if new_samples >= capacity_base // 4:
-                max_batches = None
-            else:
-                max_batches = int(
-                    (new_samples / cfg.TRAIN_BATCH) * cfg.TRAIN_EPOCHS_PER_ROUND + 0.5
-                )
-                max_batches = max(max_batches, 1)
+            # 关键：max_batches 必须由本次累积的新样本量决定，而不是误触发全量训练。
+            # 旧逻辑 `if new_samples >= capacity_base//4: max_batches=None` 在批量累积
+            # 后（new_samples=pending≈capacity_base//4）会误判为"新增量足够大"而全量
+            # 训练整个 buffer（含大量旧数据），导致旧数据反复过拟合、新数据占比被稀释。
+            # 这里始终按新增样本量成比例设定训练量，聚焦消化新数据。
+            max_batches = int(
+                (new_samples / cfg.TRAIN_BATCH) * cfg.TRAIN_EPOCHS_PER_ROUND + 0.5
+            )
+            max_batches = max(max_batches, 1)
 
             self.model.train()
             epoch_results, total_batches = run_training_epochs(

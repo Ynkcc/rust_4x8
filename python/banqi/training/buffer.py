@@ -7,6 +7,7 @@ DataBuffer 把自对弈 episode 转换出的 sample dict 列表压缩进内存�
 
 from __future__ import annotations
 
+import random
 import numpy as np
 import torch
 from typing import Dict, List
@@ -176,6 +177,23 @@ class DataBuffer:
 
     def __len__(self) -> int:
         return self._size
+
+    def sample_recent_indices(self, n: int, alpha: float = 2.0):
+        """平滑指数衰减加权采样索引（按需抽取 n 个）。
+
+        RL 自对弈数据随模型演化而"过时"：越新的样本越贴近当前模型水平。
+        KataGo 等主流实践使用平滑衰减权重，而非硬分段切块。这里给 Buffer 内
+        每个样本按其新旧程度赋指数衰减权重（最新样本权重最高、最旧平滑衰减），
+        并按需只抽取训练实际需要的 n 个索引，避免生成/打乱全量 List 的浪费。
+        """
+        size = self._size
+        if size == 0:
+            return np.array([], dtype=np.int64)
+        n = min(n, size)
+        # 索引越接近 size-1（最新），权重越高：w_i = exp(alpha * i/size)
+        weights = np.exp(np.linspace(-alpha, 0.0, size))
+        probs = weights / weights.sum()
+        return np.random.choice(size, size=n, replace=False, p=probs).astype(np.int64)
 
     def get_batch(self, indices):
         """用高级索引在预分配数组上切片（不产生新的大分配，内存稳定）。

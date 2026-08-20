@@ -168,17 +168,32 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
     """
     total_batches = 0
     epoch_results = []
+    # 新近优先采样：RL 自对弈数据随模型演化而过时，聚焦最近新增样本可避免
+    # 旧数据反复训练导致的棋力退化。仅在 max_batches 限制训练量（批量聚焦）时启用；
+    # 全量训练（max_batches=None）时保留均匀采样以覆盖整个 buffer。
+    recent_enabled = max_batches is not None and getattr(
+        buffer.cfg, "RECENT_SAMPLE_ENABLED", True
+    )
     for epoch in range(num_epochs):
-        indices = list(range(len(buffer)))
-        random.shuffle(indices)
-        num_batches = len(indices) // buffer.cfg.TRAIN_BATCH
-        if num_batches == 0:
-            break
+        # 确定本轮实际训练的 batch 数：受 buffer 容量与剩余 max_batches 双重约束
         if max_batches is not None:
             remaining = max_batches - total_batches
             if remaining <= 0:
                 break
-            num_batches = min(num_batches, remaining)
+            num_batches = min(
+                len(buffer) // buffer.cfg.TRAIN_BATCH, remaining
+            )
+        else:
+            num_batches = len(buffer) // buffer.cfg.TRAIN_BATCH
+        if num_batches == 0:
+            break
+        # 按需采样：只抽取本轮实际需要的样本数，避免生成全量索引的巨大浪费。
+        # 新近优先用指数衰减加权采样（聚焦最新数据），否则均匀采样。
+        needed = num_batches * buffer.cfg.TRAIN_BATCH
+        if recent_enabled:
+            indices = buffer.sample_recent_indices(needed)
+        else:
+            indices = np.random.permutation(len(buffer))[:needed]
         batch_total_l, batch_pol_l, batch_val_l, batch_health_l = 0.0, 0.0, 0.0, 0.0
         batch_grad_l, batch_ent_l, batch_vm_l, batch_vs_l = 0.0, 0.0, 0.0, 0.0
         for step in range(num_batches):
