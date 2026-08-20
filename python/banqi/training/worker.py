@@ -581,6 +581,7 @@ class TrainWorker(threading.Thread):
                 ema_decay=self.ema_decay,
                 health_enabled=self.health_enabled,
                 health_loss_weight=getattr(cfg, "HEALTH_LOSS_WEIGHT", 0.0),
+                health_gauss_sigma=getattr(cfg, "HEALTH_GAUSS_SIGMA", 1.5),
             )
             self.model.eval()
 

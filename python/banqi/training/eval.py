@@ -150,8 +150,11 @@ def eval_value_drift(
             s = torch.from_numpy(
                 np.ascontiguousarray(fixed_eval["scalars"])
             ).to(device)
-            _, values = model(b, s)
-            pred = values.cpu().numpy().reshape(-1).astype(np.float32)
+            if getattr(model, "enable_health", False):
+                _, values, _ = model(b, s)
+            else:
+                _, values = model(b, s)
+        pred = values.cpu().numpy().reshape(-1).astype(np.float32)
         model.train()
         gr = fixed_eval["results"]
         corr = (
@@ -199,8 +202,11 @@ def eval_policy_accuracy(
             s = torch.from_numpy(
                 np.ascontiguousarray(fixed_eval["scalars"])
             ).to(device)
-            logits, _ = model(b, s)
-            logits = logits.cpu().numpy().astype(np.float32)
+            if getattr(model, "enable_health", False):
+                logits, _, _ = model(b, s)
+            else:
+                logits, _ = model(b, s)
+        logits = logits.cpu().numpy().astype(np.float32)
         model.train()
         masks = fixed_eval["masks"].astype(np.float32)
         ml_all = np.where(np.isfinite(logits), logits, -1e9).copy()

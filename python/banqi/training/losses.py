@@ -24,6 +24,14 @@ def _resolve_device(spec: str) -> "torch.device":
     return torch.device(spec)
 
 
+def make_hl_gauss_target(target_bins: torch.Tensor, num_classes: int, sigma: float = 1.5) -> torch.Tensor:
+    """由 1D 离散桶标签生成 HL-Gauss (Histogram Loss with Gaussian Label Smoothing) 高斯目标分布 (B, K)。"""
+    bins = torch.arange(num_classes, device=target_bins.device, dtype=torch.float32).unsqueeze(0)
+    targets = target_bins.unsqueeze(1).float()
+    weights = torch.exp(-0.5 * ((bins - targets) / sigma) ** 2)
+    return weights / weights.sum(dim=1, keepdim=True)
+
+
 # 单 batch 训练统计（供 TensorBoard 记录）：
 #   total/policy/value/health：四类 loss；grad_norm：clip 前梯度范数（发散预警）；
 #   entropy：目标策略平均熵（探索健康度）；value_mean/std：价值目标分布。
@@ -34,7 +42,8 @@ _ZERO_STATS = TrainStepStats(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
 def train_step(model, optimizer, batch_data, device, ema_model=None, ema_decay: float = 0.999,
-               health_enabled: bool = False, health_loss_weight: float = 0.0) -> TrainStepStats:
+               health_enabled: bool = False, health_loss_weight: float = 0.0,
+               health_gauss_sigma: float = 1.5) -> TrainStepStats:
     model.train()
     boards_t, scalars_t, target_probs_t, target_values_t, masks_t, full_t, target_health_bin_t = batch_data
 
@@ -92,10 +101,12 @@ def train_step(model, optimizer, batch_data, device, ema_model=None, ema_decay: 
     value_loss = (per_sample_value * full_t).sum() / num_full
     total_loss = policy_loss + value_loss
 
-    # ---- 血量头：离散分类交叉熵（仅启用时），权重 α 缩放，Fast 样本按 0 权重屏蔽 ----
+    # ---- 血量头：HL-Gauss (高斯标签平滑交叉熵/KL散度，仅启用时)，权重 α 缩放，Fast 样本按 0 权重屏蔽 ----
     health_loss = torch.tensor(0.0, device=device)
     if health_enabled:
-        per_sample_health = F.cross_entropy(health_logits, target_health_bin_t, reduction="none")
+        log_health_probs = F.log_softmax(health_logits, dim=1)
+        target_health_dist = make_hl_gauss_target(target_health_bin_t, health_logits.size(1), sigma=health_gauss_sigma)
+        per_sample_health = F.kl_div(log_health_probs, target_health_dist, reduction="none").sum(dim=1)
         health_loss = (per_sample_health * full_t).sum() / num_full
         total_loss = total_loss + health_loss_weight * health_loss
 
@@ -154,7 +165,8 @@ def train_step(model, optimizer, batch_data, device, ema_model=None, ema_decay: 
 def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
                         device, max_batches: Optional[int] = None,
                         ema_model=None, ema_decay: float = 0.999,
-                        health_enabled: bool = False, health_loss_weight: float = 0.0):
+                        health_enabled: bool = False, health_loss_weight: float = 0.0,
+                        health_gauss_sigma: float = 1.5):
     """
     在完整 replay buffer 上训练指定个 epoch。
     scheduler.step() 按 batch 步进以匹配 CosineAnnealingLR 的 T_max (batch 数)。
@@ -201,7 +213,8 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
             batch_data = buffer.get_batch(batch_indices)
             s = train_step(model, optimizer, batch_data, device, ema_model=ema_model,
                            ema_decay=ema_decay, health_enabled=health_enabled,
-                           health_loss_weight=health_loss_weight)
+                           health_loss_weight=health_loss_weight,
+                           health_gauss_sigma=health_gauss_sigma)
             scheduler.step()
             batch_total_l += s.total
             batch_pol_l += s.policy
