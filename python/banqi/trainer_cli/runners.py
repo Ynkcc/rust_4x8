@@ -111,14 +111,14 @@ class _ArchiveFeederWorker(threading.Thread):
         self,
         variant: Variant,
         data_q: "queue.Queue",
-        stop_flag: "List[bool]",
+        stop_event: threading.Event,
     ) -> None:
         super().__init__(name=f"ArchiveFeederWorker-{variant.id}", daemon=True)
         self.variant = variant
         self.cfg = make_config(variant.id)
         self.tag = f"[ArchiveFeeder-{variant.id}]"
         self.data_q = data_q
-        self.stop_flag = stop_flag
+        self.stop_event = stop_event
         self.total_games = 0
 
     def _resolve_archive_dir(self) -> Optional[str]:
@@ -175,11 +175,11 @@ class _ArchiveFeederWorker(threading.Thread):
         return episodes
 
     def _put(self, item: Dict) -> None:
-        while not self.stop_flag[0]:
+        while not self.stop_event.is_set():
             try:
                 self.data_q.put(item, timeout=0.5)
                 return
-            except Exception:  # queue.Full
+            except queue.Full:  # 队列满则重试；非 Full 异常直接抛出暴露
                 continue
 
     def run(self) -> None:
@@ -197,7 +197,7 @@ class _ArchiveFeederWorker(threading.Thread):
         poll = max(1.0, self.cfg.ARCHIVE_POLL_INTERVAL)
 
         for r in range(total_rounds):
-            if self.stop_flag[0]:
+            if self.stop_event.is_set():
                 break
             try:
                 t0 = time.time()
@@ -211,7 +211,7 @@ class _ArchiveFeederWorker(threading.Thread):
                     continue
                 # 每次灌入全部（或限制量），并标记 round 号便于观测
                 for ep in episodes:
-                    if self.stop_flag[0]:
+                    if self.stop_event.is_set():
                         break
                     ep = dict(ep)
                     ep.setdefault("num_samples", len(ep.get("boards") or []))
@@ -358,13 +358,14 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
     print("=" * 56)
 
     start_memory_guard()
-    stop_flag: List[bool] = [False]
+    # 线程停止信号用 threading.Event；多进程子进程的停止信号用 multiprocessing.Event。
+    thread_stop = threading.Event()
 
     def _handler(signum, frame):
-        if stop_flag[0]:
+        if thread_stop.is_set():
             print(f"\n{tag} 再次收到 Ctrl-C，强制退出")
             sys.exit(1)
-        stop_flag[0] = True
+        thread_stop.set()
         print(f"\n{tag} 收到 Ctrl-C，将在当前批结束后优雅退出...")
 
     signal.signal(signal.SIGINT, _handler)
@@ -399,16 +400,16 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
             # Rust 侧的 run_*_self_play 内部会按 RULE_SELFPLAY_CONCURRENCY 参数
             # 开启线程池并行计算，在释放 GIL 的情况下彻底吃满多核。
             producers.append(
-                RuleTeacherWorker(variant, data_q, lambda: stop_flag[0], worker_id=0)
+                RuleTeacherWorker(variant, data_q, thread_stop, worker_id=0)
             )
             print(f"{tag} 🚀 Rust 教师自对弈调度线程已启动"
                   f"（RULE_SELFPLAY_BACKEND=thread，Rust 内部并发="
                   f"{config.RULE_SELFPLAY_CONCURRENCY}）")
     else:
-        producers.append(_ArchiveFeederWorker(variant, data_q, stop_flag))
+        producers.append(_ArchiveFeederWorker(variant, data_q, thread_stop))
 
     # ---- 训练线程 ----
-    workers: List[threading.Thread] = [TrainWorker(data_q, stop_flag, variant)]
+    workers: List[threading.Thread] = [TrainWorker(variant, config, data_q, thread_stop)]
 
     for p in producers:
         p.start()
@@ -423,7 +424,7 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
             show_per_core=config.MONITOR_PER_CORE,
             csv_path=config.MONITOR_CSV_PATH,
             log_to_tb=bool(config.TENSORBOARD_LOG_SYS and tb_ok),
-            stop_flag=stop_flag,
+            stop_event=thread_stop,
         )
         monitor.start()
         print(f"{tag} 📊 系统资源监控已启动（每 {config.MONITOR_INTERVAL:.0f}s 采样）")
@@ -436,14 +437,14 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
     start_t = time.time()
 
     def _request_stop(reason: str = "") -> None:
-        if stop_flag[0]:
+        if thread_stop.is_set():
             return
-        stop_flag[0] = True
+        thread_stop.set()
         if stop_event is not None:
             stop_event.set()
 
     try:
-        while not stop_flag[0]:
+        while not thread_stop.is_set():
             elapsed = time.time() - start_t
             if config.MAX_RUNTIME_SECONDS > 0 and elapsed >= config.MAX_RUNTIME_SECONDS:
                 print(f"\n{tag} 达到运行时限 {config.MAX_RUNTIME_SECONDS}s，优雅停止...")
@@ -476,13 +477,13 @@ def _run_offline(variant_id: str, train_mode: str) -> None:
                 p.terminate()
                 p.join(timeout=5)
             else:
-                stop_flag[0] = True
+                thread_stop.set()
                 p.join(timeout=5)
     train_worker: TrainWorker = workers[0]  # type: ignore[assignment]
     if train_worker.is_alive():
         train_worker.join(timeout=30)
     if train_worker.is_alive():
-        stop_flag[0] = True
+        thread_stop.set()
         train_worker.join(timeout=10)
     train_worker.finalize()
     if monitor is not None and monitor.is_alive():
@@ -562,13 +563,14 @@ def _run_selfplay(variant_id: str) -> None:
     print("=" * 56)
 
     start_memory_guard()
-    stop_flag: List[bool] = [False]
+    # 线程停止信号用 threading.Event；多进程子进程的停止信号用 multiprocessing.Event。
+    thread_stop = threading.Event()
 
     def _handler(signum, frame):
-        if stop_flag[0]:
+        if thread_stop.is_set():
             print(f"\n{tag} 再次收到 Ctrl-C，强制退出")
             sys.exit(1)
-        stop_flag[0] = True
+        thread_stop.set()
         print(f"\n{tag} 收到 Ctrl-C，将在当前批结束后优雅退出...")
 
     signal.signal(signal.SIGINT, _handler)
@@ -632,9 +634,9 @@ def _run_selfplay(variant_id: str) -> None:
         print(f"{tag} 🚀 自对弈子进程 × {len(procs)} 已启动 "
               f"(推理设备={config.INFER_DEVICE}, Python 推理, 独立 GIL/CUDA)")
 
-    workers: List[threading.Thread] = [TrainWorker(counting_q, stop_flag, variant)]
+    workers: List[threading.Thread] = [TrainWorker(variant, config, counting_q, thread_stop)]
     if use_archive:
-        workers.append(ArchiverWorker(archive_q, stop_flag, variant))
+        workers.append(ArchiverWorker(archive_q, thread_stop, variant))
 
     for w in workers:
         w.start()
@@ -644,7 +646,7 @@ def _run_selfplay(variant_id: str) -> None:
         monitor = SystemMonitor(
             interval=config.MONITOR_INTERVAL, show_per_core=config.MONITOR_PER_CORE,
             csv_path=config.MONITOR_CSV_PATH, log_to_tb=bool(config.TENSORBOARD_LOG_SYS and tb_ok),
-            stop_flag=stop_flag,
+            stop_event=thread_stop,
         )
         monitor.start()
         print(f"{tag} 📊 系统资源监控已启动（每 {config.MONITOR_INTERVAL:.0f}s 采样）")
@@ -656,28 +658,28 @@ def _run_selfplay(variant_id: str) -> None:
 
     start_t = time.time()
     try:
-        while not stop_flag[0]:
+        while not thread_stop.is_set():
             elapsed = time.time() - start_t
             if config.MAX_RUNTIME_SECONDS > 0 and elapsed >= config.MAX_RUNTIME_SECONDS:
                 print(f"\n{tag} 达到运行时限 {config.MAX_RUNTIME_SECONDS}s，优雅停止...")
-                stop_flag[0] = True
+                thread_stop.set()
                 stop_event.set()
                 break
             threads_alive = [w.name for w in workers if w.is_alive()]
             if len(threads_alive) < len(workers):
                 print(f"{tag} 有主进程线程退出: {threads_alive}")
-                stop_flag[0] = True
+                thread_stop.set()
                 stop_event.set()
                 break
             dead_procs = [p.name for p in procs if not p.is_alive()]
             if dead_procs:
                 print(f"{tag} 有自对弈子进程退出: {dead_procs}，停止整个闭环")
-                stop_flag[0] = True
+                thread_stop.set()
                 stop_event.set()
                 break
             time.sleep(2)
     except KeyboardInterrupt:
-        stop_flag[0] = True
+        thread_stop.set()
         stop_event.set()
 
     print(f"\n{tag} 正在优雅关闭各线程/子进程...")
@@ -698,7 +700,7 @@ def _run_selfplay(variant_id: str) -> None:
     if train_worker.is_alive():
         train_worker.join(timeout=30)
     if train_worker.is_alive():
-        stop_flag[0] = True
+        thread_stop.set()
         train_worker.join(timeout=10)
     train_worker.finalize()
     if use_archive:

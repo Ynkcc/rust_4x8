@@ -127,12 +127,11 @@ class SystemMonitor(threading.Thread):
 
     参数:
         interval:     采样间隔（秒），最小 1s
-        max_samples:  最大采样次数，0 表示无限（直到 stop_flag 置真）
+        max_samples:  最大采样次数，0 表示无限（直到 stop_event 置位）
         show_per_core: 额外显示每核 CPU 使用率
         csv_path:     采样数据 CSV 落盘路径（None 则不落盘）
         log_to_tb:    是否把采样写入 TensorBoard（sys/* 标量）
-        stop_flag:    共享停止标志（与训练进程同一 List[bool]），
-                      stop_flag[0] 置真后线程在下一分片（≤0.1s）退出
+        stop_event:   共享停止信号（threading.Event），set() 后线程在下一分片（≤0.1s）退出
     """
 
     def __init__(
@@ -142,7 +141,7 @@ class SystemMonitor(threading.Thread):
         show_per_core: bool = False,
         csv_path: Optional[str] = None,
         log_to_tb: bool = False,
-        stop_flag: Optional[List[bool]] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> None:
         super().__init__(name="SystemMonitor", daemon=True)
         self.interval = max(1.0, float(interval))
@@ -150,7 +149,7 @@ class SystemMonitor(threading.Thread):
         self.show_per_core = show_per_core
         self.csv_path = csv_path
         self.log_to_tb = log_to_tb
-        self.stop_flag = stop_flag if stop_flag is not None else [False]
+        self.stop_event = stop_event if stop_event is not None else threading.Event()
         self._proc = psutil.Process()
         self._gpu = GpuMonitor()
         self._csv_fp = None
@@ -273,7 +272,7 @@ class SystemMonitor(threading.Thread):
     def run(self) -> None:
         samples_done = 0
         try:
-            while not self.stop_flag[0]:
+            while not self.stop_event.is_set():
                 if self.max_samples and samples_done >= self.max_samples:
                     break
                 s = self.sample()
@@ -282,9 +281,9 @@ class SystemMonitor(threading.Thread):
                     self._log_to_tb(s, samples_done)
                 print(f"[Monitor] {time.strftime('%H:%M:%S')} | {self._format(s)}")
                 samples_done += 1
-                # 分片等待，快速响应 stop_flag
+                # 分片等待，快速响应 stop_event
                 deadline = time.time() + self.interval
-                while not self.stop_flag[0] and time.time() < deadline:
+                while not self.stop_event.is_set() and time.time() < deadline:
                     time.sleep(0.1)
         finally:
             self.stop()
@@ -315,24 +314,24 @@ def main() -> None:
                         help="显示每核 CPU 使用率")
     args = parser.parse_args()
 
-    stop_flag: List[bool] = [False]
+    stop_event = threading.Event()
     mon = SystemMonitor(
         interval=args.interval,
         max_samples=args.count,
         show_per_core=args.per_core,
         csv_path=args.csv,
-        stop_flag=stop_flag,
+        stop_event=stop_event,
     )
     mon.start()
     print(f"[Monitor] 开始采样（间隔 {args.interval:.0f}s"
           f"{', 共 ' + str(args.count) + ' 次' if args.count else ''}，"
           f"Ctrl-C 停止）...")
     try:
-        mon.join()  # 阻塞直到 stop_flag 置真或采样次数达到上限
+        mon.join()  # 阻塞直到 stop_event 置位或采样次数达到上限
     except KeyboardInterrupt:
         print("\n[Monitor] 收到 Ctrl-C，停止采样...")
     finally:
-        stop_flag[0] = True
+        stop_event.set()
         mon.join(timeout=2)
     print("[Monitor] 采样结束")
 

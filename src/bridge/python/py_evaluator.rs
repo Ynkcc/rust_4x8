@@ -6,13 +6,9 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyModule, PyTuple};
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::core::env::GameEnv;
 use crate::core::mcts::{Evaluator, EvaluatorOutput};
-
-/// 连续失败阈值：超过此值时 panic，避免用垃圾数据持续搜索
-const MAX_CONSECUTIVE_FAILURES: u32 = 10;
 
 /// 通用 Python 评估器：把 `Vec<G>` 编码为 numpy 批量特征后调用 Python 预测函数。
 ///
@@ -24,16 +20,14 @@ pub struct PyEvaluator<G: GameEnv> {
     predict_fn: Py<PyAny>,
     /// 缓存的 numpy 模块引用，避免每次 call_python 都重新 import
     numpy_module: std::sync::OnceLock<Py<PyModule>>,
-    /// 连续失败计数器（AtomicU32 允许在多线程下安全递增）
-    consecutive_failures: AtomicU32,
     /// 游戏环境类型标记
     _marker: PhantomData<G>,
 }
 
 // Safety: PyEvaluator 只持有 PyObject (=Py<PyAny>) 和 Py<PyModule>。
 // Py<T> 实现了 Send + Sync (只要 T: Send + Sync；PyAny/PyModule 就是 Send+Sync)。
-// OnceLock<Py<PyModule>> 和 AtomicU32 都是 Sync。
-// 访问 Python 侧对象时必须先通过 Python::with_gil 获取 GIL，因此没有数据竞争。
+// OnceLock<Py<PyModule>> 是 Sync。访问 Python 侧对象时必须先通过 Python::with_gil
+// 获取 GIL，因此没有数据竞争。
 unsafe impl<G: GameEnv> Send for PyEvaluator<G> {}
 unsafe impl<G: GameEnv> Sync for PyEvaluator<G> {}
 
@@ -42,7 +36,6 @@ impl<G: GameEnv> PyEvaluator<G> {
         Self {
             predict_fn,
             numpy_module: std::sync::OnceLock::new(),
-            consecutive_failures: AtomicU32::new(0),
             _marker: PhantomData,
         }
     }
@@ -271,11 +264,17 @@ impl<G: GameEnv> PyEvaluator<G> {
         shape: &[usize],
     ) -> PyResult<Py<PyAny>> {
         // f32 是无可变 padding 的 POD，按字节切片安全（rust-numpy 同样依赖此性质）。
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const u8,
-                data.len() * std::mem::size_of::<f32>(),
-            )
+        // 空 data 时 as_ptr() 返回悬空指针（NonNull::dangling），不能直接 from_raw_parts，
+        // 否则属于潜在 UB；空切片交给 PyByteArray 空字节处理。
+        let bytes = if data.is_empty() {
+            &[][..]
+        } else {
+            unsafe {
+                std::slice::from_raw_parts(
+                    data.as_ptr() as *const u8,
+                    data.len() * std::mem::size_of::<f32>(),
+                )
+            }
         };
         let bytearray = PyByteArray::new(py, bytes);
         let array = np
@@ -307,22 +306,6 @@ impl<G: GameEnv> PyEvaluator<G> {
         }
         policy
     }
-
-    /// 记录一次连续失败，超过阈值时 panic
-    fn record_failure(&self) {
-        let count = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
-        if count >= MAX_CONSECUTIVE_FAILURES {
-            panic!(
-                "PyEvaluator: Python predictor 连续失败 {} 次 (阈值 {})，终止以避免垃圾数据污染搜索",
-                count, MAX_CONSECUTIVE_FAILURES
-            );
-        }
-    }
-
-    /// 记录一次成功，重置连续失败计数
-    fn record_success(&self) {
-        self.consecutive_failures.store(0, Ordering::Relaxed);
-    }
 }
 
 impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
@@ -353,27 +336,18 @@ impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
         }
 
         match self.call_python(boards_flat, scalars_flat, batch_size) {
-            Ok((logits, values, health)) => {
-                self.record_success();
-                EvaluatorOutput {
-                    logits,
-                    values,
-                    health,
-                }
-            }
-            Err(e) => {
-                let fail_count = self.consecutive_failures.load(Ordering::Relaxed) + 1;
-                eprintln!(
-                    "Python predictor error (falling back to uniform) [连续失败 {}/{}]: {}",
-                    fail_count, MAX_CONSECUTIVE_FAILURES, e
-                );
-                self.record_failure();
-                EvaluatorOutput {
-                    logits: vec![vec![0.0; G::action_space_size()]; batch_size],
-                    values: vec![0.0; batch_size],
-                    health: None,
-                }
-            }
+            Ok((logits, values, health)) => EvaluatorOutput {
+                logits,
+                values,
+                health,
+            },
+            // 错误尽早暴露：Python 推理端一旦出错（网络结构/权重不匹配、PyTorch 维度
+            // 报错等），说明模型输出已损坏。若静默回退 Uniform 会让 MCTS 在假数据下
+            // 进行昂贵且无意义的搜索，违背"错误尽早暴露"原则。这里直接 panic。
+            Err(e) => panic!(
+                "PyEvaluator: Python predictor 调用失败，中止以避免在损坏模型输出下搜索: {}",
+                e
+            ),
         }
     }
 

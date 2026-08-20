@@ -28,6 +28,7 @@ import os
 import queue
 import signal
 import sys
+import threading
 import time
 from typing import List
 
@@ -124,10 +125,10 @@ def main() -> None:
     print(f"  保护性总时限       = {MAX_RUNTIME}s")
     print("=" * 64)
 
-    stop_flag: List[bool] = [False]
+    stop_event = threading.Event()
 
     def _handler(signum, frame):
-        stop_flag[0] = True
+        stop_event.set()
         print("\n[Main] 收到信号，将在当前批结束后优雅退出...")
 
     signal.signal(signal.SIGINT, _handler)
@@ -137,8 +138,8 @@ def main() -> None:
     sp_cfg = build_self_play_config(VARIANT)
 
     workers = [
-        SelfPlayWorker(predictor, sp_cfg, VARIANT, data_q, None, stop_flag, worker_id=0),
-        TrainWorker(data_q, stop_flag, VARIANT),
+        SelfPlayWorker(predictor, sp_cfg, VARIANT, data_q, None, stop_event, worker_id=0),
+        TrainWorker.from_legacy(data_q, stop_event, VARIANT),
     ]
     for w in workers:
         w.start()
@@ -149,11 +150,11 @@ def main() -> None:
     reached = False
 
     try:
-        while not stop_flag[0]:
+        while not stop_event.is_set():
             elapsed = time.time() - start_t
             if elapsed >= MAX_RUNTIME:
                 print(f"\n[Main] 达到保护性时限 {MAX_RUNTIME}s，停止（未达标）")
-                stop_flag[0] = True
+                stop_event.set()
                 break
             if not all(w.is_alive() for w in workers):
                 print("[Main] 有线程退出")
@@ -177,7 +178,7 @@ def main() -> None:
                 if stats["winrate"] > TARGET_WINRATE:
                     print(f"  ✅ 达标！胜率 {stats['winrate']:.2%} > {TARGET_WINRATE:.0%}")
                     reached = True
-                    stop_flag[0] = True
+                    stop_event.set()
                     break
                 if elapsed > 60 and round_num % 10 == 0:
                     tr = train_worker.stats()
@@ -185,7 +186,7 @@ def main() -> None:
                           f"avg_loss={tr['avg_loss']:.4f} 已运行 {elapsed / 60:.1f}min")
             time.sleep(3)
     except KeyboardInterrupt:
-        stop_flag[0] = True
+        stop_event.set()
 
     # 优雅关闭
     print("\n[Main] 正在优雅关闭各线程...")
@@ -194,7 +195,7 @@ def main() -> None:
         sp_worker.join(timeout=10)
     if train_worker.is_alive():
         train_worker.join(timeout=30)
-    stop_flag[0] = True
+    stop_event.set()
     if train_worker.is_alive():
         train_worker.join(timeout=10)
     train_worker.finalize()

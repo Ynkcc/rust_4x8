@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import queue
+import threading
 import time
 
 import numpy as np
@@ -73,12 +74,12 @@ def test_full_pipeline() -> None:
 
     data_q: "queue.Queue" = queue.Queue(maxsize=config.DATA_QUEUE_MAXSIZE)
     archive_q: "queue.Queue" = queue.Queue(maxsize=config.ARCHIVE_QUEUE_MAXSIZE)
-    stop_flag = [False]
+    stop_event = threading.Event()
 
     workers = [
-        SelfPlayWorker(predictor, sp_cfg, data_q, archive_q, stop_flag, worker_id=0),
-        TrainWorker(data_q, stop_flag),
-        ArchiverWorker(archive_q, stop_flag, mongo_uri=""),  # 强制降级 FileSaver
+        SelfPlayWorker(predictor, sp_cfg, data_q, archive_q, stop_event, worker_id=0),
+        TrainWorker.from_legacy(data_q, stop_event, "4x8"),
+        ArchiverWorker(archive_q, stop_event, mongo_uri=""),  # 强制降级 FileSaver
     ]
     for w in workers:
         w.start()
@@ -89,7 +90,7 @@ def test_full_pipeline() -> None:
         if train_worker_stats_ok(workers[1]):
             break
         time.sleep(0.5)
-    stop_flag[0] = True
+    stop_event.set()
 
     # join 各线程（验证无死锁）
     for w in workers:

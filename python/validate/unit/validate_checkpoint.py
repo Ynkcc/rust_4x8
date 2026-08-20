@@ -52,7 +52,7 @@ def save_ckpt(model, opt, sched):
     save_checkpoint(model, opt, sched, config.MODEL_PATH, config.STATE_DICT_PATH, torch.device(DEVICE), VARIANT)
 
 def load_ckpt(model, opt, sched):
-    return load_checkpoint(model, opt, sched, config.MODEL_PATH, config.STATE_DICT_PATH, torch.device(DEVICE), VARIANT)
+    return load_checkpoint(model, opt, sched, config.STATE_DICT_PATH, torch.device(DEVICE), VARIANT)
 
 
 def _rand_weights(rng: np.random.Generator):

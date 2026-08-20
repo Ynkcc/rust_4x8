@@ -232,46 +232,29 @@ def load_checkpoint(
     model,
     optimizer,
     scheduler,
-    model_path: str,
     state_dict_path: str,
     device: torch.device,
     variant: Variant,
 ) -> bool:
-    """从 .pth 恢复完整训练状态；失败回退 .pt 权重。返回是否恢复成功。"""
+    """从 .pth 恢复完整训练状态；无 checkpoint 时返回 False（全新模型）。
+
+    任何加载/维度校验/状态恢复失败都直接抛出，绝不静默降级为全新初始化：
+    静默重置 Optimizer/Scheduler 会掩盖文件损坏或维度变化，导致训练在不知不觉中
+    收敛震荡甚至崩溃。项目决策「不保留旧版本兼容」，故不做 .pt 权重回退。
+    """
     c = build_constants(variant)
-    state_loaded = False
-    if os.path.exists(state_dict_path):
-        try:
-            checkpoint = torch.load(state_dict_path, map_location=device)
-            _check_dimensions(checkpoint.get("model_config"), c)
-            model.load_state_dict(checkpoint["model_state_dict"])
-            if "optimizer_state_dict" in checkpoint:
-                try:
-                    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-                except Exception as e_opt:  # noqa: BLE001
-                    print(f"[checkpoint] ⚠️ Optimizer 状态加载失败 ({e_opt})，保持新初始化")
-            if "scheduler_state_dict" in checkpoint:
-                try:
-                    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                except Exception as e_sch:  # noqa: BLE001
-                    print(f"[checkpoint] ⚠️ Scheduler 状态加载失败 ({e_sch})，保持新初始化")
-            print(f"[checkpoint] ✅ 从 {state_dict_path} 恢复完整训练状态")
-            state_loaded = True
-        except Exception as exc:  # noqa: BLE001
-            print(f"[checkpoint] ⚠️ 完整 .pth 加载失败 ({exc})，尝试仅加载权重...")
-
-    if not state_loaded and os.path.exists(model_path):
-        try:
-            jit_model = torch.jit.load(model_path, map_location=device)
-            model.load_state_dict(jit_model.state_dict())
-            print(f"[checkpoint] ✅ 从 {model_path} 加载模型权重 (TorchScript 回退)")
-            state_loaded = True
-        except Exception as e2:  # noqa: BLE001
-            print(f"[checkpoint] ⚠️ 权重加载失败 ({e2})，使用全新模型")
-
-    if not state_loaded and not os.path.exists(model_path) and not os.path.exists(state_dict_path):
+    if not os.path.exists(state_dict_path):
         print("[checkpoint] 📝 初始化全新模型（无 checkpoint）")
-    return state_loaded
+        return False
+    checkpoint = torch.load(state_dict_path, map_location=device)
+    _check_dimensions(checkpoint.get("model_config"), c)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    if "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    print(f"[checkpoint] ✅ 从 {state_dict_path} 恢复完整训练状态")
+    return True
 
 
 def _check_dimensions(cfg: Optional[dict], c: Constants) -> None:

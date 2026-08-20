@@ -82,9 +82,11 @@ fn ray_cache() -> &'static Mutex<HashMap<u64, Arc<Vec<Vec<u64>>>>> {
     RAY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 加锁并容忍 poison（若持有锁的线程 panic，仍可继续使用缓存内容）。
+/// 加锁。锁中毒说明曾有线程在持有该锁时 panic，状态不可信，应尽早暴露而非静默继续。
 fn lock_cache() -> MutexGuard<'static, HashMap<u64, Arc<Vec<Vec<u64>>>>> {
-    ray_cache().lock().unwrap_or_else(|e| e.into_inner())
+    ray_cache()
+        .lock()
+        .expect("ray cache lock poisoned: 持有锁的线程发生 panic")
 }
 
 /// 射线攻击预计算表：`ray_attacks[dir][sq]` 表示从 sq 沿 dir 方向所有可达格。

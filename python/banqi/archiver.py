@@ -30,14 +30,14 @@ class ArchiverWorker(threading.Thread):
     def __init__(
         self,
         archive_q: "queue.Queue",
-        stop_flag: "List[bool]",
+        stop_event: threading.Event,
         variant: Variant,
         mongo_uri: Optional[str] = None,
         local_archive_dir: Optional[str] = None,
     ) -> None:
         super().__init__(name=f"ArchiverWorker-{variant.id}", daemon=True)
         self.archive_q = archive_q
-        self.stop_flag = stop_flag
+        self.stop_event = stop_event
         self.variant = variant
         self.cfg = make_config(variant.id)
         self.mongo_uri = mongo_uri if mongo_uri is not None else self.cfg.MONGO_URI
@@ -90,7 +90,7 @@ class ArchiverWorker(threading.Thread):
     def run(self) -> None:
         print(f"{self.tag} 🗄️  归档线程启动（Mongo={bool(self.mongo_uri)}, "
               f"batch={self.cfg.ARCHIVE_BATCH}）...")
-        while not self.stop_flag[0]:
+        while not self.stop_event.is_set():
             try:
                 item = self.archive_q.get(timeout=self.cfg.ARCHIVE_POLL_INTERVAL)
             except queue.Empty:

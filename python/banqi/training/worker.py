@@ -21,9 +21,10 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
 from banqi.checkpoint import export_torchscript, export_onnx, export_model_isolated
+from banqi.config import Config, make_config
 from banqi.constants import build_constants
 from banqi.tb_logger import add_scalar
-from banqi.variant import Variant
+from banqi.variant import Variant, get_variant
 
 try:
     import banqi_4x8
@@ -52,8 +53,8 @@ def _compute_lr_scale(global_step: int, cfg) -> float:
     """
     if global_step <= 0:
         return 1.0
-    decay_steps = max(int(getattr(cfg, "LR_DECAY_STEPS", 1000) or 1000), 1)
-    min_lr = float(getattr(cfg, "MIN_LR", 1e-6) or 1e-6)
+    decay_steps = max(int(cfg.LR_DECAY_STEPS or 1000), 1)
+    min_lr = float(cfg.MIN_LR or 1e-6)
     frac = min(global_step, decay_steps) / decay_steps
     # 目标 = MIN_LR + (1 - MIN_LR)*frac，最小不低于 MIN_LR
     return max(min_lr, 1.0 - (1.0 - min_lr) * (1.0 - frac))
@@ -77,9 +78,9 @@ def _make_cosine_clamp_scheduler(optimizer, cfg):
     前 LR_DECAY_STEPS 步按半周期余弦从 LEARNING_RATE 平滑降到 MIN_LR，
     之后钳位在 MIN_LR 保持，兼顾余弦退火的平滑收敛与长训练稳定性。
     """
-    t_max = max(int(getattr(cfg, "LR_DECAY_STEPS", 1000) or 1000), 1)
-    eta_min = float(getattr(cfg, "MIN_LR", 1e-6) or 1e-6)
-    eta_max = float(getattr(cfg, "LEARNING_RATE", 1e-4) or 1e-4)
+    t_max = max(int(cfg.LR_DECAY_STEPS or 1000), 1)
+    eta_min = float(cfg.MIN_LR or 1e-6)
+    eta_max = float(cfg.LEARNING_RATE or 1e-4)
     # LambdaLR 的 lambda 返回的是相对 initial_lr 的比例因子
     min_ratio = eta_min / eta_max if eta_max > 0 else 1e-4
 
@@ -94,29 +95,21 @@ def _make_cosine_clamp_scheduler(optimizer, cfg):
 
 
 class TrainWorker(threading.Thread):
-    def __init__(self, arg1, arg2, arg3=None, arg4=None,
-                 ckpt_dir: Optional[str] = None, device=None, run_dir: Optional[str] = None):
-        if isinstance(arg1, Variant):
-            variant = arg1
-            cfg = arg2
-            data_queue = arg3
-            stop_event = arg4
-        elif isinstance(arg3, Variant):
-            # 兼容 (data_q, stop_flag, variant) 参数顺序
-            data_queue = arg1
-            stop_event = arg2
-            variant = arg3
-            from banqi.config import make_config
-            cfg = arg4 if arg4 is not None else make_config(variant.id)
-        else:
-            # 兼容 (data_q, stop_flag, variant_id_str)
-            data_queue = arg1
-            stop_event = arg2
-            from banqi.variant import get_variant
-            from banqi.config import make_config
-            variant = get_variant(str(arg3))
-            cfg = arg4 if arg4 is not None else make_config(variant.id)
+    def __init__(
+        self,
+        variant: Variant,
+        cfg: Config,
+        data_queue,
+        stop_event,
+        ckpt_dir: Optional[str] = None,
+        device=None,
+        run_dir: Optional[str] = None,
+    ):
+        """标准签名：(variant, cfg, data_queue, stop_event, ...)。
 
+        cfg 必须是 make_config 构造的完整 Config（不设源码兜底）。旧式
+        (data_q, stop_event, variant) 调用顺序请使用 from_legacy 类方法。
+        """
         super().__init__(name=f"TrainWorker-{variant.id}", daemon=True)
         self.variant = variant
         self.cfg = cfg
@@ -125,9 +118,9 @@ class TrainWorker(threading.Thread):
         self.stop_event = stop_event
         self.ckpt_dir = ckpt_dir or variant.checkpoints_dir
         self.run_dir = run_dir
-        self.device = device or _resolve_device(getattr(cfg, "TRAIN_DEVICE", "auto"))
+        self.device = device or _resolve_device(cfg.TRAIN_DEVICE)
         # 血量差异价值头开关：开启时使用独立 _health 模型文件，与标准模型物理隔离。
-        self.health_enabled = bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False))
+        self.health_enabled = bool(cfg.HEALTH_VALUE_HEAD_ENABLED)
         os.makedirs(self.ckpt_dir, exist_ok=True)
 
         # 监控：每轮训练时长、最近 ckpt 路径、最近一次 epoch loss 分解
@@ -140,9 +133,7 @@ class TrainWorker(threading.Thread):
         }
 
         # S3 默认 CPU（避免与主训练 GPU 争抢）；GPU 推理时显式 device
-        self.desired_sp_device = (
-            "cuda" if getattr(cfg, "SELF_PLAY_DEVICE", "cpu").startswith("cuda") else "cpu"
-        )
+        self.desired_sp_device = "cuda" if cfg.SELF_PLAY_DEVICE.startswith("cuda") else "cpu"
 
         self._last_ckpt_lock = threading.Lock()
         self._stats_lock = threading.Lock()
@@ -182,9 +173,9 @@ class TrainWorker(threading.Thread):
 
             def get_config():
                 return {
-                    "mcts_sims": getattr(self.cfg, "MCTS_SIMS", 128),
+                    "mcts_sims": self.cfg.MCTS_SIMS,
                     "temperature": 1.0,
-                    "playout_cap_random": getattr(self.cfg, "PLAYOUT_CAP_RANDOM_ENABLED", False),
+                    "playout_cap_random": self.cfg.PLAYOUT_CAP_RANDOM_ENABLED,
                 }
 
             self.grpc_server_thread = GrpcServerThread(
@@ -200,12 +191,22 @@ class TrainWorker(threading.Thread):
             )
             self.grpc_server_thread.start()
 
+    @classmethod
+    def from_legacy(cls, data_queue, stop_event, variant_or_id):
+        """旧式调用顺序兼容入口：(data_queue, stop_event, variant)。
+
+        variant_or_id 可以是 Variant 对象或 variant_id 字符串。内部用标准签名
+        构造，避免在 __init__ 内做类型分派破坏静态类型检查。
+        """
+        v = variant_or_id if isinstance(variant_or_id, Variant) else get_variant(str(variant_or_id))
+        return cls(v, make_config(v.id), data_queue, stop_event)
+
     def _init_model_and_checkpoint(self):
         cfg = self.cfg
         from banqi.nn_model import BanqiNet
 
-        ema_enabled = getattr(cfg, "EMA_ENABLED", True)
-        ema_decay = float(getattr(cfg, "EMA_DECAY", 0.999))
+        ema_enabled = cfg.EMA_ENABLED
+        ema_decay = float(cfg.EMA_DECAY)
         self.ema_enabled = ema_enabled
         self.ema_decay = ema_decay
         self.ema_model = None
@@ -272,9 +273,9 @@ class TrainWorker(threading.Thread):
         # ---- value 目标退火（VALUE_TARGET_MODE='anneal' 时）----
         # 退火权重 w：前 N 轮用 mcts 平滑评估，后段切到 game_result 真值。
         # 每轮训练前按 (round_idx / anneal_rounds) 更新 buffer.value_result_weight。
-        self.anneal_rounds = getattr(cfg, "VALUE_TARGET_ANNEAL_ROUNDS", 0)
+        self.anneal_rounds = cfg.VALUE_TARGET_ANNEAL_ROUNDS
 
-        init_ckpt = getattr(cfg, "INIT_FROM_CHECKPOINT", None)
+        init_ckpt = cfg.INIT_FROM_CHECKPOINT
         if init_ckpt:
             self._load_pretrained(init_ckpt)
 
@@ -294,10 +295,7 @@ class TrainWorker(threading.Thread):
             own.update(filtered)
             self.model.load_state_dict(own)
         if "optimizer_state" in ckpt:
-            try:
-                self.optimizer.load_state_dict(ckpt["optimizer_state"])
-            except Exception:
-                pass
+            self.optimizer.load_state_dict(ckpt["optimizer_state"])
         self.global_step = 0
         self.metrics["global_step"] = 0
 
@@ -308,14 +306,14 @@ class TrainWorker(threading.Thread):
     def _pt_path(self) -> str:
         """TorchScript 模型导出路径（供自对弈推理）。"""
         if self.health_enabled:
-            return (getattr(self.cfg, "HEALTH_MODEL_PATH", "") or
+            return (self.cfg.HEALTH_MODEL_PATH or
                     os.path.join(self.ckpt_dir, "last_health.pt"))
         return os.path.join(self.ckpt_dir, "last.pt")
 
     def _onnx_path(self) -> str:
         """ONNX 模型导出路径（供 run_native_match 免 GIL 推理）。"""
         if self.health_enabled:
-            return (getattr(self.cfg, "HEALTH_ONNX_PATH", "") or
+            return (self.cfg.HEALTH_ONNX_PATH or
                     os.path.join(self.ckpt_dir, "last_health.onnx"))
         return os.path.join(self.ckpt_dir, "last.onnx")
 
@@ -362,8 +360,8 @@ class TrainWorker(threading.Thread):
         round_idx: int = 0,
         force: bool = False,
     ) -> None:
-        save_every = max(int(getattr(self.cfg, "CKPT_SAVE_EVERY", 1)), 1)
-        export_every = max(int(getattr(self.cfg, "CKPT_EXPORT_EVERY", 10)), 1)
+        save_every = max(int(self.cfg.CKPT_SAVE_EVERY), 1)
+        export_every = max(int(self.cfg.CKPT_EXPORT_EVERY), 1)
 
         pt_path = self._pt_path()
         onnx_path = self._onnx_path()
@@ -415,7 +413,7 @@ class TrainWorker(threading.Thread):
         """无归档时，从本会话自对弈原始样本池中按终局结果分层构建固定验证集。"""
         if self._fixed_eval is not None:
             return
-        n_fixed = getattr(self.cfg, "VALUE_DRIFT_NUM_POSITIONS", 128)
+        n_fixed = self.cfg.VALUE_DRIFT_NUM_POSITIONS
         if n_fixed <= 0:
             return
         self._raw_sample_pool.extend(samples)
@@ -475,9 +473,9 @@ class TrainWorker(threading.Thread):
             生成增强副本；DATA_AUGMENT_KEEP_ORIGINAL=true 时保留原始局。
         """
         cfg = self.cfg
-        if not getattr(cfg, "DATA_AUGMENT_ENABLED", False):
+        if not cfg.DATA_AUGMENT_ENABLED:
             return [episode_dict]
-        transforms = getattr(cfg, "DATA_AUGMENT_TRANSFORMS", "") or ""
+        transforms = cfg.DATA_AUGMENT_TRANSFORMS or ""
         if transforms:
             transform_list = [
                 t.strip() for t in transforms.split(",") if t.strip()
@@ -489,7 +487,7 @@ class TrainWorker(threading.Thread):
         transform_list = [t for t in transform_list if t in valid]
         if not transform_list:
             return [episode_dict]
-        keep = getattr(cfg, "DATA_AUGMENT_KEEP_ORIGINAL", True)
+        keep = cfg.DATA_AUGMENT_KEEP_ORIGINAL
         # 每局随机抽 1 个变换（训练侧增强多样性），并保留原始局
         t = transform_list[random.randrange(len(transform_list))]
         out = [episode_dict] if keep else []
@@ -515,7 +513,7 @@ class TrainWorker(threading.Thread):
         # 若每局立即训练，max_batches 会按单局样本量被压到极小，训练碎片化且
         # 反复抽到旧数据。这里累积到足够新样本量（buffer 容量的 1/4）才训练一次，
         # 让训练量充足且聚焦新数据（selfplay 与 rule_selfplay 统一该逻辑）。
-        capacity_base = getattr(cfg, "MAX_SAMPLE_BUFFER_SIZE", 50000)
+        capacity_base = cfg.MAX_SAMPLE_BUFFER_SIZE
         batch_train_min_samples = max(
             cfg.TRAIN_BATCH * cfg.TRAIN_EPOCHS_PER_ROUND, capacity_base // 4
         )
@@ -543,7 +541,7 @@ class TrainWorker(threading.Thread):
             round_idx = episode_dict.get("round_idx", last_processed_round)
             pending_round = max(pending_round, round_idx)
 
-            min_samples = getattr(cfg, "MIN_SAMPLES_TO_START", getattr(cfg, "TRAIN_MIN_SAMPLES", 100))
+            min_samples = cfg.MIN_SAMPLES_TO_START
             if len(self.buffer) < min_samples:
                 print(f"[TR-{self.variant.id}] 等待足够样本进行训练: "
                       f"{len(self.buffer)}/{min_samples}")
@@ -580,8 +578,8 @@ class TrainWorker(threading.Thread):
                 ema_model=self.ema_model if self.ema_enabled else None,
                 ema_decay=self.ema_decay,
                 health_enabled=self.health_enabled,
-                health_loss_weight=getattr(cfg, "HEALTH_LOSS_WEIGHT", 0.0),
-                health_gauss_sigma=getattr(cfg, "HEALTH_GAUSS_SIGMA", 1.5),
+                health_loss_weight=cfg.HEALTH_LOSS_WEIGHT,
+                health_gauss_sigma=cfg.HEALTH_GAUSS_SIGMA,
             )
             self.model.eval()
 
@@ -643,7 +641,7 @@ class TrainWorker(threading.Thread):
                 eval_policy_accuracy(self.model, self.device, self._fixed_eval, step, tag, round_idx)
 
                 # 周期性对战评估
-                eval_match_rounds = getattr(cfg, "EVAL_MATCH_ROUNDS", 10)
+                eval_match_rounds = cfg.EVAL_MATCH_ROUNDS
                 if eval_match_rounds > 0 and (round_idx > 0) and (round_idx % eval_match_rounds == 0):
                     eval_match(
                         self.model, self.device, self.variant, cfg,

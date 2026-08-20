@@ -71,7 +71,7 @@ class SelfPlayWorker(threading.Thread):
         variant: Variant,
         data_q: "queue.Queue",
         archive_q: Optional["queue.Queue"],
-        stop_flag: "List[bool]",
+        stop_event: threading.Event,
         worker_id: int = 0,
     ) -> None:
         super().__init__(name=f"SelfPlayWorker-{variant.id}", daemon=True)
@@ -82,7 +82,7 @@ class SelfPlayWorker(threading.Thread):
         self.tag = f"[SP-{variant.id}]"
         self.data_q = data_q
         self.archive_q = archive_q
-        self.stop_flag = stop_flag
+        self.stop_event = stop_event
         self.worker_id = worker_id
         self.variant_id = _variant_id(variant)
 
@@ -98,7 +98,7 @@ class SelfPlayWorker(threading.Thread):
 
     def _put(self, q: "queue.Queue", item: Dict) -> None:
         """压入队列；若队列满则等待（优雅退出时不等待）。"""
-        while not self.stop_flag[0]:
+        while not self.stop_event.is_set():
             try:
                 q.put(item, timeout=0.5)
                 return
@@ -108,7 +108,7 @@ class SelfPlayWorker(threading.Thread):
     def run(self) -> None:
         """主循环，统一走 `run_python_match`（Python 推理单线程）。"""
         cfg = self.cfg
-        while not self.stop_flag[0]:
+        while not self.stop_event.is_set():
             t0 = time.time()
             episodes = banqi_4x8.run_python_match(
                 predict_fn=self.predictor,
@@ -121,12 +121,12 @@ class SelfPlayWorker(threading.Thread):
             batch_duration = time.time() - t0
 
             if not episodes:
-                if self.stop_flag[0]:
+                if self.stop_event.is_set():
                     break
                 continue
 
             for ep in episodes:
-                if self.stop_flag[0]:
+                if self.stop_event.is_set():
                     break
                 with self._iter_lock:
                     ep_dict = _episode_to_dict(ep, self.iteration, self.worker_id)

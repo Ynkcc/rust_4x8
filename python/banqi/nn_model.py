@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 import torch
@@ -141,17 +142,16 @@ class BanqiNet(nn.Module):
 
 
 def load_model_weights(model: nn.Module, path: str, device: torch.device) -> None:
-    """从 path 加载权重，兼容 TorchScript(.pt) / state_dict(.pth) / checkpoint dict。"""
-    try:
+    """从 path 加载权重，兼容 TorchScript(.pt) / state_dict(.pth) / checkpoint dict。
+
+    按文件扩展名判定加载格式；任何加载/装载失败都直接抛出，不做静默降级
+    （静默吞掉异常会掩盖文件损坏、张量 Shape 变化等真正错误）。
+    """
+    if os.path.splitext(path)[1].lower() == ".pt":
         jit_model = torch.jit.load(path, map_location=device)
         model.load_state_dict(jit_model.state_dict())
         return
-    except Exception:
-        pass
-    try:
-        state = torch.load(path, map_location=device, weights_only=True)
-    except Exception:
-        state = torch.load(path, map_location=device)
+    state = torch.load(path, map_location=device, weights_only=True)
     if hasattr(state, "state_dict"):
         model.load_state_dict(state.state_dict())
     elif isinstance(state, dict) and "model_state_dict" in state:

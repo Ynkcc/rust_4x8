@@ -142,9 +142,9 @@ def test_archiver_worker_no_mongo() -> None:
     import threading
 
     archive_q = queue.Queue()
-    stop_flag = [False]
+    stop_event = threading.Event()
 
-    worker = archiver_mod.ArchiverWorker(archive_q, stop_flag, VARIANT, mongo_uri="")
+    worker = archiver_mod.ArchiverWorker(archive_q, stop_event, VARIANT, mongo_uri="")
     rep.check(isinstance(worker.saver, FileSaver), "fallback to FileSaver")
 
     ep = make_episode(num_steps=3, winner=1)
@@ -154,11 +154,11 @@ def test_archiver_worker_no_mongo() -> None:
     worker._flush()
     rep.check(worker.archived_games == 1, "archived_games incremented")
 
-    # 线程运行并退出（用 stop_flag + 队列清空）
+    # 线程运行并退出（用 stop_event + 队列清空）
     t = threading.Thread(target=worker.run, daemon=True)
     t.start()
     # 等待 worker 处理完当前队列后，置 stop
-    stop_flag[0] = True
+    stop_event.set()
     # 给 worker 一个 flush 机会
     archive_q.put(ep)
     t.join(timeout=5)

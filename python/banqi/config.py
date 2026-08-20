@@ -37,6 +37,7 @@ config.default.yaml 仅是生成 config.local.yaml 的模板（--write-template�
 from __future__ import annotations
 
 import os
+import typing
 import warnings
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -54,6 +55,7 @@ _PATH_FIELDS = (
     "MODEL_PATH",
     "STATE_DICT_PATH",
     "ONNX_PATH",
+    "INIT_FROM_CHECKPOINT",
     "HEALTH_MODEL_PATH",
     "HEALTH_STATE_DICT_PATH",
     "HEALTH_ONNX_PATH",
@@ -92,90 +94,22 @@ def _cast_str_or_none(v: str) -> Optional[str]:
     return v if v else None
 
 
-# 字段 -> 类型转换（仅环境变量字符串需要；未列出的按 str 处理）
-_CASTS: Dict[str, Callable[[str], Any]] = {
-    "PREDICT_BATCH": _cast_int,
-    "MCTS_SIMS": _cast_int,
-    "MAX_CONSIDERED_ACTIONS": _cast_int,
-    "GAMES_PER_ITER": _cast_int,
-    "NUM_WORKERS": _cast_int,
-    "GAMES_PER_WORKER": _cast_int,
-    "SELF_PLAY_PROCESSES": _cast_int,
-    "BATCH_CONCURRENCY": _cast_int,
-    "TRAIN_BATCH": _cast_int,
-    "LEARNING_RATE": _cast_float,
-    "MIN_LR": _cast_float,
-    "LR_DECAY_STEPS": _cast_int,
-    "TRAIN_EPOCHS_PER_ROUND": _cast_int,
-    "WEIGHT_DECAY": _cast_float,
-    "MAX_SAMPLE_BUFFER_SIZE": _cast_int,
-    "MIN_SAMPLES_TO_START": _cast_int,
-    "QUEUE_FETCH_BATCH": _cast_int,
-    "DATA_AUGMENT_ENABLED": _cast_bool,
-    "DATA_AUGMENT_KEEP_ORIGINAL": _cast_bool,
-    "DATA_AUGMENT_TRANSFORMS": _cast_str,
-    "INFER_DEVICE": _cast_str,
-    "TRAIN_DEVICE": _cast_str,
-    "INFER_CPU_AUX_WORKERS": _cast_int,
-    "INFER_CPU_FRACTION": _cast_float,
-    "INFER_MIN_SPLIT_BATCH": _cast_int,
-    "DATA_QUEUE_MAXSIZE": _cast_int,
-    "ARCHIVE_QUEUE_MAXSIZE": _cast_int,
-    "CHECKPOINT_EVERY_N_ROUNDS": _cast_int,
-    "CKPT_SAVE_EVERY": _cast_int,
-    "CKPT_EXPORT_EVERY": _cast_int,
-
-    "MONITOR_ENABLED": _cast_bool,
-    "MONITOR_INTERVAL": _cast_float,
-    "MONITOR_PER_CORE": _cast_bool,
-    "MONITOR_CSV_PATH": _cast_str_or_none,
-    "TENSORBOARD_ENABLED": _cast_bool,
-    "TENSORBOARD_LOG_DIR": _cast_str,
-    "TENSORBOARD_LOG_SYS": _cast_bool,
-    "ARCHIVE_BATCH": _cast_int,
-    "ARCHIVE_POLL_INTERVAL": _cast_float,
-    "MAX_RUNTIME_SECONDS": _cast_int,
-    "ARCHIVE_ENABLED": _cast_bool,
-    "ARCHIVE_PREFILL_GAMES": _cast_int,
-    "ARCHIVE_PREFILL_DIR": _cast_str,
-    "VALUE_TARGET_MODE": _cast_str,
-    "VALUE_ANNEAL_START": _cast_float,
-    "VALUE_ANNEAL_INCREMENT": _cast_float,
-    "VALUE_ANNEAL_STEP_ROUNDS": _cast_int,
-    "VALUE_DRIFT_EVAL_ROUNDS": _cast_int,
-    "VALUE_DRIFT_NUM_POSITIONS": _cast_int,
-    "HEALTH_VALUE_HEAD_ENABLED": _cast_bool,
-    "HEALTH_LOSS_WEIGHT": _cast_float,
-    "HEALTH_GAUSS_SIGMA": _cast_float,
-    "HEALTH_UTILITY_WEIGHT": _cast_float,
-    "HEALTH_UTILITY_CONFIDENCE_EXP": _cast_float,
-    "EVAL_MATCH_ROUNDS": _cast_int,
-    "EVAL_MATCH_GAMES": _cast_int,
-    "EVAL_MATCH_OPPONENTS": _cast_str,
-    "EVAL_MATCH_VS_PREV": _cast_bool,
-    "TRAIN_MODE": _cast_str,
-    "ARCHIVE_TRAIN_DIR": _cast_str,
-    "ARCHIVE_TRAIN_GAMES": _cast_int,
-    "ARCHIVE_TRAIN_ROUNDS": _cast_int,
-    "RULE_SELFPLAY_TYPE": _cast_str,
-    "RULE_SELFPLAY_DEPTH": _cast_int,
-    "RULE_SELFPLAY_SIMS": _cast_int,
-    "RULE_SELFPLAY_GAMES": _cast_int,
-    "RULE_SELFPLAY_ROUNDS": _cast_int,
-    "RULE_SELFPLAY_CONCURRENCY": _cast_int,
-    "RULE_SELFPLAY_TEMPERATURE": _cast_float,
-    "RULE_SELFPLAY_BACKEND": _cast_str,
-    # ---- 模型后端（TorchScript / ONNX）----
-    "MODEL_BACKEND": _cast_str,
-    "ONNX_PROVIDERS": _cast_str,
-
-    # ---- 权重指数滑动平均 (EMA) & 算力分配随机化 ----
-    "EMA_ENABLED": _cast_bool,
-    "EMA_DECAY": _cast_float,
-    "PLAYOUT_CAP_RANDOM_ENABLED": _cast_bool,
-    "FAST_MCTS_SIMS": _cast_int,
-    "FULL_SEARCH_PROB": _cast_float,
-}
+# 字段 -> 类型转换：由 dataclass 字段类型注解自动推导（免维护手动映射表）。
+# 新增字段无需再修改这里，类型注解即契约；缺失环境变量时按字段类型兜底。
+def _cast_for_field(field_type: Any) -> Callable[[str], Any]:
+    """由字段类型注解推导环境变量字符串的转换函数。"""
+    origin = typing.get_origin(field_type)
+    args = typing.get_args(field_type)
+    # Optional[T]：环境变量为空串时转 None
+    if origin is typing.Union and type(None) in args:
+        return _cast_str_or_none
+    if field_type is bool:
+        return _cast_bool
+    if field_type is int:
+        return _cast_int
+    if field_type is float:
+        return _cast_float
+    return _cast_str
 
 
 # --------------------------------------------------------------------------- #
@@ -304,10 +238,10 @@ def _get_config_data() -> Dict[str, Dict[str, Any]]:
     return cleaned
 
 
-def _resolve_env(name: str, default: Any) -> Any:
-    """统一：直接以字段名读取环境变量（无变体前缀、无旧别名）。"""
+def _resolve_env(name: str, default: Any, field_type: Any) -> Any:
+    """统一：直接以字段名读取环境变量（无变体前缀、无旧别名），按字段类型注解转换。"""
     if name in os.environ:
-        return _CASTS.get(name, _cast_str)(os.environ[name])
+        return _cast_for_field(field_type)(os.environ[name])
     return default
 
 
@@ -343,6 +277,7 @@ class Config:
     FULL_SEARCH_PROB: float       # Full Search 出现概率 (如 0.25)
     MAX_SAMPLE_BUFFER_SIZE: int
     MIN_SAMPLES_TO_START: int
+    RECENT_SAMPLE_ENABLED: bool      # 批量聚焦训练时启用「新近优先」采样
     QUEUE_FETCH_BATCH: int
     DATA_AUGMENT_ENABLED: bool
     DATA_AUGMENT_KEEP_ORIGINAL: bool
@@ -350,6 +285,7 @@ class Config:
     OUTPUT_DIR: str
     MODEL_PATH: str
     STATE_DICT_PATH: str
+    INIT_FROM_CHECKPOINT: Optional[str]  # 从指定 checkpoint 导入预训练权重（空=不导入）
     # ---- 模型后端切换 ----
     # MODEL_BACKEND: "torchscript"（默认，.pt TorchScript）| "onnx"（.onnx，ONNX Runtime）。
     #   - "onnx" 时，自对弈优先走 Rust 绑定 RustOnnxCollector（推理不经过 GIL）；
@@ -364,6 +300,7 @@ class Config:
     HEALTH_STATE_DICT_PATH: str
     HEALTH_ONNX_PATH: str
     TRAIN_DEVICE: str
+    SELF_PLAY_DEVICE: str            # 自对弈推理设备（cpu | cuda），默认 cpu
     INFER_CPU_AUX_WORKERS: int
     INFER_CPU_FRACTION: float
     INFER_MIN_SPLIT_BATCH: int
@@ -389,6 +326,7 @@ class Config:
     ARCHIVE_PREFILL_GAMES: int
     ARCHIVE_PREFILL_DIR: str
     VALUE_TARGET_MODE: str
+    VALUE_TARGET_ANNEAL_ROUNDS: int  # value 目标退火总轮数（0=关闭）
     VALUE_ANNEAL_START: float
     VALUE_ANNEAL_INCREMENT: float
     VALUE_ANNEAL_STEP_ROUNDS: int
@@ -470,6 +408,7 @@ def make_config(variant_id: str) -> Config:
             )
         c = object.__new__(Config)
         c.variant_id = variant_id
+        field_types = typing.get_type_hints(Config)
         for name in _FIELD_NAMES:
             value = fields[name]
             # 路径字段：相对 python/ 目录解析（绝对路径直接使用）
@@ -480,7 +419,7 @@ def make_config(variant_id: str) -> Config:
                 and not os.path.isabs(value)
             ):
                 value = os.path.join(_PY_DIR, value)
-            setattr(c, name, _resolve_env(name, value))
+            setattr(c, name, _resolve_env(name, value, field_types[name]))
         _config_cache[variant_id] = c
     return _config_cache[variant_id]
 

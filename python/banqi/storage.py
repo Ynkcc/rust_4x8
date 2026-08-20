@@ -219,9 +219,9 @@ class MongoSaver:
     def __init__(self, uri: str, db_name: str = DEFAULT_DB_NAME,
                  collection: str = DEFAULT_COLLECTION) -> None:
         import pymongo  # 延迟导入，缺失时上层捕获降级
-        from datetime import datetime
+        from datetime import datetime, timezone
 
-        self._datetime = datetime
+        self._now_utc = lambda: datetime.now(timezone.utc)
         self.client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=5000)
         self.collection = self.client[db_name][collection]
         # 主动 ping 一次，验证连接
@@ -255,7 +255,7 @@ class MongoSaver:
                 "game_length": int(ep["game_length"]),
                 "winner": ep["winner"],
                 "samples": samples,
-                "timestamp": self._datetime.utcnow(),
+                "timestamp": self._now_utc(),
             })
         if documents:
             self.collection.insert_many(documents)

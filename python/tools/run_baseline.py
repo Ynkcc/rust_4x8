@@ -31,6 +31,7 @@ import json
 import os
 import queue
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Dict, List
@@ -228,7 +229,7 @@ def main() -> None:
     print(f"  停止条件          = ≥{MIN_ROUNDS} 轮 或 {MAX_SECONDS:.0f} 秒")
     print("=" * 56)
 
-    stop_flag: List[bool] = [False]
+    stop_event = threading.Event()
 
     # ---- 队列 ----
     data_q: "queue.Queue" = queue.Queue(maxsize=config.DATA_QUEUE_MAXSIZE)
@@ -241,9 +242,9 @@ def main() -> None:
 
     # ---- 三线程（归档强制本地 JSONL，不依赖 Mongo） ----
     workers = [
-        SelfPlayWorker(predictor, sp_cfg, data_q, archive_q, stop_flag, worker_id=0),
-        TrainWorker(data_q, stop_flag),
-        ArchiverWorker(archive_q, stop_flag, mongo_uri=""),
+        SelfPlayWorker(predictor, sp_cfg, data_q, archive_q, stop_event, worker_id=0),
+        TrainWorker.from_legacy(data_q, stop_event, "4x8"),
+        ArchiverWorker(archive_q, stop_event, mongo_uri=""),
     ]
     for w in workers:
         w.start()
@@ -257,7 +258,7 @@ def main() -> None:
 
     # ---- 主循环：轮询停止条件 ----
     try:
-        while not stop_flag[0]:
+        while not stop_event.is_set():
             if _is_stop_reached(train_worker, start_ts):
                 break
             # 监控线程是否意外退出
@@ -268,7 +269,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[Baseline] 收到 Ctrl-C，优雅退出...")
 
-    stop_flag[0] = True
+    stop_event.set()
 
     # ---- 优雅关闭（先停生产者 → 训练 finalize → 归档排空） ----
     print("\n[Baseline] 正在优雅关闭各线程...")

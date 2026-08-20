@@ -29,7 +29,7 @@ import multiprocessing
 import queue
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 try:
     import banqi_4x8
@@ -120,10 +120,6 @@ def generate_teacher_batch(
     return list(episodes)
 
 
-# 停止信号统一抽象：线程模式传 `lambda: stop_flag[0]`，进程模式传 `stop_event.is_set`
-_StoppedFn = Callable[[], bool]
-
-
 class RuleTeacherWorker(threading.Thread):
     """Rust 教师自对弈生产者线程（`TRAIN_MODE="rule_selfplay"` + `RULE_SELFPLAY_BACKEND="thread"`）。
 
@@ -135,7 +131,7 @@ class RuleTeacherWorker(threading.Thread):
         self,
         variant: Variant,
         data_q: "queue.Queue",
-        stopped: _StoppedFn,
+        stop_event: threading.Event,
         worker_id: int = 0,
     ) -> None:
         super().__init__(
@@ -145,17 +141,17 @@ class RuleTeacherWorker(threading.Thread):
         self.cfg = make_config(variant.id)
         self.tag = f"[RuleT-{variant.id}-{worker_id}]"
         self.data_q = data_q
-        self.stopped = stopped
+        self.stop_event = stop_event
         self.worker_id = worker_id
         self.total_games = 0
         self.round_counter = 0
 
     def _put(self, item: Dict) -> None:
-        while not self.stopped():
+        while not self.stop_event.is_set():
             try:
                 self.data_q.put(item, timeout=0.5)
                 return
-            except Exception:  # queue.Full
+            except queue.Full:  # 队列满则重试；非 Full 异常直接抛出暴露
                 continue
 
     def run(self) -> None:
@@ -172,7 +168,7 @@ class RuleTeacherWorker(threading.Thread):
               f"depth={depth} sims={sims} temp={temperature} "
               f"inner_concurrency={concurrency} games/batch={games_per_batch} "
               f"sub_batch={sub_batch} total_rounds={total_rounds}（不依赖神经网络）")
-        while not self.stopped():
+        while not self.stop_event.is_set():
             if total_rounds > 0 and self.round_counter >= total_rounds:
                 print(f"{self.tag} 纯规则自对弈完成，共生成 {self.round_counter} 轮（累计 {self.total_games} 局）")
                 break
@@ -180,7 +176,7 @@ class RuleTeacherWorker(threading.Thread):
             produced = 0
             # 子批化：把本轮 games_per_batch 局拆成多个小子批，每个子批生成完
             # 立即入队，让 TrainWorker 边收数据边训练，避免整批生成期间队列长期为空。
-            while produced < games_per_batch and not self.stopped():
+            while produced < games_per_batch and not self.stop_event.is_set():
                 n = min(sub_batch, games_per_batch - produced)
                 sub_gen = 0
                 try:
@@ -194,7 +190,7 @@ class RuleTeacherWorker(threading.Thread):
                     time.sleep(0.5)
                     continue
                 for ep in eps:
-                    if self.stopped():
+                    if self.stop_event.is_set():
                         break
                     d = _episode_to_dict(ep, self.round_counter, self.worker_id)
                     if not d.get("num_samples", 0):

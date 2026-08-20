@@ -34,6 +34,7 @@ common:
   device:
     INFER_DEVICE: ""              # 推理设备（cpu | cuda:0 | auto）
     TRAIN_DEVICE: ""              # 训练设备
+    SELF_PLAY_DEVICE: "cpu"       # 自对弈推理设备（cpu | cuda）
     INFER_CPU_AUX_WORKERS: 0      # CPU 辅助推理线程数（0=关闭混合推理）
     INFER_CPU_FRACTION: 0.0       # 每批拆分给 CPU 推理的比例（0~1）
     INFER_MIN_SPLIT_BATCH: 0      # batch 小于该值时不拆分，直接走主设备
@@ -46,6 +47,7 @@ common:
   # ---------------- 路径基准 ----------------
   paths:
     OUTPUT_DIR: ""
+    INIT_FROM_CHECKPOINT: ""      # 从指定 checkpoint 导入预训练权重（空=不导入）
 
   # ---------------- 自对弈公共参数 ----------------
   self_play:
@@ -63,6 +65,7 @@ common:
     EMA_DECAY: 0.999              # EMA 滑动衰减率
     DATA_AUGMENT_ENABLED: true    # 是否启用数据增强
     DATA_AUGMENT_KEEP_ORIGINAL: true  # 是否保留原始样本
+    RECENT_SAMPLE_ENABLED: true   # 批量聚焦训练时启用「新近优先」采样
 
   # ---------------- 检查点 ----------------
   checkpoint:
@@ -107,6 +110,7 @@ common:
   # ---------------- 价值目标与漂移评估 ----------------
   value_target:
     VALUE_TARGET_MODE: "game"     # 价值目标模式（mcts->game：向终局胜负真值学习，摆脱自我评估循环）
+    VALUE_TARGET_ANNEAL_ROUNDS: 0 # value 目标退火总轮数（0=关闭）
     VALUE_ANNEAL_START: 0.2       # 价值退火起始系数
     VALUE_ANNEAL_INCREMENT: 0.2   # 价值退火增量
     VALUE_ANNEAL_STEP_ROUNDS: 10  # 步进轮数

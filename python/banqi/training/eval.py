@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -15,6 +16,22 @@ import torch
 from banqi.constants import build_constants
 from banqi.tb_logger import add_scalar
 from banqi.variant import Variant
+
+# 评估常量（原 banqi/eval.py 迁移而来）。
+# 评估时模型 MCTS sims：使用更低的 sims 反映模型先验真实水平。
+# LLM注意：通常不应该修改此处，这被认为是一种作弊行为；如计划修改，建议重构到配置侧。
+EVAL_SIMS = 16
+EVAL_MAX_ACTIONS = 16
+EVAL_C_SCALE = 0.25
+EVAL_GUMBEL_SCALE = 1.0
+HM_SIMS = 128
+MINIMAX_DEPTH = 3
+
+# 规则对手预设
+OPP_HEURISTIC128 = "heuristic128"
+OPP_MINIMAX3 = "minimax3"
+OPP_HEURISTIC64 = "heuristic64"
+OPPONENTS = (OPP_HEURISTIC128, OPP_MINIMAX3, OPP_HEURISTIC64)
 
 
 def select_balanced_fixed_samples(pool: List[Dict], n_fixed: int) -> List[Dict]:
@@ -283,7 +300,7 @@ def eval_match(
         if cfg.EVAL_MATCH_VS_PREV and prev_weights is not None:
             try:
                 prev_model = BanqiNet(
-                    variant, enable_health=bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False))
+                    variant, enable_health=bool(cfg.HEALTH_VALUE_HEAD_ENABLED)
                 ).to(device)
                 prev_model.load_state_dict(
                     {k: v.to(device) for k, v in prev_weights.items()}
@@ -309,3 +326,148 @@ def eval_match(
                 print(f"{tag} ⚠️ 对战评估 vs prev 失败: {exc}")
     finally:
         model.train()
+
+
+# ==============================================================================
+# 双选手对战评估（原 banqi/eval.py 迁移而来，Rust 原生并发引擎）
+# ==============================================================================
+
+
+def _resolve_player_spec(
+    spec_or_path: Union[str, torch.nn.Module, object],
+    variant_id: str = "4x4",
+    seed: Optional[int] = None,
+) -> str:
+    """解析选手标识为 Rust 可读的格式（.pt / .onnx / 规则标识符）。"""
+    if isinstance(spec_or_path, str):
+        path = spec_or_path
+        if path == "random" or path.startswith("random:"):
+            # 随机初始化模型：受 seed 确定性驱动
+            if ":" in path:
+                r_seed = int(path.split(":")[1])
+            else:
+                r_seed = seed if seed is not None else 42
+            torch.manual_seed(r_seed)
+            from banqi.variant import get_variant
+            from banqi.nn_model import BanqiNet
+            from banqi.checkpoint import export_torchscript
+
+            v = get_variant(variant_id)
+            model = BanqiNet(v).to("cpu").eval()
+            temp_dir = tempfile.gettempdir()
+            pt_path = os.path.join(temp_dir, f"banqi_random_{variant_id}_seed{r_seed}.pt")
+            export_torchscript(model, pt_path, v, torch.device("cpu"))
+            return pt_path
+
+        if path.endswith(".ckpt") or path.endswith(".pth"):
+            pt_path = os.path.splitext(path)[0] + ".pt"
+            if not os.path.exists(pt_path) or os.path.getmtime(path) > os.path.getmtime(pt_path):
+                from banqi.tools.export_ckpt import export_checkpoint_file
+                export_checkpoint_file(path, variant_id)
+            return pt_path
+        return path
+
+    if hasattr(spec_or_path, "model"):
+        return _resolve_player_spec(getattr(spec_or_path, "model"), variant_id, seed)
+
+    if isinstance(spec_or_path, torch.nn.Module):
+        from banqi.variant import get_variant
+        from banqi.checkpoint import export_torchscript
+        temp_dir = tempfile.gettempdir()
+        v = get_variant(variant_id)
+        r_seed = seed if seed is not None else 42
+        pt_path = os.path.join(temp_dir, f"banqi_eval_temp_{variant_id}_seed{r_seed}.pt")
+        export_torchscript(spec_or_path, pt_path, v, torch.device("cpu"))
+        return pt_path
+
+    raise TypeError(f"无法识别的选手标识格式: {type(spec_or_path)}")
+
+
+def play_match(
+    player_a,
+    player_b,
+    n: int = 100,
+    model_sims: int = EVAL_SIMS,
+    variant_id: str = "4x4",
+    heuristic_sims: Optional[int] = None,
+    seed: Optional[int] = None,
+    num_threads: int = 4,
+) -> Tuple[int, int, int, List[float]]:
+    """双选手对战评估（调用 Rust 侧原生并发引擎）。"""
+    import banqi_4x8  # 延迟导入，避免在纯评估模块顶部强制依赖扩展
+
+    spec_a = _resolve_player_spec(player_a, variant_id, seed)
+    spec_b = _resolve_player_spec(player_b, variant_id, seed)
+
+    wins, draws, losses, block_wr, _avg_moves, _eps = banqi_4x8.run_native_match(
+        player_a=spec_a,
+        player_b=spec_b,
+        n=n,
+        variant_id=variant_id,
+        model_sims=model_sims,
+        heuristic_sims=heuristic_sims,
+        seed=seed,
+        num_threads=num_threads,
+    )
+    return wins, draws, losses, block_wr
+
+
+def play_match_stats(
+    player_a,
+    player_b,
+    n: int = 100,
+    model_sims: int = EVAL_SIMS,
+    variant_id: str = "4x4",
+    heuristic_sims: Optional[int] = None,
+    seed: Optional[int] = None,
+    num_threads: int = 4,
+) -> Tuple[int, int, int, float]:
+    """双选手对战评估并统计平均步数。"""
+    import banqi_4x8  # 延迟导入
+
+    spec_a = _resolve_player_spec(player_a, variant_id, seed)
+    spec_b = _resolve_player_spec(player_b, variant_id, seed)
+
+    wins, draws, losses, _block_wr, avg_moves, _eps = banqi_4x8.run_native_match(
+        player_a=spec_a,
+        player_b=spec_b,
+        n=n,
+        variant_id=variant_id,
+        model_sims=model_sims,
+        heuristic_sims=heuristic_sims,
+        seed=seed,
+        num_threads=num_threads,
+    )
+    return wins, draws, losses, avg_moves
+
+
+def report(
+    player_a,
+    player_b,
+    tag: str = "main",
+    n: int = 100,
+    model_sims: int = EVAL_SIMS,
+    variant_id: str = "4x4",
+    heuristic_sims: Optional[int] = None,
+    seed: Optional[int] = None,
+    num_threads: int = 4,
+) -> Tuple[int, int, int, List[float]]:
+    """统一打印评估报告。"""
+    wins, draws, losses, blk = play_match(
+        player_a,
+        player_b,
+        n=n,
+        model_sims=model_sims,
+        variant_id=variant_id,
+        heuristic_sims=heuristic_sims,
+        seed=seed,
+        num_threads=num_threads,
+    )
+    mean = float(np.mean(blk)) if blk else 0.0
+    std = float(np.std(blk)) if blk else 0.0
+    print(
+        f"[Eval:{tag}] [{player_a}] vs [{player_b}] | 胜{wins} 平{draws} 负{losses} "
+        f"(n={n}, 块均胜率={mean:.1f}±{std:.1f}%, seed={seed})",
+        flush=True,
+    )
+    return wins, draws, losses, blk

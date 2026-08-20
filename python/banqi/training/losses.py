@@ -11,6 +11,7 @@ import random
 from collections import namedtuple
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -60,27 +61,8 @@ def train_step(model, optimizer, batch_data, device, ema_model=None, ema_decay: 
     if bool(full_t.sum() == 0):
         return _ZERO_STATS
 
-    # ---- 来源校验：输入/目标任何非有限都跳过该 batch（不更新权重）----
-    # 防止脏数据（NaN/Inf 的 board/scalar/policy/mask/value）进入前向传播，
-    # 进而在 backward 后经 clip_grad_norm_ + optimizer.step() 一次性污染整份权重。
-    finite_inputs = (
-        torch.isfinite(boards_t).all()
-        and torch.isfinite(scalars_t).all()
-        and torch.isfinite(target_probs_t).all()
-        and torch.isfinite(target_values_t).all()
-        and torch.isfinite(masks_t).all()
-    )
-    # 每行 target 策略和 > 0 且非负（0*-inf 或全 0 target 会导致 NaN/梯度消失）
-    valid_target = bool((target_probs_t >= 0.0).all()) and bool(
-        target_probs_t.sum(dim=1).min() > 0.0
-    )
-    if not finite_inputs or not valid_target:
-        print(
-            f"[TR] ⚠️ 跳过 1 个异常 batch（输入/策略目标非有限或非法）"
-        )
-        # 返回一个有限的占位 loss，避免上层把 NaN 累进统计/日志
-        return _ZERO_STATS
-
+    # ---- 数据有效性（非有限/非法策略）已由 DataBuffer.add_samples 入队时
+    # 前置过滤，此处假定输入完全合法，不再做冗余防御校验。----
     optimizer.zero_grad()
     if health_enabled:
         logits, values, health_logits = model(boards_t, scalars_t)
@@ -110,27 +92,27 @@ def train_step(model, optimizer, batch_data, device, ema_model=None, ema_decay: 
         health_loss = (per_sample_health * full_t).sum() / num_full
         total_loss = total_loss + health_loss_weight * health_loss
 
-    # ---- 数值安全：loss / 前向输出非有限则跳过，不污染权重 ----
+    # ---- 数值安全：loss / 梯度非有限直接抛出（不静默跳过 batch）----
+    # 静默跳过只会掩盖上游 DataBuffer / MCTS 样本收集阶段引入非法数据的根因；
+    # 一旦非有限就尽早失败，让根因暴露。数据合法性应在入队环节保证。
     if not torch.isfinite(total_loss):
-        print(
-            f"[TR] ⚠️ 跳过 1 个异常 batch（loss 非有限: "
-            f"policy={float(policy_loss):.4f} value={float(value_loss):.4f}），"
-            f"不更新权重"
+        raise RuntimeError(
+            f"[TR] 检测到非有限 loss（policy={float(policy_loss):.4f} "
+            f"value={float(value_loss):.4f}）。数据应在 DataBuffer 入队时过滤，"
+            f"请排查上游 MCTS/自对弈产生的脏数据，而非静默跳过 batch。"
         )
-        optimizer.zero_grad()
-        return _ZERO_STATS
 
     total_loss.backward()
     # ---- 梯度有限性检查：NaN/Inf 梯度静默放行是权重被污染的主通道 ----
     # 一旦出现非有限梯度，clip_grad_norm_ 返回 NaN 且 optimizer.step() 会把
-    # 整份权重写成 NaN。故在 clip 前显式检测并跳过该 batch。
+    # 整份权重写成 NaN。故在 clip 前显式检测并直接抛出。
     grad_ok = all(
         p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters()
     )
     if not grad_ok:
-        print("[TR] ⚠️ 跳过 1 个异常 batch（检测到非有限梯度），不更新权重")
-        optimizer.zero_grad()
-        return _ZERO_STATS
+        raise RuntimeError(
+            "[TR] 检测到非有限梯度，不更新权重。请排查数据/模型状态，而非静默跳过 batch。"
+        )
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
 
@@ -183,9 +165,7 @@ def run_training_epochs(model, optimizer, scheduler, buffer, num_epochs,
     # 新近优先采样：RL 自对弈数据随模型演化而过时，聚焦最近新增样本可避免
     # 旧数据反复训练导致的棋力退化。仅在 max_batches 限制训练量（批量聚焦）时启用；
     # 全量训练（max_batches=None）时保留均匀采样以覆盖整个 buffer。
-    recent_enabled = max_batches is not None and getattr(
-        buffer.cfg, "RECENT_SAMPLE_ENABLED", True
-    )
+    recent_enabled = max_batches is not None and buffer.cfg.RECENT_SAMPLE_ENABLED
     for epoch in range(num_epochs):
         # 确定本轮实际训练的 batch 数：受 buffer 容量与剩余 max_batches 双重约束
         if max_batches is not None:
