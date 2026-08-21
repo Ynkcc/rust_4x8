@@ -3,4 +3,6 @@
 //! 包含暗棋游戏环境逻辑 (`env`) 以及通用 Gumbel MCTS 树搜索算法 (`mcts`)。
 
 pub mod env;
+pub mod expectimax;
 pub mod mcts;
+

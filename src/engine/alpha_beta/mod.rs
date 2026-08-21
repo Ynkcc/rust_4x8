@@ -39,8 +39,10 @@ pub const FEAT_NO_DRAW_SAC: u32 = 1 << 4; // 根层禁止“为躲和棋送子�
 /// 正交方向（用于送子检测）。
 pub(crate) const ORTHO: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
+use std::sync::Arc;
+
 /// 引擎配置。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct EngineConfig {
     /// 节点预算（总节点数上限；超出即中止当前迭代）
     pub node_budget: u64,
@@ -60,6 +62,9 @@ pub struct EngineConfig {
     pub features: u32,
     /// 置换表大小（2^tt_bits 项）
     pub tt_bits: u32,
+    /// 可选 NNUE 求值网络引擎
+    pub nnue_evaluator: Option<Arc<crate::inference::nnue::NnueEvaluator>>,
+
 }
 
 impl Default for EngineConfig {
@@ -74,7 +79,18 @@ impl Default for EngineConfig {
             params: EvalParams::default(),
             features: FEAT_ORDERING | FEAT_TT | FEAT_LMR | FEAT_REP | FEAT_NO_DRAW_SAC,
             tt_bits: 18,
+            nnue_evaluator: None,
         }
+    }
+}
+
+/// 叶节点局面评估入口（支持 NNUE 与启发式参数无缝切换）
+#[inline]
+pub fn eval_state(env: &DarkChessEnv, cfg: &EngineConfig) -> f32 {
+    if let Some(ref nnue) = cfg.nnue_evaluator {
+        nnue.evaluate(env)
+    } else {
+        evaluate_for(env, env.get_current_player(), &cfg.params)
     }
 }
 
@@ -177,7 +193,7 @@ fn quiesce(
     if let Some(winner) = ordering::terminal_info(env, &moves) {
         return Ok(ordering::terminal_value(env, Some(winner), cfg, ctx));
     }
-    let stand = evaluate_for(env, env.get_current_player(), &cfg.params);
+    let stand = eval_state(env, cfg);
     if stand >= beta || qdepth <= 0 {
         return Ok(stand);
     }
@@ -287,7 +303,7 @@ fn negamax(
         if cfg.quiesce {
             return quiesce(env, alpha, beta, cfg, ctx, cfg.quiesce_max);
         }
-        return Ok(evaluate_for(env, env.get_current_player(), &cfg.params));
+        return Ok(eval_state(env, cfg));
     }
     let alpha_orig = alpha;
     let key = if cfg.feat(FEAT_TT) || cfg.feat(FEAT_REP) {

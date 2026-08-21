@@ -57,6 +57,14 @@ impl DarkChessEnv {
         mask
     }
 
+    pub fn legal_action_indices(&self) -> Vec<usize> {
+        let mut mask = vec![0; self.config.action_space_size];
+        self.action_masks_into(&mut mask);
+        (0..self.config.action_space_size)
+            .filter(|&i| mask[i] == 1)
+            .collect()
+    }
+
     pub fn action_masks_into(&self, mask: &mut [i32]) {
         self.get_action_masks_for_player_into(self.get_current_player(), mask);
     }
