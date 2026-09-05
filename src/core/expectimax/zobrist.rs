@@ -1,41 +1,29 @@
-//! Expectimax 搜索引擎置换表 (TT) 与 Zobrist 算法
+//! 值域常量与置换表项（决策节点）。
+//!
+//! 哈希实现已下沉至 [`crate::core::zobrist`]，供 expectimax / minimax 共用。
 
-pub const INF: f32 = 1_000_000.0;
-pub const VMAX: f32 = 10_000.0;
-pub const VMIN: f32 = -10_000.0;
+/// 搜索值区间常量（节点走子方视角）。
+pub const VMIN: f32 = -1.0;
+pub const VMAX: f32 = 1.0;
+pub const INF: f32 = f32::INFINITY;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TtFlag {
-    Exact = 0,
-    LowerBound = 1,
-    UpperBound = 2,
-}
+pub(crate) use crate::core::zobrist::zkey;
 
-impl TtFlag {
-    #[inline]
-    pub fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Exact),
-            1 => Some(Self::LowerBound),
-            2 => Some(Self::UpperBound),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+/// 置换表项（决策节点）。
+#[derive(Clone, Copy)]
 pub struct TtEntry {
     pub key: u64,
-    pub depth: i8,
-    pub flag: u8,
     pub value: f32,
-    pub best_action: u16,
+    pub depth: i16,
+    /// 0 空, 1 exact, 2 下界(fail-high), 3 上界(fail-low)
+    pub flag: u8,
+    pub best: usize,
 }
 
 pub const TT_EMPTY: TtEntry = TtEntry {
     key: 0,
-    depth: -1,
-    flag: 0,
     value: 0.0,
-    best_action: 0xFFFF,
+    depth: 0,
+    flag: 0,
+    best: 0,
 };

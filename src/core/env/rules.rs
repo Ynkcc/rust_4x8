@@ -12,6 +12,17 @@ impl DarkChessEnv {
     /// 游戏终止条件检查
     pub fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
         let cfg = &self.config;
+        let mut masks = vec![0i32; cfg.action_space_size];
+        self.get_action_masks_for_player_into(self.get_current_player(), &mut masks);
+        let moves_empty = masks.iter().all(|&x| x == 0);
+        self.check_game_over_with_moves(moves_empty)
+    }
+
+    /// 终局判定核心：`moves_empty` 为「当前走子方是否无合法走法」。
+    /// 调用方若已生成过走子列表（如搜索），直接传 `moves.is_empty()`，
+    /// 避免重复计算动作掩码。返回 `(terminated, truncated, winner)`。
+    pub fn check_game_over_with_moves(&self, moves_empty: bool) -> (bool, bool, Option<i32>) {
+        let cfg = &self.config;
         if self.get_score(Player::Red) <= 0 {
             return (true, false, Some(Player::Black.val()));
         }
@@ -28,9 +39,7 @@ impl DarkChessEnv {
         }
 
         // 无合法走法
-        let mut masks = vec![0i32; cfg.action_space_size];
-        self.get_action_masks_for_player_into(self.get_current_player(), &mut masks);
-        if masks.iter().all(|&x| x == 0) {
+        if moves_empty {
             return (
                 true,
                 false,

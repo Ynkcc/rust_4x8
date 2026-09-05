@@ -1,31 +1,40 @@
-//! 核心 Expecti-Alpha-Beta 搜索引擎
+//! Expecti-Alpha-Beta 主搜索
 //!
-//! 包含 Star1 期望值概率节点剪枝、置换表 (TT)、静态搜索 (Quiescence) 与走子排序。
+//! 包含 Star1 期望值概率节点剪枝、置换表 (TT)、静态搜索 (Quiescence)、
+//! 晚走子减深 (LMR)、重复局面检测与迭代加深。
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::core::env::DarkChessEnv;
+use crate::engine::movegen::generate_moves;
 use crate::inference::nnue::NnueEvaluator;
 
 use super::ordering;
 use super::zobrist;
-use super::zobrist::TtFlag;
-use crate::core::zobrist::zkey;
+use super::{Ctx, FEAT_LMR, FEAT_ORDERING, FEAT_REP, FEAT_TT};
 
-pub use zobrist::{TT_EMPTY, TtEntry, VMAX, VMIN, INF};
-
+pub use zobrist::{INF, TT_EMPTY, TtEntry, VMAX, VMIN};
 
 /// 搜索引擎配置
 #[derive(Clone, Debug)]
 pub struct SearchConfig {
+    /// 节点预算（总节点数上限；超出即中止当前迭代）
     pub node_budget: u64,
+    /// 时间预算（毫秒；0 = 仅按节点预算）
     pub time_limit_ms: u64,
+    /// 迭代加深最大深度
     pub max_depth: i32,
+    /// 和棋偏差（contempt；正数 = 领先方避和、落后方求和）
     pub contempt: f32,
+    /// 是否启用静态搜索
     pub quiesce: bool,
+    /// 静态搜索最大深度
     pub quiesce_max: i32,
+    /// 特性位掩码（FEAT_*）
+    pub features: u32,
+    /// 置换表大小（2^tt_bits 项）
     pub tt_bits: u32,
+    /// 可选 NNUE 求值网络引擎
     pub nnue_evaluator: Option<Arc<NnueEvaluator>>,
 }
 
@@ -38,9 +47,17 @@ impl Default for SearchConfig {
             contempt: 0.1,
             quiesce: true,
             quiesce_max: 8,
+            features: FEAT_ORDERING | FEAT_TT | FEAT_LMR | FEAT_REP,
             tt_bits: 18,
             nnue_evaluator: None,
         }
+    }
+}
+
+impl SearchConfig {
+    #[inline]
+    pub(super) fn feat(&self, bit: u32) -> bool {
+        self.features & bit != 0
     }
 }
 
@@ -48,89 +65,37 @@ impl Default for SearchConfig {
 #[derive(Debug, Clone, Copy)]
 pub struct SearchResult {
     pub action: usize,
+    /// 根走子方视角的评估值（最深完成迭代）
     pub value: f32,
+    /// 完成的最深迭代层数
     pub depth: i32,
+    /// 消耗的总节点数
     pub nodes: u64,
 }
 
-struct SearchCtx {
-    nodes: u64,
-    budget: u64,
-    start: Instant,
-    time_limit_ms: u64,
-    tt: Vec<TtEntry>,
-    tt_mask: usize,
-}
-
-impl SearchCtx {
-    fn new(cfg: &SearchConfig) -> Self {
-        let tt_size = 1usize << cfg.tt_bits;
-        Self {
-            nodes: 0,
-            budget: cfg.node_budget.max(1),
-            start: Instant::now(),
-            time_limit_ms: cfg.time_limit_ms,
-            tt: vec![TT_EMPTY; tt_size],
-            tt_mask: tt_size.wrapping_sub(1),
-        }
-    }
-
-    /// 探测置换表：键匹配且非空时返回表项。
-    #[inline]
-    fn probe(&self, key: u64) -> Option<TtEntry> {
-        let e = self.tt[key as usize & self.tt_mask];
-        if e.depth >= 0 && e.key == key {
-            Some(e)
-        } else {
-            None
-        }
-    }
-
-    /// 写入置换表（depth 优先替换：空槽 / 同键 / 更深搜索覆盖）。
-    #[inline]
-    fn store(&mut self, entry: TtEntry) {
-        let idx = entry.key as usize & self.tt_mask;
-        let cur = self.tt[idx];
-        if cur.depth < 0 || cur.key == entry.key || entry.depth >= cur.depth {
-            self.tt[idx] = entry;
-        }
-    }
-
-    #[inline]
-    fn tick(&mut self) -> Result<(), ()> {
-        self.nodes += 1;
-        if self.nodes > self.budget {
-            return Err(());
-        }
-        if self.time_limit_ms > 0
-            && (self.nodes & 1023) == 0
-            && self.start.elapsed().as_millis() as u64 >= self.time_limit_ms
-        {
-            return Err(());
-        }
-        Ok(())
-    }
-}
-
+/// 叶节点局面评估入口（NNUE 为唯一评估来源）
 #[inline]
-fn eval_state(env: &DarkChessEnv, cfg: &SearchConfig) -> f32 {
-    if let Some(ref nnue) = cfg.nnue_evaluator {
-        nnue.evaluate(env)
-    } else {
-        0.0
+pub fn eval_state(env: &DarkChessEnv, cfg: &SearchConfig) -> f32 {
+    match cfg.nnue_evaluator.as_ref() {
+        Some(nnue) => nnue.evaluate(env),
+        None => 0.0,
     }
 }
 
-/// 静态搜索
+/// 静态搜索：仅延展吃明子走法。
 fn quiesce(
     env: &DarkChessEnv,
     mut alpha: f32,
     beta: f32,
     cfg: &SearchConfig,
-    ctx: &mut SearchCtx,
+    ctx: &mut Ctx,
     qdepth: i32,
 ) -> Result<f32, ()> {
     ctx.tick()?;
+    let moves = generate_moves(env, env.get_current_player());
+    if let Some(winner) = ordering::terminal_info(env, &moves) {
+        return Ok(ordering::terminal_value(env, Some(winner), cfg, ctx));
+    }
     let stand = eval_state(env, cfg);
     if stand >= beta || qdepth <= 0 {
         return Ok(stand);
@@ -138,10 +103,31 @@ fn quiesce(
     if stand > alpha {
         alpha = stand;
     }
-    Ok(alpha)
+    let mut caps: Vec<(i32, crate::engine::movegen::Move)> = moves
+        .iter()
+        .filter(|m| m.is_capture)
+        .map(|&m| (ordering::victim_value(env, &m), m))
+        .collect();
+    caps.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut best = stand;
+    for (_, m) in caps {
+        let mut child = *env;
+        let _ = child.step(m.action, None);
+        let v = -quiesce(&child, -beta, -alpha, cfg, ctx, qdepth - 1)?;
+        if v > best {
+            best = v;
+        }
+        if best > alpha {
+            alpha = best;
+        }
+        if alpha >= beta {
+            break;
+        }
+    }
+    Ok(best)
 }
 
-/// Star1 机会节点概率加权剪枝
+/// Star1 机会节点：按概率加权期望值，用区间边界做剪枝。
 fn flip_value(
     env: &DarkChessEnv,
     action: usize,
@@ -149,7 +135,7 @@ fn flip_value(
     alpha: f32,
     beta: f32,
     cfg: &SearchConfig,
-    ctx: &mut SearchCtx,
+    ctx: &mut Ctx,
 ) -> Result<f32, ()> {
     let outcomes = env.chance_outcomes(action);
     if outcomes.is_empty() {
@@ -185,6 +171,7 @@ fn flip_value(
     Ok(vsum)
 }
 
+/// 单条走子的值。
 fn move_value(
     env: &DarkChessEnv,
     action: usize,
@@ -192,7 +179,7 @@ fn move_value(
     alpha: f32,
     beta: f32,
     cfg: &SearchConfig,
-    ctx: &mut SearchCtx,
+    ctx: &mut Ctx,
 ) -> Result<f32, ()> {
     if env.is_chance_action(action) {
         return flip_value(env, action, depth, alpha, beta, cfg, ctx);
@@ -208,12 +195,12 @@ fn negamax(
     mut alpha: f32,
     beta: f32,
     cfg: &SearchConfig,
-    ctx: &mut SearchCtx,
+    ctx: &mut Ctx,
 ) -> Result<f32, ()> {
     ctx.tick()?;
-    let legal = env.legal_action_indices();
-    if legal.is_empty() {
-        return Ok(ordering::terminal_value(env, Some(0), cfg.contempt));
+    let moves = generate_moves(env, env.get_current_player());
+    if let Some(winner) = ordering::terminal_info(env, &moves) {
+        return Ok(ordering::terminal_value(env, Some(winner), cfg, ctx));
     }
     if depth <= 0 {
         if cfg.quiesce {
@@ -221,105 +208,177 @@ fn negamax(
         }
         return Ok(eval_state(env, cfg));
     }
+    let alpha_orig = alpha;
+    let key = if cfg.feat(FEAT_TT) || cfg.feat(FEAT_REP) {
+        zobrist::zkey(env)
+    } else {
+        0
+    };
+
+    // 重复检测：静走循环会产生相同 zkey（吃子/翻棋改变袋或棋盘 → 键不同）。
+    if cfg.feat(FEAT_REP) && ctx.path.iter().any(|&k| k == key) {
+        return Ok(ordering::terminal_value(env, Some(0), cfg, ctx));
+    }
+
+    // 置换表探测（决策节点）
+    let mut tt_move: Option<usize> = None;
+    if cfg.feat(FEAT_TT) {
+        let e = ctx.tt[(key as usize) & ctx.tt_mask];
+        if e.flag != 0 && e.key == key {
+            if e.depth as i32 >= depth {
+                match e.flag {
+                    1 => return Ok(e.value), // exact
+                    2 => {
+                        if e.value >= beta {
+                            return Ok(e.value);
+                        }
+                    }
+                    3 => {
+                        if e.value <= alpha {
+                            return Ok(e.value);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            tt_move = Some(e.best);
+        }
+    }
+
+    let mut ordered = moves;
+    ordering::order_moves(env, &mut ordered, depth, cfg, ctx);
+    if let Some(tm) = tt_move {
+        if let Some(pos) = ordered.iter().position(|m| m.action == tm) {
+            let m = ordered.remove(pos);
+            ordered.insert(0, m);
+        }
+    }
+    if cfg.feat(FEAT_REP) {
+        ctx.path.push(key);
+    }
 
     let mut best = -INF;
-    let mut best_act = legal[0];
-
-    // --- 置换表探测（仅决策节点；机会节点期望值经 Star1 截断后仍为可靠界，
-    //     Exact/Lower/Upper 语义在全树保持成立，故此处可安全剪枝） ---
-    let key = zkey(env);
-    let tt_hit = ctx.probe(key);
-    if let Some(e) = tt_hit {
-        if i32::from(e.depth) >= depth {
-            match TtFlag::from_u8(e.flag) {
-                Some(TtFlag::Exact) => return Ok(e.value),
-                Some(TtFlag::LowerBound) if e.value >= beta => return Ok(e.value),
-                Some(TtFlag::UpperBound) if e.value <= alpha => return Ok(e.value),
-                _ => {}
+    let mut best_m = ordered[0].action;
+    for (i, &m) in ordered.iter().enumerate() {
+        let quiet = !m.is_chance && !m.is_capture;
+        let v = if cfg.feat(FEAT_LMR) && quiet && i >= 3 && depth >= 3 {
+            let mut child = *env;
+            let _ = child.step(m.action, None);
+            let probe = -negamax(&child, depth - 2, -alpha - 1e-6, -alpha, cfg, ctx)?;
+            if probe > alpha {
+                -negamax(&child, depth - 1, -beta, -alpha, cfg, ctx)?
+            } else {
+                probe
             }
-        }
-    }
-
-    // 走子排序：TT 最佳着法置于首位
-    let mut ordered = legal;
-    if let Some(e) = tt_hit {
-        if let Some(pos) = ordered.iter().position(|&a| a as u16 == e.best_action) {
-            ordered.swap(0, pos);
-        }
-    }
-
-    let alpha_orig = alpha;
-    for &act in &ordered {
-        let v = move_value(env, act, depth, alpha, beta, cfg, ctx)?;
+        } else {
+            move_value(env, m.action, depth, alpha, beta, cfg, ctx)?
+        };
         if v > best {
             best = v;
-            best_act = act;
+            best_m = m.action;
         }
         if best > alpha {
             alpha = best;
         }
         if alpha >= beta {
+            if cfg.feat(FEAT_ORDERING) && quiet {
+                ctx.record_cutoff(&m, depth, env.config.total_positions);
+            }
             break;
         }
     }
+    if cfg.feat(FEAT_REP) {
+        ctx.path.pop();
+    }
 
-    // --- 置换表写入：fail-soft 值按界方向归类 ---
-    let flag = if best <= alpha_orig {
-        TtFlag::UpperBound
-    } else if best >= beta {
-        TtFlag::LowerBound
-    } else {
-        TtFlag::Exact
-    };
-    ctx.store(TtEntry {
-        key,
-        depth: depth as i8,
-        flag: flag as u8,
-        value: best,
-        best_action: best_act as u16,
-    });
-
+    // 置换表存储（深度优先替换）
+    if cfg.feat(FEAT_TT) {
+        let flag = if best <= alpha_orig {
+            3 // fail-low → 上界
+        } else if best >= beta {
+            2 // fail-high → 下界
+        } else {
+            1 // exact
+        };
+        let idx = (key as usize) & ctx.tt_mask;
+        let cur = ctx.tt[idx];
+        if cur.flag == 0 || cur.key != key || (cur.depth as i32) <= depth {
+            ctx.tt[idx] = TtEntry {
+                key,
+                value: best,
+                depth: depth as i16,
+                flag,
+                best: best_m,
+            };
+        }
+    }
     Ok(best)
 }
 
-/// 执行 Expectimax 搜索并产出最佳走子
-pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
-    let legal = env.legal_action_indices();
-    if legal.is_empty() {
-        return None;
+/// 单层根搜索：返回 (最优动作, 根走子方视角值)。
+fn best_at_depth(
+    env: &DarkChessEnv,
+    depth: i32,
+    cfg: &SearchConfig,
+    ctx: &mut Ctx,
+    hint: Option<usize>,
+) -> Result<Option<(usize, f32)>, ()> {
+    let mut moves = generate_moves(env, env.get_current_player());
+    if moves.is_empty() {
+        return Ok(None);
     }
-    let mut ctx = SearchCtx::new(cfg);
-    let mut best_action = legal[0];
+    ordering::order_moves(env, &mut moves, depth, cfg, ctx);
+    if let Some(h) = hint {
+        if let Some(pos) = moves.iter().position(|m| m.action == h) {
+            let m = moves.remove(pos);
+            moves.insert(0, m);
+        }
+    }
     let mut best_val = -INF;
-
-    for depth in 1..=cfg.max_depth {
-        let mut alpha = VMIN;
-        let mut depth_best_act = legal[0];
-        let mut depth_best_val = -INF;
-
-        for &act in &legal {
-            if let Ok(v) = move_value(env, act, depth, alpha, VMAX, cfg, &mut ctx) {
-                if v > depth_best_val {
-                    depth_best_val = v;
-                    depth_best_act = act;
-                    if v > alpha {
-                        alpha = v;
-                    }
-                }
-            } else {
-                break;
+    let mut best = None;
+    let mut alpha = VMIN;
+    for &m in &moves {
+        let v = move_value(env, m.action, depth, alpha, VMAX, cfg, ctx)?;
+        if v > best_val {
+            best_val = v;
+            best = Some(m.action);
+            if v > alpha {
+                alpha = v;
             }
         }
-        if depth_best_val > -INF {
-            best_action = depth_best_act;
-            best_val = depth_best_val;
+    }
+    Ok(best.map(|a| (a, best_val)))
+}
+
+/// 节点/时间预算驱动的迭代加深 Expectimax 搜索。返回 `None` 表示无合法动作（终局）。
+pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
+    let moves = generate_moves(env, env.get_current_player());
+    if moves.is_empty() {
+        return None;
+    }
+    let mut ctx = Ctx::new(cfg, env);
+    if cfg.feat(FEAT_REP) {
+        ctx.path.push(zobrist::zkey(env));
+    }
+    let mut best = moves[0].action;
+    let mut best_score = 0.0f32;
+    let mut hint: Option<usize> = None;
+    let mut depth_reached = 0;
+    for depth in 1..=cfg.max_depth {
+        match best_at_depth(env, depth, cfg, &mut ctx, hint) {
+            Ok(Some((a, v))) => {
+                best = a;
+                best_score = v;
+                hint = Some(a);
+                depth_reached = depth;
+            }
+            _ => break,
         }
     }
-
     Some(SearchResult {
-        action: best_action,
-        value: best_val,
-        depth: cfg.max_depth,
+        action: best,
+        value: best_score,
+        depth: depth_reached,
         nodes: ctx.nodes,
     })
 }
