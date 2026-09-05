@@ -39,6 +39,8 @@ pub struct SearchConfig {
     pub tt_bits: u32,
     /// Lazy SMP 并发线程数（1 = 单线程，>1 时共享置换表协同搜索）
     pub threads: usize,
+    /// 机会节点子分支额外减深（翻棋信息价值低，0 = 不减）
+    pub chance_reduction: i32,
     /// 量化开关：TT 原始键 miss 后用对称视角键二次探测并统计（只计数，不参与存储/截断）
     pub tt_sym_probe: bool,
     /// 可选 NNUE 求值网络引擎
@@ -57,6 +59,7 @@ impl Default for SearchConfig {
             features: FEAT_ORDERING | FEAT_TT | FEAT_LMR | FEAT_REP,
             tt_bits: 18,
             threads: 1,
+            chance_reduction: 1,
             tt_sym_probe: false,
             nnue_evaluator: None,
         }
@@ -210,6 +213,8 @@ fn flip_value(
     let (l, u) = (VMIN, VMAX);
     let mut vsum = 0.0f32;
     let mut rem = 1.0f32;
+    // 机会节点减深：翻棋结果的信息价值低于决策节点，子分支少搜一层换分支覆盖
+    let child_depth = (depth - 1 - cfg.chance_reduction).max(0);
     for (_, p, next_env) in outcomes {
         rem -= p;
         if rem < 0.0 {
@@ -226,7 +231,7 @@ fn flip_value(
         let cl = if ai > l { ai } else { l };
         let cu = if bi < u { bi } else { u };
         let next_acc = outcome_acc(env, acc, action, &next_env, nnue);
-        let v = -negamax(&next_env, &next_acc, depth - 1, -cu, -cl, cfg, ctx)?;
+        let v = -negamax(&next_env, &next_acc, child_depth, -cu, -cl, cfg, ctx)?;
         if v <= ai {
             return Ok(alpha);
         }
