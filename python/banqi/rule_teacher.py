@@ -31,14 +31,8 @@ import threading
 import time
 from typing import Dict, List, Optional
 
-try:
-    import banqi_4x8
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "无法导入 banqi_4x8。请先执行: maturin develop --features pyo3"
-    ) from exc
-
 from banqi.config import make_config
+from banqi.rust_bridge import SelfPlayConfig, run_native_match
 from banqi.variant import Variant
 
 # Rust 统一入口变体映射（variant.rust_prefix -> run_native_match 的 variant_id）
@@ -61,9 +55,9 @@ def _variant_id(variant: Variant) -> str:
     return _VARIANT_MAP[key]
 
 
-def build_teacher_config(variant: Variant, sims: int) -> "banqi_4x8.SelfPlayConfig":
+def build_teacher_config(variant: Variant, sims: int) -> "SelfPlayConfig":
     """构建教师自对弈 SelfPlayConfig（启发式路径以 RULE_SELFPLAY_SIMS 作为 MCTS 模拟数）。"""
-    return banqi_4x8.SelfPlayConfig(
+    return SelfPlayConfig(
         mcts_sims=sims,
         max_considered_actions=16,
         c_scale=1.0,
@@ -105,7 +99,7 @@ def generate_teacher_batch(
         player_a = player_b = f"minimax{depth}"
     else:
         player_a = player_b = f"heuristic{sims}"
-    _, _, _, _, _, episodes = banqi_4x8.run_native_match(
+    _, _, _, _, _, episodes = run_native_match(
         player_a=player_a,
         player_b=player_b,
         n=num_games,

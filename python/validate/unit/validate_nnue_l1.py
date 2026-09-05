@@ -12,7 +12,6 @@ for _d in (_PYTHON_DIR, _VALIDATE_DIR):
 
 import banqi_4x8
 from banqi.nnue.model import BanqiNNUE, nnue_feature_dim
-from banqi.nnue.exporter import export_checkpoint
 
 
 def test_feature_indices_consistency():

@@ -101,8 +101,8 @@ def verify_against_bindings(variant: Variant) -> Dict[str, int]:
     找到但值不一致时抛 AssertionError —— 用于在训练/增强前拦截 Rust/Python 维度脱节。
     """
     try:
-        import banqi_4x8  # type: ignore
-        dims = banqi_4x8.variant_dims(variant.id)
+        from banqi.rust_bridge import variant_dims
+        dims = variant_dims(variant.id)
     except Exception:
         return {}
     if not isinstance(dims, dict) or not dims:

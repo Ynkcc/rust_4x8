@@ -37,13 +37,11 @@ def programmatic_entry(argv: Optional[List[str]] = None):
     variant_id = args.variant
     # 若命令行指定了 train-mode，则直接用 make_config 覆盖后运行；
     # 否则走 runners.main 的标准 config.TRAIN_MODE 分派。
-    if args.train_mode:
-        from banqi.config import make_config
-        config = make_config(variant_id)
-        config.TRAIN_MODE = args.train_mode
-        _run_main(variant_id)
-    else:
-        _run_main(variant_id)
+    # 命令行覆盖全部生效：make_config 按 variant_id 缓存，
+    # 此处先通过 make_config_from_args 把覆盖写入缓存对象，
+    # runners.main 内部的 make_config 拿到的即是已覆盖的同一实例。
+    make_config_from_args(variant_id, args)
+    _run_main(variant_id)
 
 
 if __name__ == "__main__":

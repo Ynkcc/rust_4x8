@@ -21,14 +21,8 @@ try:
 except ImportError:  # pragma: no cover
     HAS_TORCH = False
 
-try:
-    import banqi_4x8
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "无法导入 banqi_4x8。请先执行: maturin develop --features pyo3"
-    ) from exc
-
 from banqi.config import make_config
+from banqi.rust_bridge import SelfPlayConfig as _SelfPlayConfig, run_native_match  # noqa: F401
 from banqi.constants import build_constants
 from banqi.nn_model import BanqiNet
 from banqi.variant import Variant
@@ -153,12 +147,12 @@ def build_mixed_predictor(
     )
 
 
-def build_self_play_config(variant: Variant) -> "banqi_4x8.SelfPlayConfig":
+def build_self_play_config(variant: Variant) -> "SelfPlayConfig":
     """构建 SelfPlayConfig（与 py/mod.rs 契约一致），c_scale/gumbel_scale 支持 env 覆盖。"""
     cfg = make_config(variant.id)
     c_scale = float(os.getenv("C_SCALE", "1.0"))
     gumbel_scale = float(os.getenv("GUMBEL_SCALE", "1.0"))
-    return banqi_4x8.SelfPlayConfig(
+    return _SelfPlayConfig(
         mcts_sims=cfg.MCTS_SIMS,
         max_considered_actions=cfg.MAX_CONSIDERED_ACTIONS,
         c_scale=c_scale,

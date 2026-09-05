@@ -394,12 +394,12 @@ def play_match(
     num_threads: int = 4,
 ) -> Tuple[int, int, int, List[float]]:
     """双选手对战评估（调用 Rust 侧原生并发引擎）。"""
-    import banqi_4x8  # 延迟导入，避免在纯评估模块顶部强制依赖扩展
+    from banqi.rust_bridge import run_native_match  # 延迟导入，避免纯评估模块顶部强制依赖扩展
 
     spec_a = _resolve_player_spec(player_a, variant_id, seed)
     spec_b = _resolve_player_spec(player_b, variant_id, seed)
 
-    wins, draws, losses, block_wr, _avg_moves, _eps = banqi_4x8.run_native_match(
+    wins, draws, losses, block_wr, _avg_moves, _eps = run_native_match(
         player_a=spec_a,
         player_b=spec_b,
         n=n,
@@ -423,12 +423,12 @@ def play_match_stats(
     num_threads: int = 4,
 ) -> Tuple[int, int, int, float]:
     """双选手对战评估并统计平均步数。"""
-    import banqi_4x8  # 延迟导入
+    from banqi.rust_bridge import run_native_match  # 延迟导入
 
     spec_a = _resolve_player_spec(player_a, variant_id, seed)
     spec_b = _resolve_player_spec(player_b, variant_id, seed)
 
-    wins, draws, losses, _block_wr, avg_moves, _eps = banqi_4x8.run_native_match(
+    wins, draws, losses, _block_wr, avg_moves, _eps = run_native_match(
         player_a=spec_a,
         player_b=spec_b,
         n=n,

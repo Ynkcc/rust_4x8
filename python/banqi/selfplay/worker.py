@@ -23,14 +23,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-try:
-    import banqi_4x8
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "无法导入 banqi_4x8。请先执行: maturin develop --features pyo3"
-    ) from exc
-
 from banqi.config import make_config
+from banqi.rust_bridge import run_native_match, run_python_match
 from banqi.tb_logger import add_scalar  # TensorBoard 训练日志（未启用时为 no-op）
 from banqi.variant import Variant, get_variant
 
@@ -110,7 +104,7 @@ class SelfPlayWorker(threading.Thread):
         cfg = self.cfg
         while not self.stop_event.is_set():
             t0 = time.time()
-            episodes = banqi_4x8.run_python_match(
+            episodes = run_python_match(
                 predict_fn=self.predictor,
                 config=self.sp_cfg,
                 num_games=cfg.GAMES_PER_ITER,
@@ -259,7 +253,7 @@ def _run_native_model_loop(
             continue
         t0 = time.time()
         try:
-            _, _, _, _, _, episodes = banqi_4x8.run_native_match(
+            _, _, _, _, _, episodes = run_native_match(
                 player_a=model_path,
                 player_b=model_path,
                 n=gpi,
@@ -368,7 +362,7 @@ def sp_worker_main(
     while not stop_event.is_set():
         t0 = time.time()
         try:
-            episodes = banqi_4x8.run_python_match(
+            episodes = run_python_match(
                 predict_fn=predictor, config=sp_cfg,
                 num_games=gpi,
                 variant_id=vid,

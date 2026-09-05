@@ -1,22 +1,14 @@
 """banqi/trainer_cli/config_resolver.py — 配置解析与校验。
 
-根据命令行/编程式参数构造 Config 实例，冲突检测与输出预算计算。
+根据命令行/编程式参数构造 Config 实例（含命令行覆盖），并输出配置告警。
 """
 
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Tuple
 
 from banqi.config import Config
-from banqi.variant import get_variant, Variant
-
-# 环境变量一律以无前缀字段名覆盖 Config（见 banqi/config.py），不支持变体前缀。
-
-# 互斥的 mode 分组（同组只能单选其一）。用于 detect_mode_conflicts 校验。
-_MODE_GROUPS = [
-    ["selfplay", "offline", "rule_selfplay", "archive"],
-]
+from banqi.variant import get_variant
 
 
 def _print_config_warnings(config: "Config") -> None:
@@ -28,17 +20,6 @@ def _print_config_warnings(config: "Config") -> None:
         print("⚠️ [配置] ARCHIVE_ENABLED=True 但 MONGO_URI 为默认/空，归档可能失败")
     if config.TRAIN_BATCH <= 0 or config.PREDICT_BATCH <= 0:
         print("⚠️ [配置] BATCH 尺寸非正，将导致训练/推理异常")
-
-
-def detect_mode_conflicts(modes: List[str]) -> List[Tuple[str, str]]:
-    """检测互斥 mode 冲突，返回 [(a,b), ...]。"""
-    conflicts = []
-    for group in _MODE_GROUPS:
-        present = [m for m in modes if m in group]
-        for i in range(len(present)):
-            for j in range(i + 1, len(present)):
-                conflicts.append((present[i], present[j]))
-    return conflicts
 
 
 def make_config_from_args(variant_id: str, args) -> "Config":
@@ -70,11 +51,3 @@ def make_config_from_args(variant_id: str, args) -> "Config":
 
     _print_config_warnings(config)
     return config
-
-
-def _compute_runtime_budget(config: "Config", train_steps: int) -> float:
-    """估算训练运行时预算（秒）：与 train_steps 成正比，封顶 MAX_RUNTIME_SECONDS。"""
-    budget = config.TRAIN_BUDGET_PER_STEP * train_steps
-    if config.MAX_RUNTIME_SECONDS > 0:
-        budget = min(budget, config.MAX_RUNTIME_SECONDS)
-    return max(budget, config.MIN_RUNTIME_SECONDS)

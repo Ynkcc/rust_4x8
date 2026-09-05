@@ -77,10 +77,14 @@ class BanqiNNUE(nn.Module):
 
 
 if __name__ == "__main__":
-    dim = nnue_feature_dim(total_positions=32, num_active=7, max_piece_count=5)
-    assert dim == 555, f"4x8 变体维度应为 555, 实际为 {dim}"
-    net = BanqiNNUE(dim)
-    dummy_input = torch.randn(4, dim)
-    out = net(dummy_input)
-    assert out.shape == (4, 1), f"输出维度应为 (4, 1), 实际为 {out.shape}"
-    print(f"[BanqiNNUE] Test OK. Dummy output: {out.squeeze().tolist()}")
+    # 按变体声明源逐一自检（与 Rust GameConfig::nnue_feature_dim 公式一致）
+    from banqi.variant import VARIANTS
+
+    for vid, v in VARIANTS.items():
+        dim = nnue_feature_dim(
+            v.total_positions, v.num_active_piece_types, max(v.piece_counts)
+        )
+        net = BanqiNNUE(dim)
+        out = net(torch.randn(4, dim))
+        assert out.shape == (4, 1), f"{vid}: 输出维度应为 (4, 1), 实际为 {out.shape}"
+        print(f"[BanqiNNUE] {vid}: feature_dim={dim} OK")
