@@ -136,7 +136,7 @@ fn play_ttt(mcts_is_red: bool, opponent: Opponent, sims: usize) -> i32 {
                 None => break, // 无合法动作（不应发生）
             };
             let action = result.action;
-            let (_, _, term, _, winner) = env.step(action).unwrap();
+            let (_, term, _, winner) = env.step(action).unwrap();
             mcts.step_next(&env, action);
             if term {
                 return winner.unwrap_or(0);
@@ -146,7 +146,7 @@ fn play_ttt(mcts_is_red: bool, opponent: Opponent, sims: usize) -> i32 {
                 Opponent::Random => random_action(&env),
                 Opponent::Minimax => minimax_action(&env),
             };
-            let (_, _, term, _, winner) = env.step(action).unwrap();
+            let (_, term, _, winner) = env.step(action).unwrap();
             mcts.step_next(&env, action);
             if term {
                 return winner.unwrap_or(0);
@@ -272,7 +272,7 @@ fn ttt_mcts_single_step_matches_minimax() {
                 break;
             }
             let action = random_action(&env);
-            let (_, _, term, _, _) = env.step(action).unwrap();
+            let (_, term, _, _) = env.step(action).unwrap();
             if term {
                 break;
             }

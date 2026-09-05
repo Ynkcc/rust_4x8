@@ -5,8 +5,8 @@
 
 use std::mem::size_of;
 use crate::core::env::constants::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, MAX_STEPS_PER_EPISODE,
-    NUM_PIECE_TYPES, REVEAL_PROBABILITY_SIZE, SCALAR_FEATURE_COUNT, TOTAL_PIECES_PER_PLAYER,
+    ACTION_SPACE_SIZE, RESNET_BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, MAX_STEPS_PER_EPISODE,
+    NUM_PIECE_TYPES, REVEAL_PROBABILITY_SIZE, RESNET_SCALAR_FEATURE_COUNT, TOTAL_PIECES_PER_PLAYER,
     TOTAL_POSITIONS,
 };
 
@@ -148,11 +148,11 @@ fn estimate_dark_chess_env() -> usize {
 
 fn estimate_observation() -> usize {
     // Array3<f32> (16, 4, 8) = 16*4*8 * 4 bytes + ndarray overhead
-    let board_data = BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS * size_of::<f32>();
+    let board_data = RESNET_BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS * size_of::<f32>();
     let ndarray_overhead = size_of::<usize>() * 6;
     let board = board_data + ndarray_overhead;
     // Array1<f32> (35,) = 35 * 4 + overhead
-    let scalar_data = SCALAR_FEATURE_COUNT * size_of::<f32>();
+    let scalar_data = RESNET_SCALAR_FEATURE_COUNT * size_of::<f32>();
     let scalar = scalar_data + ndarray_overhead;
     board + scalar
 }
@@ -165,8 +165,8 @@ pub fn estimate_game_state_suspended() -> MemoryEstimate {
     est.add("Box<DarkChessEnv> 指针", box_overhead(), "Box指针占用");
 
     let obs_size = estimate_observation();
-    est.add("Observation (NN输入)", obs_size, "board(16,4,8)f32 + scalars(35,)f32");
-    est.add("Option<Observation> tag", option_overhead(), "Option判别位");
+    est.add("ResNetObservation (NN输入)", obs_size, "board(16,4,8)f32 + scalars(35,)f32");
+    est.add("Option<ResNetObservation> tag", option_overhead(), "Option判别位");
 
     let action_mask = ACTION_SPACE_SIZE * size_of::<i32>();
     est.add("Action Mask (动作掩码)", action_mask, "352个动作的i32掩码");
@@ -199,7 +199,7 @@ pub fn estimate_mcts_node(
         + vec_overhead()                   // possible_states
         + box_overhead() + option_overhead() // Option<Box<Env>>
         + size_of::<u8>()                  // Player enum
-        + size_of::<usize>();              // Option<Observation> (ptr-ish) + tag approx
+        + size_of::<usize>();              // Option<ResNetObservation> (ptr-ish) + tag approx
 
     est.add("MctsNode 固定字段", fixed_size, "不含Vec/Box/Option的内部数据");
 
@@ -230,7 +230,7 @@ pub fn estimate_mcts_node(
     if has_state {
         let obs_size = estimate_observation();
         est.add(
-            "Option<Observation>",
+            "Option<ResNetObservation>",
             obs_size + option_overhead(),
             "部分节点保存NN输入缓存",
         );
@@ -322,15 +322,15 @@ pub fn estimate_episode_storage(game_length: usize) -> MemoryEstimate {
         "单局游戏完整训练数据",
     );
 
-    let step_board = BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS * size_of::<f32>();
-    let step_scalars = SCALAR_FEATURE_COUNT * size_of::<f32>();
+    let step_board = RESNET_BOARD_CHANNELS * BOARD_ROWS * BOARD_COLS * size_of::<f32>();
+    let step_scalars = RESNET_SCALAR_FEATURE_COUNT * size_of::<f32>();
     let step_policy = ACTION_SPACE_SIZE * size_of::<f32>();
     let step_mask = ACTION_SPACE_SIZE * size_of::<i32>();
     let step_scalar_fields = 3 * size_of::<f32>() + size_of::<u32>() + size_of::<f32>();
     let per_step = step_board + step_scalars + step_policy + step_mask + step_scalar_fields;
 
     est.add(
-        "  每步 Observation+Policy+Mask+Scalars",
+        "  每步 ResNetObservation+Policy+Mask+Scalars",
         per_step,
         &format!(
             "board(16,4,8) + scalars(35) + policy(352) + mask(352) + value/Q/N/result"
@@ -418,7 +418,7 @@ pub fn print_full_memory_report(mcts_sims: usize, games_per_iter: usize) {
     let obs_sz = estimate_observation();
     println!(
         "\n  [基础结构大小]  DarkChessEnv = {} B ({:.1} KB)  |  \
-         Observation = {} B ({:.1} KB)",
+         ResNetObservation = {} B ({:.1} KB)",
         env_sz,
         env_sz as f64 / 1024.0,
         obs_sz,

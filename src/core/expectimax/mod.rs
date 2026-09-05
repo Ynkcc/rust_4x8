@@ -29,7 +29,7 @@ impl ExpectimaxEngine {
     /// 创建默认 Expectimax 引擎实体
     pub fn new() -> Self {
         let mut config = SearchConfig::default();
-        config.nnue_evaluator = Some(Arc::new(NnueEvaluator::new_dummy()));
+        config.nnue_evaluator = Some(Arc::new(NnueEvaluator::new_dummy(crate::core::env::darkchess_config().nnue_feature_dim())));
         Self { config }
     }
 

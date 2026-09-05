@@ -261,7 +261,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     let _ = t.step(action_idx);
                     Some(t)
                 };
-                let child_state = child_env.as_ref().map(|e| e.get_state());
+                let child_state = child_env.as_ref().map(|e| e.get_resnet_state());
                 let mut child_node = MctsNode::new(
                     prior,
                     logit,
@@ -310,7 +310,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
 
         let mut outcomes_to_add = Vec::new();
         for (outcome_id, prob, next_env) in outcomes {
-            let child_state = next_env.get_state();
+            let child_state = next_env.get_resnet_state();
             let child_node =
                 MctsNode::new(1.0, 0.0, false, Some(next_env), Some(child_state), false);
             let child_idx = arena.allocate(child_node);

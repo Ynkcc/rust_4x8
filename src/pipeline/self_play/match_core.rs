@@ -453,7 +453,7 @@ where
         ));
 
         match env.step(action) {
-            Ok((_, _, terminated, truncated, winner)) => {
+            Ok((_, terminated, truncated, winner)) => {
                 if terminated || truncated {
                     let ep = finalize_episode(episode_data, winner, env.terminal_health_diff_red());
                     return outcome_from_episode(ep, player_a_is_red);

@@ -9,7 +9,8 @@ fn main() {
     println!("=== Rust 迷你暗棋 (4x8) - 随机对局演示 ===\n");
     println!("开始执行随机策略测试...\n");
 
-    let obs = env.reset();
+    env.reset();
+    let obs = env.get_resnet_state();
     println!("游戏重置完成");
     println!("初始棋盘状态张量形状: {:?}", obs.board.shape());
     println!("初始标量状态形状: {:?}\n", obs.scalars.shape());
@@ -47,7 +48,7 @@ fn main() {
         );
 
         match env.step(action, None) {
-            Ok((_obs, _reward, terminated, truncated, winner)) => {
+            Ok((_reward, terminated, truncated, winner)) => {
                 step_count += 1;
 
                 if terminated || truncated {

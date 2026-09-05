@@ -55,7 +55,7 @@ impl OnnxModel {
 
     /// 批量前向推理。
     ///
-    /// 参数为扁平特征（由 `GameEnv::encode_features_flat_into` 填充）：
+    /// 参数为扁平特征（由 `GameEnv::encode_resnet_features_flat_into` 填充）：
     ///   - board_data:   batch * channels * rows * cols
     ///   - scalars_data: batch * scalar_count
     ///
@@ -216,7 +216,7 @@ impl<G: GameEnv> Evaluator<G> for OnnxEvaluator<G> {
         }
 
         // 维度从首个环境运行时观测推导（兼容 4x8 / 4x4 / 4x2 三种棋盘）。
-        let ref_obs = envs[0].get_state();
+        let ref_obs = envs[0].get_resnet_state();
         let board_channels = ref_obs.board.shape()[0];
         let board_rows = ref_obs.board.shape()[1];
         let board_cols = ref_obs.board.shape()[2];
@@ -229,7 +229,7 @@ impl<G: GameEnv> Evaluator<G> for OnnxEvaluator<G> {
         let mut board_buf = Vec::new();
         let mut scalar_buf = Vec::new();
         for env in envs {
-            env.encode_features_flat_into(&mut board_buf, &mut scalar_buf);
+            env.encode_resnet_features_flat_into(&mut board_buf, &mut scalar_buf);
             board_data.extend_from_slice(&board_buf);
             scalars_data.extend_from_slice(&scalar_buf);
         }

@@ -33,9 +33,8 @@ mod step;
 mod struct_def;
 
 impl DarkChessEnv {
-    pub fn reset(&mut self) -> Observation {
+    pub fn reset(&mut self) {
         self.reset_internal_state();
         self.initialize_board();
-        self.get_state()
     }
 }

@@ -11,7 +11,7 @@ use pyo3::types::PyDict;
 
 #[cfg(feature = "pyo3")]
 use crate::core::env::{
-    ACTION_SPACE_SIZE, BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, SCALAR_FEATURE_COUNT,
+    ACTION_SPACE_SIZE, RESNET_BOARD_CHANNELS, BOARD_COLS, BOARD_ROWS, RESNET_SCALAR_FEATURE_COUNT,
 };
 #[cfg(feature = "pyo3")]
 use crate::pipeline::self_play::GameEpisode;
@@ -122,20 +122,20 @@ fn episode_to_dict_with_shapes<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let (bc, br, bcol, sc, ac): (usize, usize, usize, usize, usize) = match variant {
         1 => (
-            crate::core::env::MINI_BOARD_CHANNELS,
+            crate::core::env::MINI_RESNET_BOARD_CHANNELS,
             crate::core::env::MINI_BOARD_ROWS,
             crate::core::env::MINI_BOARD_COLS,
-            crate::core::env::MINI_SCALAR_FEATURE_COUNT,
+            crate::core::env::MINI_RESNET_SCALAR_FEATURE_COUNT,
             crate::core::env::MINI_ACTION_SPACE_SIZE,
         ),
         2 => (
-            crate::core::env::GAME4X4_BOARD_CHANNELS,
+            crate::core::env::GAME4X4_RESNET_BOARD_CHANNELS,
             crate::core::env::GAME4X4_BOARD_ROWS,
             crate::core::env::GAME4X4_BOARD_COLS,
-            crate::core::env::GAME4X4_SCALAR_FEATURE_COUNT,
+            crate::core::env::GAME4X4_RESNET_SCALAR_FEATURE_COUNT,
             crate::core::env::GAME4X4_ACTION_SPACE_SIZE,
         ),
-        _ => (BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS, SCALAR_FEATURE_COUNT, ACTION_SPACE_SIZE),
+        _ => (RESNET_BOARD_CHANNELS, BOARD_ROWS, BOARD_COLS, RESNET_SCALAR_FEATURE_COUNT, ACTION_SPACE_SIZE),
     };
     let n = episode.samples.len();
     let mut boards: Vec<Vec<f32>> = Vec::with_capacity(n);

@@ -60,7 +60,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
     /// * `config` - 搜索配置
     pub fn new(env: &G, evaluator: &'a E, config: GumbelConfig) -> Self {
         let mut arena = MctsArena::new();
-        let state = env.get_state();
+        let state = env.get_resnet_state();
         let root_node = MctsNode::new(1.0, 0.0, false, Some(*env), Some(state), true);
         let root_idx = arena.allocate(root_node);
 
@@ -127,7 +127,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         }
 
         // 如果无法重用子树，则重置根节点
-        let state = env.get_state();
+        let state = env.get_resnet_state();
         let mut new_root = MctsNode::new(1.0, 0.0, false, Some(*env), Some(state), true);
         new_root.is_root_node = true;
         self.root_idx = self.arena.allocate(new_root);

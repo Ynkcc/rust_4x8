@@ -13,8 +13,8 @@ use crate::core::mcts::{Evaluator, EvaluatorOutput};
 /// 通用 Python 评估器：把 `Vec<G>` 编码为 numpy 批量特征后调用 Python 预测函数。
 ///
 /// 预测函数约定：`predict_fn(boards_np, scalars_np) -> (policy_logits, values)`
-/// - `boards_np` shape `[batch, G::BOARD_CHANNELS, G::BOARD_ROWS, G::BOARD_COLS]`
-/// - `scalars_np` shape `[batch, G::SCALAR_FEATURE_COUNT]`
+/// - `boards_np` shape `[batch, G::RESNET_BOARD_CHANNELS, G::BOARD_ROWS, G::BOARD_COLS]`
+/// - `scalars_np` shape `[batch, G::RESNET_SCALAR_FEATURE_COUNT]`
 /// - `policy_logits` shape `[batch, G::action_space_size()]`
 pub struct PyEvaluator<G: GameEnv> {
     predict_fn: Py<PyAny>,
@@ -73,13 +73,13 @@ impl<G: GameEnv> PyEvaluator<G> {
                 py,
                 &np,
                 &boards_flat,
-                &[batch_size, G::BOARD_CHANNELS, G::BOARD_ROWS, G::BOARD_COLS],
+                &[batch_size, G::RESNET_BOARD_CHANNELS, G::BOARD_ROWS, G::BOARD_COLS],
             )?;
             let scalars_np = Self::to_numpy(
                 py,
                 &np,
                 &scalars_flat,
-                &[batch_size, G::SCALAR_FEATURE_COUNT],
+                &[batch_size, G::RESNET_SCALAR_FEATURE_COUNT],
             )?;
 
             let result = self
@@ -320,17 +320,17 @@ impl<G: GameEnv> Evaluator<G> for PyEvaluator<G> {
 
         let batch_size = envs.len();
         let mut boards_flat: Vec<f32> =
-            Vec::with_capacity(batch_size * G::BOARD_CHANNELS * G::BOARD_ROWS * G::BOARD_COLS);
-        let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * G::SCALAR_FEATURE_COUNT);
+            Vec::with_capacity(batch_size * G::RESNET_BOARD_CHANNELS * G::BOARD_ROWS * G::BOARD_COLS);
+        let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * G::RESNET_SCALAR_FEATURE_COUNT);
 
-        // 直接写入 flat buffer，避免创建 Observation（ndarray 分配 + clone）的开销。
-        // 注意：`encode_features_flat_into` 内部会 `clear()` 后重写，因此为每个 env
+        // 直接写入 flat buffer，避免创建 ResNetObservation（ndarray 分配 + clone）的开销。
+        // 注意：`encode_resnet_features_flat_into` 内部会 `clear()` 后重写，因此为每个 env
         // 复用同一组临时 Vec，再 extend 进目标 batch buffer（相比旧实现每 env 新分配，
         // 省去 batch 规模次数的堆分配）。
         let mut board_buf = Vec::new();
         let mut scalar_buf = Vec::new();
         for env in envs {
-            env.encode_features_flat_into(&mut board_buf, &mut scalar_buf);
+            env.encode_resnet_features_flat_into(&mut board_buf, &mut scalar_buf);
             boards_flat.extend_from_slice(&board_buf);
             scalars_flat.extend_from_slice(&scalar_buf);
         }

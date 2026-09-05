@@ -13,16 +13,16 @@ use super::util::piece_type_from_idx;
 pub fn decode_board_with_config(board: &[f32], current_player: Player, cfg: &GameConfig) -> Vec<Slot> {
     assert_eq!(
         board.len(),
-        cfg.board_channels * cfg.total_positions,
+        cfg.resnet_board_channels * cfg.total_positions,
         "board 张量长度错误: 期望 {}，实际 {}",
-        cfg.board_channels * cfg.total_positions,
+        cfg.resnet_board_channels * cfg.total_positions,
         board.len()
     );
     let opp = current_player.opposite();
     let mut slots = Vec::with_capacity(cfg.total_positions);
     for sq in 0..cfg.total_positions {
-        let hidden = board[(cfg.board_channels - 2) * cfg.total_positions + sq];
-        let empty = board[(cfg.board_channels - 1) * cfg.total_positions + sq];
+        let hidden = board[(cfg.resnet_board_channels - 2) * cfg.total_positions + sq];
+        let empty = board[(cfg.resnet_board_channels - 1) * cfg.total_positions + sq];
         let slot = if hidden > 0.5 {
             Slot::Hidden
         } else if empty > 0.5 {

@@ -83,7 +83,7 @@ impl<G: GameEnv> Evaluator<G> for TchEvaluator<G> {
             let batch_size = envs.len();
 
             // 从首个环境运行时观测推导特征维度（由 config 驱动，适配任意变体）。
-            let ref_obs = envs[0].get_state();
+            let ref_obs = envs[0].get_resnet_state();
             let board_channels = ref_obs.board.shape()[0];
             let board_rows = ref_obs.board.shape()[1];
             let board_cols = ref_obs.board.shape()[2];
@@ -94,7 +94,7 @@ impl<G: GameEnv> Evaluator<G> for TchEvaluator<G> {
             let mut scalars_flat: Vec<f32> = Vec::with_capacity(batch_size * scalar_count);
 
             for env in envs {
-                let obs = env.get_state();
+                let obs = env.get_resnet_state();
                 board_flat.extend(obs.board.iter().cloned());
                 scalars_flat.extend(obs.scalars.iter().cloned());
             }

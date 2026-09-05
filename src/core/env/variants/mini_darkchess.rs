@@ -12,7 +12,7 @@
 
 use crate::core::env::board::DarkChessEnv;
 use crate::core::env::config::mini_config;
-use crate::core::env::types::{Observation, Player};
+use crate::core::env::types::{ResNetObservation, Player};
 
 #[derive(Clone, Copy, Debug)]
 pub struct MiniDarkChessEnv {
@@ -22,13 +22,13 @@ pub struct MiniDarkChessEnv {
 /// 4x2 迷你暗棋：动作空间 = 翻8 + 常规20 + 炮12 = 40。
 pub const MINI_ACTION_SPACE_SIZE: usize = 40;
 /// 4x2 迷你暗棋：棋盘通道数 = 2*4(激活类型) + 2 = 10
-pub const MINI_BOARD_CHANNELS: usize = 10;
+pub const MINI_RESNET_BOARD_CHANNELS: usize = 10;
 /// 4x2 迷你暗棋：棋盘行数
 pub const MINI_BOARD_ROWS: usize = 4;
 /// 4x2 迷你暗棋：棋盘列数
 pub const MINI_BOARD_COLS: usize = 2;
 /// 4x2 迷你暗棋：标量特征数 = 3 + 2*4 = 11
-pub const MINI_SCALAR_FEATURE_COUNT: usize = 11;
+pub const MINI_RESNET_SCALAR_FEATURE_COUNT: usize = 11;
 
 impl MiniDarkChessEnv {
     /// 创建标准 4x2 迷你开局。
@@ -62,20 +62,20 @@ impl MiniDarkChessEnv {
     pub fn step(
         &mut self,
         action: usize,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+    ) -> Result<(f32, bool, bool, Option<i32>), String> {
         self.inner.step(action, None)
     }
 
-    pub fn get_state(&self) -> Observation {
-        self.inner.get_state()
+    pub fn get_resnet_state(&self) -> ResNetObservation {
+        self.inner.get_resnet_state()
     }
 
     pub fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
         self.inner.check_game_over_conditions()
     }
 
-    pub fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
-        self.inner.get_state_flat_into(board_data, scalars_data);
+    pub fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        self.inner.resnet_features_flat_into(board_data, scalars_data);
     }
 
     pub fn is_chance_action(&self, action: usize) -> bool {

@@ -16,7 +16,7 @@
 // 正确性：与单线程版本一致——任何树的叶子在被评估/回填前，该树不会继续前进；
 // 不同树之间互不依赖，可以安全地在评估期间推进其他树。
 
-use crate::core::env::{GameEnv, Observation, Player};
+use crate::core::env::{GameEnv, ResNetObservation, Player};
 use crate::core::mcts::batched::BatchedTree;
 use crate::core::mcts::{Evaluator, GumbelConfig, PendingEval, health_logits_expectation};
 use crate::pipeline::self_play::finalize_episode;
@@ -164,7 +164,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
             // 初始化本波的游戏树 + 每局的样本收集
             let mut trees: Vec<BatchedTree<'_, G, E>> = Vec::with_capacity(wave);
             let mut episode_data: Vec<
-                Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize, bool)>,
+                Vec<(ResNetObservation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize, bool)>,
             > = Vec::with_capacity(wave);
             for _ in 0..wave {
                 let env = make_env();

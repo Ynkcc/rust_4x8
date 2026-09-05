@@ -43,11 +43,11 @@ fn random_game_keeps_board_consistent() {
                 None
             };
             match env.step(action, None) {
-                Ok((obs, _, terminated, truncated, _)) => {
+                Ok((_, terminated, truncated, _)) => {
                     action_history.push(action);
-                    let b = obs.board.as_slice().unwrap();
+                    let b = env.get_resnet_state().board.as_slice().unwrap().to_vec();
                     for sq in 0..env.config.total_positions {
-                        let active = (0..env.config.board_channels)
+                        let active = (0..env.config.resnet_board_channels)
                             .filter(|&pt| b[pt * env.config.total_positions + sq] > 0.5)
                             .count();
                         if active != 1 {

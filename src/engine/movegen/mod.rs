@@ -213,7 +213,7 @@ mod tests {
                 }
                 let action = legal[rng.gen_range(0..legal.len())];
                 match env.step(action, None) {
-                    Ok((_, _, terminated, _, _)) => {
+                    Ok((_, terminated, _, _)) => {
                         if terminated {
                             break;
                         }

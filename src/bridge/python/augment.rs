@@ -44,8 +44,8 @@ fn config_for_size(rows: usize, cols: usize) -> GameConfig {
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
-        board_channels: 0,
-        scalar_feature_count: 0,
+        resnet_board_channels: 0,
+        resnet_scalar_feature_count: 0,
         reveal_probability_size: 0,
     }
 }

@@ -54,7 +54,7 @@ pub const SURVIVAL_VECTOR_SIZE: usize = TOTAL_PIECES_PER_PLAYER;
 /// Scalar 特征数量:
 /// 3个全局标量 (MoveCount, MyHP, OppHP) + 2个存活向量(各16) = 35
 /// 注意: Action Mask 不再作为 scalar 输入网络，它在 MCTS 动作选择和 Python loss 计算时单独使用
-pub const SCALAR_FEATURE_COUNT: usize = 3 + 2 * SURVIVAL_VECTOR_SIZE;
+pub const RESNET_SCALAR_FEATURE_COUNT: usize = 3 + 2 * SURVIVAL_VECTOR_SIZE;
 
 /// 翻棋概率表大小: 2个玩家 * 7种棋子 = 14
 pub const REVEAL_PROBABILITY_SIZE: usize = 2 * NUM_PIECE_TYPES;
@@ -71,7 +71,7 @@ pub const U64_BITS: usize = 64;
 
 /// 棋盘状态张量的通道数:
 /// 己方7种 + 敌方7种 + 暗子1种 + 空位1种 = 16
-pub const BOARD_CHANNELS: usize = 2 * NUM_PIECE_TYPES + 2;
+pub const RESNET_BOARD_CHANNELS: usize = 2 * NUM_PIECE_TYPES + 2;
 
 // --- 动作空间定义 ---
 pub const REVEAL_ACTIONS_COUNT: usize = 32;

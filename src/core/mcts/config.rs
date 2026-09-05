@@ -1,7 +1,7 @@
 // src/mcts/config.rs
 // MCTS 搜索配置与结果定义
 
-use crate::core::env::{Observation, Player};
+use crate::core::env::{ResNetObservation, Player};
 
 /// Gumbel MCTS 配置参数
 ///
@@ -66,7 +66,7 @@ pub struct MctsSearchResult {
     /// 选择的动作索引
     pub action: usize,
     /// 当前状态的观测
-    pub state: Observation,
+    pub state: ResNetObservation,
     /// 改进的策略概率分布
     pub improved_policy: Vec<f32>,
     /// MCTS 根节点价值

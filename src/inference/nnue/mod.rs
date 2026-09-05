@@ -3,7 +3,7 @@
 pub mod feature;
 pub mod network;
 
-pub use feature::{Accumulator, FEATURE_DIM, TRANSFORMER_OUT_DIM, extract_active_features, sq_state_feature};
+pub use feature::{Accumulator, TRANSFORMER_OUT_DIM};
 pub use network::NnueEvaluator;
 
 #[cfg(test)]
@@ -14,12 +14,12 @@ mod tests {
     #[test]
     fn test_nnue_evaluator_basic() {
         let env = DarkChessEnv::default();
-        let eval = NnueEvaluator::new_dummy();
+        let eval = NnueEvaluator::new_dummy(env.config.nnue_feature_dim());
 
         let val = eval.evaluate(&env);
         assert!(val >= -1.0 && val <= 1.0);
 
-        let active = extract_active_features(&env);
+        let active = env.nnue_active_features();
         assert!(active.len() >= 40);
     }
 }

@@ -15,7 +15,7 @@ use super::config::GameConfig;
 use super::constants::MAX_STEPS_PER_EPISODE;
 use super::variants::game4x4::Game4x4Env;
 use super::variants::mini_darkchess::MiniDarkChessEnv;
-use super::types::{Observation, Piece, Player};
+use super::types::{ResNetObservation, Piece, Player};
 
 /// 泛型游戏环境：Gumbel MCTS 对其施加的全部约束。
 ///
@@ -31,17 +31,15 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     /// 调用方保证 `masks.len() >= Self::action_space_size()`。
     fn action_masks_into(&self, masks: &mut [i32]);
 
-    /// 执行动作，返回 `(观测, 奖励, 是否终止, 是否截断, 胜者)`。
+    /// 执行动作，返回 `(奖励, 是否终止, 是否截断, 胜者)`。
     ///
+    /// 观测不随步返回，按需调用 `get_resnet_state()`。
     /// `winner` 使用全局视角：`Some(1)` = 红方/先手胜，`Some(-1)` = 黑方/后手胜，
     /// `Some(0)` = 平局，`None` = 未结束。
-    fn step(
-        &mut self,
-        action: usize,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String>;
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String>;
 
     /// 获取当前观测（神经网络输入）
-    fn get_state(&self) -> Observation;
+    fn get_resnet_state(&self) -> ResNetObservation;
 
     /// 终局检测：`(terminated, truncated, winner)`
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>);
@@ -56,16 +54,16 @@ pub trait GameEnv: Copy + Clone + Send + Sync + 'static {
     // ------------------------------------------------------------------------
 
     /// 棋盘特征通道数
-    const BOARD_CHANNELS: usize;
+    const RESNET_BOARD_CHANNELS: usize;
     /// 棋盘行数
     const BOARD_ROWS: usize;
     /// 棋盘列数
     const BOARD_COLS: usize;
     /// 标量特征数
-    const SCALAR_FEATURE_COUNT: usize;
+    const RESNET_SCALAR_FEATURE_COUNT: usize;
 
     /// 将环境编码为扁平特征写入外部缓冲区。
-    fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>);
+    fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>);
 
     // ------------------------------------------------------------------------
     // 机会节点扩展点
@@ -135,15 +133,12 @@ impl GameEnv for DarkChessEnv {
         DarkChessEnv::action_masks_into(self, masks);
     }
 
-    fn step(
-        &mut self,
-        action: usize,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
         DarkChessEnv::step(self, action, None)
     }
 
-    fn get_state(&self) -> Observation {
-        DarkChessEnv::get_state(self)
+    fn get_resnet_state(&self) -> ResNetObservation {
+        DarkChessEnv::get_resnet_state(self)
     }
 
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
@@ -154,13 +149,13 @@ impl GameEnv for DarkChessEnv {
         super::constants::MAX_STEPS_PER_EPISODE
     }
 
-    const BOARD_CHANNELS: usize = super::constants::BOARD_CHANNELS;
+    const RESNET_BOARD_CHANNELS: usize = super::constants::RESNET_BOARD_CHANNELS;
     const BOARD_ROWS: usize = super::constants::BOARD_ROWS;
     const BOARD_COLS: usize = super::constants::BOARD_COLS;
-    const SCALAR_FEATURE_COUNT: usize = super::constants::SCALAR_FEATURE_COUNT;
+    const RESNET_SCALAR_FEATURE_COUNT: usize = super::constants::RESNET_SCALAR_FEATURE_COUNT;
 
-    fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
-        DarkChessEnv::get_state_flat_into(self, board_data, scalars_data);
+    fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        DarkChessEnv::resnet_features_flat_into(self, board_data, scalars_data);
     }
 
     // --- 机会节点 ---
@@ -213,15 +208,12 @@ impl GameEnv for Game4x4Env {
         Game4x4Env::action_masks_into(self, masks);
     }
 
-    fn step(
-        &mut self,
-        action: usize,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
         Game4x4Env::step(self, action)
     }
 
-    fn get_state(&self) -> Observation {
-        Game4x4Env::get_state(self)
+    fn get_resnet_state(&self) -> ResNetObservation {
+        Game4x4Env::get_resnet_state(self)
     }
 
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
@@ -232,13 +224,13 @@ impl GameEnv for Game4x4Env {
         Game4x4Env::max_steps()
     }
 
-    const BOARD_CHANNELS: usize = 16; // 2*7(全激活) + 2
+    const RESNET_BOARD_CHANNELS: usize = 16; // 2*7(全激活) + 2
     const BOARD_ROWS: usize = 4;
     const BOARD_COLS: usize = 4;
-    const SCALAR_FEATURE_COUNT: usize = 19; // 3 + 2*8
+    const RESNET_SCALAR_FEATURE_COUNT: usize = 19; // 3 + 2*8
 
-    fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
-        Game4x4Env::encode_features_flat_into(self, board_data, scalars_data);
+    fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        Game4x4Env::encode_resnet_features_flat_into(self, board_data, scalars_data);
     }
 
     fn is_chance_action(&self, action: usize) -> bool {
@@ -283,15 +275,12 @@ impl GameEnv for MiniDarkChessEnv {
         MiniDarkChessEnv::action_masks_into(self, masks);
     }
 
-    fn step(
-        &mut self,
-        action: usize,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
         MiniDarkChessEnv::step(self, action)
     }
 
-    fn get_state(&self) -> Observation {
-        MiniDarkChessEnv::get_state(self)
+    fn get_resnet_state(&self) -> ResNetObservation {
+        MiniDarkChessEnv::get_resnet_state(self)
     }
 
     fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
@@ -302,13 +291,13 @@ impl GameEnv for MiniDarkChessEnv {
         MiniDarkChessEnv::max_steps()
     }
 
-    const BOARD_CHANNELS: usize = 10;
+    const RESNET_BOARD_CHANNELS: usize = 10;
     const BOARD_ROWS: usize = 4;
     const BOARD_COLS: usize = 2;
-    const SCALAR_FEATURE_COUNT: usize = 11;
+    const RESNET_SCALAR_FEATURE_COUNT: usize = 11;
 
-    fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
-        MiniDarkChessEnv::encode_features_flat_into(self, board_data, scalars_data);
+    fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        MiniDarkChessEnv::encode_resnet_features_flat_into(self, board_data, scalars_data);
     }
 
     fn is_chance_action(&self, action: usize) -> bool {

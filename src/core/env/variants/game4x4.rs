@@ -13,7 +13,7 @@
 
 use crate::core::env::board::DarkChessEnv;
 use crate::core::env::config::game_4x4_config;
-use crate::core::env::types::{Observation, Player};
+use crate::core::env::types::{ResNetObservation, Player};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Game4x4Env {
@@ -23,13 +23,13 @@ pub struct Game4x4Env {
 /// 4x4 暗棋动作空间大小 = 翻棋16 + 常规48 + 炮击48 = 112。
 pub const GAME4X4_ACTION_SPACE_SIZE: usize = 112;
 /// 4x4 暗棋：棋盘通道数 = 2*7(全激活) + 2 = 16
-pub const GAME4X4_BOARD_CHANNELS: usize = 16;
+pub const GAME4X4_RESNET_BOARD_CHANNELS: usize = 16;
 /// 4x4 暗棋：棋盘行数
 pub const GAME4X4_BOARD_ROWS: usize = 4;
 /// 4x4 暗棋：棋盘列数
 pub const GAME4X4_BOARD_COLS: usize = 4;
 /// 4x4 暗棋：标量特征数 = 3 + 2*8 = 19
-pub const GAME4X4_SCALAR_FEATURE_COUNT: usize = 19;
+pub const GAME4X4_RESNET_SCALAR_FEATURE_COUNT: usize = 19;
 
 impl Game4x4Env {
     /// 创建标准 4x4 开局。
@@ -63,20 +63,20 @@ impl Game4x4Env {
     pub fn step(
         &mut self,
         action: usize,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+    ) -> Result<(f32, bool, bool, Option<i32>), String> {
         self.inner.step(action, None)
     }
 
-    pub fn get_state(&self) -> Observation {
-        self.inner.get_state()
+    pub fn get_resnet_state(&self) -> ResNetObservation {
+        self.inner.get_resnet_state()
     }
 
     pub fn check_game_over_conditions(&self) -> (bool, bool, Option<i32>) {
         self.inner.check_game_over_conditions()
     }
 
-    pub fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
-        self.inner.get_state_flat_into(board_data, scalars_data);
+    pub fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+        self.inner.resnet_features_flat_into(board_data, scalars_data);
     }
 
     pub fn is_chance_action(&self, action: usize) -> bool {

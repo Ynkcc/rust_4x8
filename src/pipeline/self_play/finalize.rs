@@ -2,7 +2,7 @@
 //
 // 样本回填、动作选择等纯计算工具。
 
-use crate::core::env::{GameEnv, Observation, Player};
+use crate::core::env::{GameEnv, ResNetObservation, Player};
 use crate::core::mcts::{Evaluator, GumbelMCTS};
 
 /// 按 winner 统一回填 episode_data 并构造 GameEpisode。
@@ -14,7 +14,7 @@ use crate::core::mcts::{Evaluator, GumbelMCTS};
 /// 该函数同时被三条终止路径调用：MCTS None 分支（无合法走法判负）、
 /// 终局分支（terminated/truncated）、步数上限分支。
 pub fn finalize_episode(
-    episode_data: Vec<(Observation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize, bool)>,
+    episode_data: Vec<(ResNetObservation, Vec<f32>, f32, f32, u32, Player, Vec<i32>, usize, bool)>,
     winner: Option<i32>,
     health_diff_red: Option<f32>,
 ) -> crate::pipeline::self_play::GameEpisode {

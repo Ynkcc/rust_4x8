@@ -8,7 +8,7 @@
 // - 泛型化：`G: GameEnv` 可为暗棋（DarkChessEnv）或井字棋（TicTacToeEnv），
 //   环境由调用方以 `fn() -> G` 工厂注入。
 
-use crate::core::env::{GameEnv, Observation};
+use crate::core::env::{GameEnv, ResNetObservation};
 use crate::core::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -29,7 +29,7 @@ pub struct GameStats {
 /// 包含该局游戏中每一步的观测状态、MCTS 搜索产生的策略概率、
 /// MCTS 估算的根节点价值、实际选择的动作以及最终的游戏结果。
 ///
-/// 样本中的观测统一使用 `Observation`（各游戏按自身通道/尺寸编码），
+/// 样本中的观测统一使用 `ResNetObservation`（各游戏按自身通道/尺寸编码），
 /// 因此 `GameEpisode` 本身不携带游戏泛型参数。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameEpisode {
@@ -37,7 +37,7 @@ pub struct GameEpisode {
     /// health_diff 为终局血量差按该样本玩家视角取号（红方视角为正）。
     /// is_full_search=true 表示该样本来自 Full Search（算力随机化下用于训练的选择性标记，
     /// 见 playout_cap_random_enabled / full_search_prob 字段）。
-    pub samples: Vec<(Observation, Vec<f32>, f32, f32, u32, f32, Vec<i32>, usize, f32, bool)>,
+    pub samples: Vec<(ResNetObservation, Vec<f32>, f32, f32, u32, f32, Vec<i32>, usize, f32, bool)>,
     /// 游戏总步数
     pub game_length: usize,
     /// 获胜方
@@ -264,7 +264,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
 
             // --- 执行动作 ---
             match env.step(action) {
-                Ok((_, _, terminated, truncated, winner)) => {
+                Ok((_, terminated, truncated, winner)) => {
                     // 推进 MCTS 树
                     mcts.step_next(&env, action);
 

@@ -359,7 +359,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
         let mut env = *env_root;
         let step_res = env.step(action);
         let (terminated, truncated, winner) = match step_res {
-            Ok((_, _, terminated, truncated, winner)) => (terminated, truncated, winner),
+            Ok((_, terminated, truncated, winner)) => (terminated, truncated, winner),
             Err(e) => {
                 eprintln!("⚠️ batched_self_play 游戏错误 (action={}): {}", action, e);
                 self.game_over = true;

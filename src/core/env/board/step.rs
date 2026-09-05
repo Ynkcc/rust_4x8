@@ -5,11 +5,12 @@ use super::*;
 use crate::core::env::traits::get_outcome_id;
 
 impl DarkChessEnv {
+    /// 执行动作。观测不随步返回，按需调用 `get_resnet_state()` 获取。
     pub fn step(
         &mut self,
         action: usize,
         reveal_piece: Option<Piece>,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+    ) -> Result<(f32, bool, bool, Option<i32>), String> {
         // 动作空间大小随 config 变化，使用 Vec（无法用编译期定长栈数组）
         let mut masks = vec![0i32; self.config.action_space_size];
         self.action_masks_into(&mut masks);
@@ -35,7 +36,7 @@ impl DarkChessEnv {
 
         self.current_player = self.current_player.opposite();
         let (terminated, truncated, winner) = self.check_game_over_conditions();
-        Ok((self.get_state(), 0.0, terminated, truncated, winner))
+        Ok((0.0, terminated, truncated, winner))
     }
 
     fn apply_move_action(&mut self, from_sq: usize, to_sq: usize, reveal_piece: Option<Piece>) {

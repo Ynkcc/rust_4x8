@@ -139,7 +139,7 @@ pub enum Slot {
 
 /// 观察空间数据结构 (Neural Network Input)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Observation {
+pub struct ResNetObservation {
     /// 棋盘特征张量: (Channels, H, W)
     pub board: Array3<f32>,
     /// 全局标量特征: (Features,)

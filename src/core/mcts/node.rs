@@ -2,7 +2,7 @@
 // MCTS 树节点定义与内存池管理（泛型化：G = 游戏环境，如 DarkChessEnv / TicTacToeEnv）
 
 use crate::core::env::GameEnv;
-use crate::core::env::{Observation, Player};
+use crate::core::env::{ResNetObservation, Player};
 use slab::Slab;
 
 // ============================================================================
@@ -99,7 +99,7 @@ pub struct MctsNode<G: GameEnv> {
     /// 当前玩家
     pub player: Player,
     /// 节点对应的观测状态
-    pub state: Option<Observation>,
+    pub state: Option<ResNetObservation>,
     /// 节点的初始价值 (来自网络预测的 V)
     /// 当访问次数为 0 时，用于初始化 Q 值。
     pub initial_value: f32,
@@ -126,7 +126,7 @@ impl<G: GameEnv> MctsNode<G> {
         logit: f32,
         is_chance_node: bool,
         env: Option<G>,
-        state: Option<Observation>,
+        state: Option<ResNetObservation>,
         is_root_node: bool,
     ) -> Self {
         let (player, is_terminal) = if let Some(ref e) = env {

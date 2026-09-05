@@ -87,25 +87,6 @@ impl DarkChessEnv {
         Observation { board, scalars }
     }
 
-    /// 把特征写入外部缓冲区（避免每次分配临时 Vec）。
-    pub fn get_state_into(
-        &self,
-        board_data: &mut Vec<f32>,
-        scalars_data: &mut Vec<f32>,
-    ) -> Observation {
-        self.get_board_state_tensor_into(board_data);
-        let board = Array3::from_shape_vec(
-            (self.config.board_channels, self.config.rows, self.config.cols),
-            board_data.clone(),
-        )
-        .expect("Failed to reshape board array");
-
-        self.get_scalar_state_vector_into(scalars_data);
-        let scalars = Array1::from_vec(scalars_data.clone());
-
-        Observation { board, scalars }
-    }
-
     /// 仅将扁平特征写入外部缓冲区，不创建 Observation。
     pub fn get_state_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
         self.get_board_state_tensor_into(board_data);

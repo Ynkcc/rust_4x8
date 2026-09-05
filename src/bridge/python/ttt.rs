@@ -86,13 +86,13 @@ impl PyTicTacToe {
     fn encode(slf: PyRef<'_, Self>) -> Vec<f32> {
         let mut board = Vec::new();
         let mut scalars = Vec::new();
-        slf.inner.encode_features_flat_into(&mut board, &mut scalars);
+        slf.inner.encode_resnet_features_flat_into(&mut board, &mut scalars);
         board
     }
 
     /// 落子并返回 (terminated, truncated, winner)
     fn step(mut slf: PyRefMut<'_, Self>, action: usize) -> PyResult<(bool, bool, Option<i32>)> {
-        let (_, _, term, trunc, winner) = slf
+        let (_, term, trunc, winner) = slf
             .inner
             .step(action)
             .map_err(|e| PyValueError::new_err(e))?;
@@ -173,7 +173,7 @@ pub fn ttt_mcts_search(
                 dict.set_item("action_mask", r.action_mask)?;
                 let mut board = Vec::new();
                 let mut scalars = Vec::new();
-                env.encode_features_flat_into(&mut board, &mut scalars);
+                env.encode_resnet_features_flat_into(&mut board, &mut scalars);
                 dict.set_item("board", board)?;
                 dict.set_item("scalars", scalars)?;
                 dict.set_item("game_over", false)?;
@@ -190,7 +190,7 @@ pub fn ttt_mcts_search(
                 dict.set_item("action_mask", vec![0i32; TTT_ACTION_SPACE_SIZE])?;
                 let mut board = Vec::new();
                 let mut scalars = Vec::new();
-                env.encode_features_flat_into(&mut board, &mut scalars);
+                env.encode_resnet_features_flat_into(&mut board, &mut scalars);
                 dict.set_item("board", board)?;
                 dict.set_item("scalars", scalars)?;
             }

@@ -99,7 +99,7 @@ macro_rules! define_chess_env {
             /// 当前玩家视角观测：返回 (board 扁平, scalars 扁平)。
             /// board 通道 0~N-1=当前方棋子、N~2N-1=对手、隐藏、空（由变体决定）。
             fn observation(&self) -> (Vec<f32>, Vec<f32>) {
-                let obs = self.inner.get_state();
+                let obs = self.inner.get_resnet_state();
                 (
                     obs.board.iter().copied().collect(),
                     obs.scalars.iter().copied().collect(),
@@ -163,7 +163,7 @@ macro_rules! define_chess_env {
 
             /// 公开落子接口。返回 (terminated, truncated, winner)。
             fn step(&mut self, action: usize) -> PyResult<(bool, bool, Option<i32>)> {
-                let (_, _, terminated, truncated, winner) = GameEnv::step(&mut self.inner, action)
+                let (_, terminated, truncated, winner) = GameEnv::step(&mut self.inner, action)
                     .map_err(|e| PyRuntimeError::new_err(format!("step 失败: {}", e)))?;
                 Ok((terminated, truncated, winner))
             }

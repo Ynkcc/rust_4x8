@@ -100,9 +100,9 @@ pub struct GameConfig {
     pub cannon_attack_actions_count: usize,
     pub action_space_size: usize,
 
-    // --- 特征维度 ---
-    pub board_channels: usize,
-    pub scalar_feature_count: usize,
+    // --- 特征维度（ResNet / CNN 输入） ---
+    pub resnet_board_channels: usize,
+    pub resnet_scalar_feature_count: usize,
     pub reveal_probability_size: usize,
 }
 
@@ -127,6 +127,37 @@ impl GameConfig {
         } else {
             base
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // NNUE 稀疏特征布局（由 config 推导，替代原 4x8 硬编码 562）
+    // ------------------------------------------------------------------------
+
+    /// NNUE 标量段桶数：6(步数桶) + 1(无吃子标记)。
+    /// 行棋方信息由格位段的己方/对方视角内建，不设身份标量。
+    pub const NNUE_SCALAR_BUCKETS: usize = 7;
+
+    /// 每格状态数：空 / 暗子 / 每型红黑明子（2 + 2*num_active）。
+    pub fn nnue_states_per_square(&self) -> usize {
+        2 + 2 * self.num_active
+    }
+
+    /// 暗子包段：每型桶距 = 单型最大子数 + 1（4x8 兵为 5+1=6，与原布局一致）。
+    pub fn nnue_bag_stride(&self) -> usize {
+        self.piece_counts
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    /// NNUE 总输入维度。
+    /// 4x8: 32*16 + 7*6 + 7 = 561。
+    pub fn nnue_feature_dim(&self) -> usize {
+        self.total_positions * self.nnue_states_per_square()
+            + self.num_active * self.nnue_bag_stride()
+            + Self::NNUE_SCALAR_BUCKETS
     }
 }
 
@@ -159,8 +190,8 @@ pub fn darkchess_config() -> GameConfig {
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
-        board_channels: 2 * num_active + 2,
-        scalar_feature_count: 3 + 2 * total_pieces,
+        resnet_board_channels: 2 * num_active + 2,
+        resnet_scalar_feature_count: 3 + 2 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
 }
@@ -204,8 +235,8 @@ pub fn game_4x4_config() -> GameConfig {
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
-        board_channels: 2 * num_active + 2,
-        scalar_feature_count: 3 + 2 * total_pieces,
+        resnet_board_channels: 2 * num_active + 2,
+        resnet_scalar_feature_count: 3 + 2 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
 }
@@ -242,8 +273,8 @@ pub fn mini_config() -> GameConfig {
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
-        board_channels: 2 * num_active + 2,
-        scalar_feature_count: 3 + 2 * total_pieces,
+        resnet_board_channels: 2 * num_active + 2,
+        resnet_scalar_feature_count: 3 + 2 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
 }

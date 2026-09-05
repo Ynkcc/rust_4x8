@@ -11,7 +11,7 @@
 use ndarray::{Array1, Array3};
 
 use crate::core::env::traits::GameEnv;
-use crate::core::env::types::{Observation, Player};
+use crate::core::env::types::{ResNetObservation, Player};
 
 /// 井字棋动作空间大小（= 格子数）
 pub const TTT_ACTION_SPACE_SIZE: usize = 9;
@@ -19,9 +19,9 @@ pub const TTT_ACTION_SPACE_SIZE: usize = 9;
 pub const TTT_BOARD_ROWS: usize = 3;
 pub const TTT_BOARD_COLS: usize = 3;
 /// 特征通道数：0=当前方，1=对手
-pub const TTT_BOARD_CHANNELS: usize = 2;
+pub const TTT_RESNET_BOARD_CHANNELS: usize = 2;
 /// 井字棋无标量特征
-pub const TTT_SCALAR_FEATURE_COUNT: usize = 0;
+pub const TTT_RESNET_SCALAR_FEATURE_COUNT: usize = 0;
 
 /// 井字棋环境。
 ///
@@ -99,10 +99,10 @@ impl TicTacToeEnv {
     /// 将当前棋盘编码为特征张量写入 `board`（通道0=当前方，通道1=对手）。
     fn encode_into(&self, board: &mut Vec<f32>) {
         board.clear();
-        board.reserve(TTT_BOARD_CHANNELS * TTT_ACTION_SPACE_SIZE);
+        board.reserve(TTT_RESNET_BOARD_CHANNELS * TTT_ACTION_SPACE_SIZE);
         let my = self.current_player;
         let opp = my.opposite();
-        for ch in 0..TTT_BOARD_CHANNELS {
+        for ch in 0..TTT_RESNET_BOARD_CHANNELS {
             let target = if ch == 0 { my.val() as i8 } else { opp.val() as i8 };
             for i in 0..TTT_ACTION_SPACE_SIZE {
                 board.push(if self.cells[i] == target { 1.0 } else { 0.0 });
@@ -132,10 +132,7 @@ impl GameEnv for TicTacToeEnv {
         }
     }
 
-    fn step(
-        &mut self,
-        action: usize,
-    ) -> Result<(Observation, f32, bool, bool, Option<i32>), String> {
+    fn step(&mut self, action: usize) -> Result<(f32, bool, bool, Option<i32>), String> {
         if action >= TTT_ACTION_SPACE_SIZE || self.cells[action] != 0 {
             return Err(format!("无效动作: {}", action));
         }
@@ -147,16 +144,16 @@ impl GameEnv for TicTacToeEnv {
         // 始终切换玩家（与暗棋一致）：即使游戏结束也切换，保证「交替行动」
         // 语义一致，使 minimax / MCTS 的视角取反逻辑在终局节点上依然成立。
         self.current_player = self.current_player.opposite();
-        Ok((self.get_state(), 0.0, terminated, false, winner))
+        Ok((0.0, terminated, false, winner))
     }
 
-    fn get_state(&self) -> Observation {
-        let mut board_data = Vec::with_capacity(TTT_BOARD_CHANNELS * TTT_ACTION_SPACE_SIZE);
+    fn get_resnet_state(&self) -> ResNetObservation {
+        let mut board_data = Vec::with_capacity(TTT_RESNET_BOARD_CHANNELS * TTT_ACTION_SPACE_SIZE);
         self.encode_into(&mut board_data);
         let board =
-            Array3::from_shape_vec((TTT_BOARD_CHANNELS, TTT_BOARD_ROWS, TTT_BOARD_COLS), board_data)
+            Array3::from_shape_vec((TTT_RESNET_BOARD_CHANNELS, TTT_BOARD_ROWS, TTT_BOARD_COLS), board_data)
                 .expect("Failed to reshape ttt board array");
-        Observation {
+        ResNetObservation {
             board,
             scalars: Array1::from_vec(Vec::new()),
         }
@@ -171,12 +168,12 @@ impl GameEnv for TicTacToeEnv {
         TTT_ACTION_SPACE_SIZE
     }
 
-    const BOARD_CHANNELS: usize = TTT_BOARD_CHANNELS;
+    const RESNET_BOARD_CHANNELS: usize = TTT_RESNET_BOARD_CHANNELS;
     const BOARD_ROWS: usize = TTT_BOARD_ROWS;
     const BOARD_COLS: usize = TTT_BOARD_COLS;
-    const SCALAR_FEATURE_COUNT: usize = TTT_SCALAR_FEATURE_COUNT;
+    const RESNET_SCALAR_FEATURE_COUNT: usize = TTT_RESNET_SCALAR_FEATURE_COUNT;
 
-    fn encode_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
+    fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
         self.encode_into(board_data);
         scalars_data.clear();
     }
@@ -213,7 +210,7 @@ mod tests {
         env.action_masks_into(&mut masks);
         assert_eq!(masks, [1; 9]);
 
-        let (_, _, term, trunc, winner) = env.step(4).unwrap();
+        let (_, term, trunc, winner) = env.step(4).unwrap();
         assert!(!term && !trunc && winner.is_none());
         assert_eq!(env.cell(4), 1);
         assert_eq!(env.get_current_player(), Player::Black);
@@ -232,7 +229,7 @@ mod tests {
         let mut env = TicTacToeEnv::new();
         // X 走 0,3,6 → 列胜
         for &a in &[0, 1, 3, 2, 6] {
-            let (_, _, term, _, winner) = env.step(a).unwrap();
+            let (_, term, _, winner) = env.step(a).unwrap();
             if a == 6 {
                 assert!(term);
                 assert_eq!(winner, Some(1));
@@ -245,7 +242,7 @@ mod tests {
         let mut env = TicTacToeEnv::new();
         // 标准平局序列（双方均不失误）
         for &a in &[0, 1, 2, 4, 3, 5, 7, 6, 8] {
-            let (_, _, term, _, winner) = env.step(a).unwrap();
+            let (_, term, _, winner) = env.step(a).unwrap();
             if a == 8 {
                 assert!(term);
                 assert_eq!(winner, Some(0));
@@ -260,9 +257,9 @@ mod tests {
             [-1, 0, 0, 0, 1, 0, 0, 0, 0],
             Player::Black,
         );
-        let obs = env.get_state();
+        let obs = env.get_resnet_state();
         let board = obs.board.as_slice().unwrap();
-        assert_eq!(board.len(), TTT_BOARD_CHANNELS * TTT_ACTION_SPACE_SIZE);
+        assert_eq!(board.len(), TTT_RESNET_BOARD_CHANNELS * TTT_ACTION_SPACE_SIZE);
         // 通道0=O(当前方)，通道1=X(对手)
         assert_eq!(board[0], 1.0); // 通道0 左上角 O
         assert_eq!(board[4], 0.0); // 通道0 中心（X 在对手通道）

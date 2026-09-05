@@ -59,15 +59,15 @@ impl<G: GameEnv> Evaluator<G> for LocalEvaluator<G> {
         tch::no_grad(|| {
             let batch_size = envs.len();
             let mut board_data: Vec<f32> =
-                Vec::with_capacity(batch_size * G::BOARD_CHANNELS * G::BOARD_ROWS * G::BOARD_COLS);
+                Vec::with_capacity(batch_size * G::RESNET_BOARD_CHANNELS * G::BOARD_ROWS * G::BOARD_COLS);
             let mut scalar_data: Vec<f32> =
-                Vec::with_capacity(batch_size * G::SCALAR_FEATURE_COUNT);
+                Vec::with_capacity(batch_size * G::RESNET_SCALAR_FEATURE_COUNT);
 
             // 复用临时缓冲，避免每个 env 新建堆分配（与 PyEvaluator 一致）。
             let mut board_buf = Vec::new();
             let mut scalar_buf = Vec::new();
             for env in envs {
-                env.encode_features_flat_into(&mut board_buf, &mut scalar_buf);
+                env.encode_resnet_features_flat_into(&mut board_buf, &mut scalar_buf);
                 board_data.extend_from_slice(&board_buf);
                 scalar_data.extend_from_slice(&scalar_buf);
             }
@@ -75,7 +75,7 @@ impl<G: GameEnv> Evaluator<G> for LocalEvaluator<G> {
             let board_tensor = Tensor::from_slice(&board_data)
                 .view([
                     batch_size as i64,
-                    G::BOARD_CHANNELS as i64,
+                    G::RESNET_BOARD_CHANNELS as i64,
                     G::BOARD_ROWS as i64,
                     G::BOARD_COLS as i64,
                 ])
@@ -83,7 +83,7 @@ impl<G: GameEnv> Evaluator<G> for LocalEvaluator<G> {
                 .to_kind(Kind::Float);
 
             let scalar_tensor = Tensor::from_slice(&scalar_data)
-                .view([batch_size as i64, G::SCALAR_FEATURE_COUNT as i64])
+                .view([batch_size as i64, G::RESNET_SCALAR_FEATURE_COUNT as i64])
                 .to_device(self.device)
                 .to_kind(Kind::Float);
 
