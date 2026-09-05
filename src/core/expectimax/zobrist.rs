@@ -11,6 +11,18 @@ pub enum TtFlag {
     UpperBound = 2,
 }
 
+impl TtFlag {
+    #[inline]
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Exact),
+            1 => Some(Self::LowerBound),
+            2 => Some(Self::UpperBound),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct TtEntry {
     pub key: u64,

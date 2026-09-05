@@ -10,6 +10,8 @@ use crate::inference::nnue::NnueEvaluator;
 
 use super::ordering;
 use super::zobrist;
+use super::zobrist::TtFlag;
+use crate::core::zobrist::zkey;
 
 pub use zobrist::{TT_EMPTY, TtEntry, VMAX, VMIN, INF};
 
@@ -56,8 +58,8 @@ struct SearchCtx {
     budget: u64,
     start: Instant,
     time_limit_ms: u64,
-    _tt: Vec<TtEntry>,
-    _tt_mask: usize,
+    tt: Vec<TtEntry>,
+    tt_mask: usize,
 }
 
 impl SearchCtx {
@@ -68,8 +70,29 @@ impl SearchCtx {
             budget: cfg.node_budget.max(1),
             start: Instant::now(),
             time_limit_ms: cfg.time_limit_ms,
-            _tt: vec![TT_EMPTY; tt_size],
-            _tt_mask: tt_size.wrapping_sub(1),
+            tt: vec![TT_EMPTY; tt_size],
+            tt_mask: tt_size.wrapping_sub(1),
+        }
+    }
+
+    /// 探测置换表：键匹配且非空时返回表项。
+    #[inline]
+    fn probe(&self, key: u64) -> Option<TtEntry> {
+        let e = self.tt[key as usize & self.tt_mask];
+        if e.depth >= 0 && e.key == key {
+            Some(e)
+        } else {
+            None
+        }
+    }
+
+    /// 写入置换表（depth 优先替换：空槽 / 同键 / 更深搜索覆盖）。
+    #[inline]
+    fn store(&mut self, entry: TtEntry) {
+        let idx = entry.key as usize & self.tt_mask;
+        let cur = self.tt[idx];
+        if cur.depth < 0 || cur.key == entry.key || entry.depth >= cur.depth {
+            self.tt[idx] = entry;
         }
     }
 
@@ -200,10 +223,37 @@ fn negamax(
     }
 
     let mut best = -INF;
-    for &act in &legal {
+    let mut best_act = legal[0];
+
+    // --- 置换表探测（仅决策节点；机会节点期望值经 Star1 截断后仍为可靠界，
+    //     Exact/Lower/Upper 语义在全树保持成立，故此处可安全剪枝） ---
+    let key = zkey(env);
+    let tt_hit = ctx.probe(key);
+    if let Some(e) = tt_hit {
+        if i32::from(e.depth) >= depth {
+            match TtFlag::from_u8(e.flag) {
+                Some(TtFlag::Exact) => return Ok(e.value),
+                Some(TtFlag::LowerBound) if e.value >= beta => return Ok(e.value),
+                Some(TtFlag::UpperBound) if e.value <= alpha => return Ok(e.value),
+                _ => {}
+            }
+        }
+    }
+
+    // 走子排序：TT 最佳着法置于首位
+    let mut ordered = legal;
+    if let Some(e) = tt_hit {
+        if let Some(pos) = ordered.iter().position(|&a| a as u16 == e.best_action) {
+            ordered.swap(0, pos);
+        }
+    }
+
+    let alpha_orig = alpha;
+    for &act in &ordered {
         let v = move_value(env, act, depth, alpha, beta, cfg, ctx)?;
         if v > best {
             best = v;
+            best_act = act;
         }
         if best > alpha {
             alpha = best;
@@ -212,6 +262,23 @@ fn negamax(
             break;
         }
     }
+
+    // --- 置换表写入：fail-soft 值按界方向归类 ---
+    let flag = if best <= alpha_orig {
+        TtFlag::UpperBound
+    } else if best >= beta {
+        TtFlag::LowerBound
+    } else {
+        TtFlag::Exact
+    };
+    ctx.store(TtEntry {
+        key,
+        depth: depth as i8,
+        flag: flag as u8,
+        value: best,
+        best_action: best_act as u16,
+    });
+
     Ok(best)
 }
 

@@ -5,4 +5,5 @@
 pub mod env;
 pub mod expectimax;
 pub mod mcts;
+pub mod zobrist;
 
