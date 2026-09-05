@@ -150,7 +150,7 @@ fn step_game(action: usize, state: State<AppState>) -> Result<StepResult, String
     let mut game = state.game.lock().unwrap();
 
     match game.step(action, None) {
-        Ok((_obs, _reward, terminated, truncated, winner)) => {
+        Ok((_reward, terminated, truncated, winner)) => {
             let state_data = extract_game_state(&*game);
             Ok(StepResult {
                 state: state_data,
@@ -188,12 +188,12 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
         }
         OpponentType::Engine => {
             let budget = *state.engine_budget.lock().unwrap();
-            let cfg = banqi_4x8::engine::alpha_beta::EngineConfig {
+            let cfg = banqi_4x8::core::expectimax::SearchConfig {
                 node_budget: budget,
                 ..Default::default()
             };
             tauri::async_runtime::spawn_blocking(move || {
-                banqi_4x8::engine::alpha_beta::best_move(&snapshot, &cfg).map(|r| r.action)
+                banqi_4x8::core::expectimax::search(&snapshot, &cfg).map(|r| r.action)
             })
             .await
             .map_err(|e| format!("引擎搜索线程错误: {e}"))?
@@ -259,7 +259,7 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
 
     let mut game = state.game.lock().unwrap();
     match game.step(chosen_action, None) {
-        Ok((_obs, _reward, terminated, truncated, winner)) => {
+        Ok((_reward, terminated, truncated, winner)) => {
             let state_data = extract_game_state(&*game);
             Ok(StepResult {
                 state: state_data,

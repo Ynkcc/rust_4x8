@@ -12,7 +12,7 @@ use crate::core::env::types::Player;
 
 /// 局面 zkey（棋盘槽位 + 暗子袋 + 走子方），与引擎共用同一哈希。
 fn zkey(env: &DarkChessEnv) -> u64 {
-    crate::engine::alpha_beta::zobrist::zkey(env)
+    crate::core::zobrist::zkey(env)
 }
 
 /// 轻量终局检测（复用走子列表）。

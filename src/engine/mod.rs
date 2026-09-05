@@ -2,7 +2,6 @@
 //!
 //! 归集传统 Minimax、Alpha-Beta 搜索强引擎、启发式 MCTS 以及各种开局/基础策略。
 
-pub mod alpha_beta;
 pub mod evaluation;
 pub mod mcts_heuristic;
 pub mod minimax;
@@ -12,7 +11,6 @@ pub mod policies;
 #[cfg(feature = "torch")]
 pub mod mcts_dl;
 
-pub use alpha_beta::{EngineConfig, EngineResult, best_move};
 pub use evaluation::{
     CORRECTED_VALUES, EVAL_SCALE, EvalParams, evaluate, evaluate_for,
 };
