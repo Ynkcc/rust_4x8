@@ -13,6 +13,7 @@
 use std::sync::OnceLock;
 
 use crate::core::env::config::{MAX_PIECES_PER_PLAYER, MAX_POSITIONS, NUM_PIECE_TYPES_MAX};
+use crate::core::env::symmetry::{Symmetry, sq_map};
 use crate::core::env::types::Slot;
 use crate::core::env::DarkChessEnv;
 
@@ -72,27 +73,82 @@ pub fn zkey(env: &DarkChessEnv) -> u64 {
     let z = zob();
     let mut h = 0u64;
     for sq in 0..env.config.total_positions {
-        h ^= z.sq[sq][slot_state(&env.get_board_slots()[sq])];
+        let st = slot_state(&env.get_board_slots()[sq]);
+        if st != 0 {
+            h ^= z.sq[sq][st];
+        }
     }
+    h ^ bag_side_hash(env, &z)
+}
 
+/// 袋计数 + 走子方哈希分量（空间几何变换下的不变量）。
+fn bag_side_hash(env: &DarkChessEnv, z: &Zobrist) -> u64 {
     // 暗子袋计数：直读环境暗子池（含归属），自动适配任意变体。
     let mut counts = [[0usize; NUM_PIECE_TYPES_MAX]; 2];
     for piece in env.get_hidden_pieces_raw() {
         counts[piece.player.idx()][piece.piece_type as usize] += 1;
     }
+    let mut h = 0u64;
     for (pl, row) in counts.iter().enumerate() {
         for (t, &c) in row.iter().enumerate() {
             h ^= z.bag[pl][t][c.min(MAX_PIECES_PER_PLAYER)];
         }
     }
+    h ^ z.side[env.get_current_player().idx()]
+}
 
-    h ^= z.side[env.get_current_player().idx()];
-    h
+/// 对称视角哈希：棋盘格位项按 `sym` 的格子重排表映射后计算，
+/// 袋计数 / 走子方分量为空间不变量、直接复用。
+/// `Symmetry::Identity` 时与 [`zkey`] 完全一致。
+pub fn sym_zkey(env: &DarkChessEnv, sym: Symmetry) -> u64 {
+    let z = zob();
+    let map = sq_map(env.config.rows, env.config.cols, sym);
+    let slots = env.get_board_slots();
+    let mut h = 0u64;
+    for sq in 0..env.config.total_positions {
+        let st = slot_state(&slots[sq]);
+        if st != 0 {
+            h ^= z.sq[map[sq]][st];
+        }
+    }
+    h ^ bag_side_hash(env, &z)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::env::symmetry::search_group;
+
+    #[test]
+    fn sym_zkey_identity_matches_zkey() {
+        for mut env in [
+            DarkChessEnv::default(),
+            DarkChessEnv::new_4x4(),
+            DarkChessEnv::new_mini(),
+        ] {
+            env.seed = Some(11);
+            env.reset();
+            assert_eq!(sym_zkey(&env, Symmetry::Identity), zkey(&env));
+        }
+    }
+
+    #[test]
+    fn sym_zkey_deterministic_and_orientation_sensitive() {
+        // 初始局面全为暗子（各格非空），重排映射必然改变格位项 → 非恒等变换键应不同
+        for mut env in [DarkChessEnv::default(), DarkChessEnv::new_4x4()] {
+            env.seed = Some(3);
+            env.reset();
+            let raw = sym_zkey(&env, Symmetry::Identity);
+            for &sym in search_group(env.config.rows, env.config.cols) {
+                if sym == Symmetry::Identity {
+                    continue;
+                }
+                let k = sym_zkey(&env, sym);
+                assert_eq!(k, sym_zkey(&env, sym), "对称键必须确定");
+                assert_ne!(k, raw, "非恒等变换应产生不同键");
+            }
+        }
+    }
 
     #[test]
     fn zkey_variants_deterministic_and_state_sensitive() {

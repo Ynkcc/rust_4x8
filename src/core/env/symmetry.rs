@@ -61,6 +61,25 @@ impl Symmetry {
     }
 }
 
+/// 搜索用对称群：方盘（rows==cols）用完整 D4，长方形用 Klein-4。
+/// 与 Python `variant.py::symmetries` 的各变体可用集一致。
+pub fn search_group(rows: usize, cols: usize) -> &'static [Symmetry] {
+    if rows == cols {
+        &[
+            Symmetry::Identity,
+            Symmetry::Rot90,
+            Symmetry::Rot180,
+            Symmetry::Rot270,
+            Symmetry::HFlip,
+            Symmetry::VFlip,
+            Symmetry::Diag,
+            Symmetry::AntiDiag,
+        ]
+    } else {
+        &[Symmetry::Identity, Symmetry::Rot180, Symmetry::HFlip, Symmetry::VFlip]
+    }
+}
+
 /// 缓存键：棋盘尺寸 (rows, cols) 与变换。
 fn cache_key(rows: usize, cols: usize, sym: Symmetry) -> u64 {
     ((rows as u64) << 32) | ((cols as u64) << 8) | (sym as u64)

@@ -7,7 +7,7 @@ pub const VMIN: f32 = -1.0;
 pub const VMAX: f32 = 1.0;
 pub const INF: f32 = f32::INFINITY;
 
-pub(crate) use crate::core::zobrist::zkey;
+pub(crate) use crate::core::zobrist::{sym_zkey, zkey};
 
 /// 置换表项（决策节点）。
 #[derive(Clone, Copy)]

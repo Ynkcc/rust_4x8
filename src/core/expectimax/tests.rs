@@ -129,3 +129,42 @@ fn engine_bench() {
         }
     }
 }
+
+/// 对称合并量化（`cargo test --release -- --ignored --nocapture tt_sym_quant`）：
+/// 多个中盘局面开启 `tt_sym_probe`，输出原始键 miss 后对称键可挽回率，
+/// 用于决定是否值得实现完整规范键置换表。
+#[test]
+#[ignore]
+fn tt_sym_quant() {
+    for seed in [1u64, 17, 42, 99, 12345] {
+        let mut env = DarkChessEnv::new();
+        env.seed = Some(seed);
+        env.reset();
+        // 随机走 12 步进入中盘（翻棋/吃子混合后的局面置换率更真实）
+        for _ in 0..12 {
+            let mut cfg = SearchConfig::default();
+            cfg.node_budget = 3_000;
+            cfg.max_depth = 2;
+            cfg.nnue_evaluator = None;
+            let Some(res) = search(&env, &cfg) else { break };
+            let mut next = env;
+            if next.step(res.action, None).is_err() {
+                break;
+            }
+            env = next;
+        }
+        println!("--- seed={seed} ---");
+        let cfg = SearchConfig {
+            node_budget: 8_000_000,
+            time_limit_ms: 15_000,
+            max_depth: 12,
+            tt_sym_probe: true,
+            ..Default::default()
+        };
+        let res = search(&env, &cfg);
+        match res {
+            Some(r) => println!("nodes={} depth={} value={:.3}", r.nodes, r.depth, r.value),
+            None => println!("无合法动作"),
+        }
+    }
+}

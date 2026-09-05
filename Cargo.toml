@@ -26,7 +26,7 @@ required-features = ["tauri"]
 [[bin]]
 name = "banqi-data-collector"
 path = "src/bin/data_collector.rs"
-required-features = ["torch"]
+required-features = ["torch", "mongodb"]
 
 # ── banqi-py-collector ─────────────────────────────────────────────────────
 [[bin]]
@@ -53,10 +53,9 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
-rusqlite = { version = "0.32", features = ["bundled"] }
 num_cpus = "1.17"
-mongodb = { version = "3.8" }
-bson = "2.15"
+mongodb = { version = "3.8", optional = true }
+bson = { version = "2.15", optional = true }
 ctrlc = "3.4"
 
 # gRPC 依赖 - 用于自对弈/Python 节点通信
@@ -108,6 +107,8 @@ onnx-cuda = ["onnx", "ort/cuda"]
 rust-onnx-collector = ["onnx", "pyo3"]
 # tauri 特性：桌面 GUI（构建 banqi-tauri 时才需要，含 GTK 系统依赖）
 tauri = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-build"]
+# mongodb 特性：启用 MongoDB 存储后端（data_collector 使用）
+mongodb = ["dep:mongodb", "dep:bson"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [], optional = true }

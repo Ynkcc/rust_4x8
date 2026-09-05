@@ -20,6 +20,9 @@ pub struct SharedTT {
     entries: Vec<AtomicU64>,
     bests: Vec<AtomicU32>,
     mask: usize,
+    /// 量化统计（`SearchConfig::tt_sym_probe` 开启时记录）：
+    /// [0]=TT 探测节点数, [1]=原始键命中, [2]=对称键二探命中, [3]=对称命中且深度足够
+    stats: [AtomicU64; 4],
 }
 
 impl SharedTT {
@@ -30,7 +33,23 @@ impl SharedTT {
             entries: (0..size).map(|_| AtomicU64::new(0)).collect(),
             bests: (0..size).map(|_| AtomicU32::new(0)).collect(),
             mask: size.wrapping_sub(1),
+            stats: std::array::from_fn(|_| AtomicU64::new(0)),
         }
+    }
+
+    /// 统计计数自增（Relaxed，仅作量化参考）。
+    #[inline]
+    pub fn bump(&self, slot: usize) {
+        self.stats[slot].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 读取量化统计快照。
+    pub fn tt_stats(&self) -> [u64; 4] {
+        let mut out = [0u64; 4];
+        for (o, c) in out.iter_mut().zip(&self.stats) {
+            *o = c.load(Ordering::Relaxed);
+        }
+        out
     }
 
     #[inline]

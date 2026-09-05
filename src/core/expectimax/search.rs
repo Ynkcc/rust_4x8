@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::env::DarkChessEnv;
+use crate::core::env::symmetry::{Symmetry, search_group};
 use crate::engine::movegen::generate_moves;
 use crate::inference::nnue::{DualAccumulator, NnueEvaluator};
 
@@ -38,6 +39,8 @@ pub struct SearchConfig {
     pub tt_bits: u32,
     /// Lazy SMP 并发线程数（1 = 单线程，>1 时共享置换表协同搜索）
     pub threads: usize,
+    /// 量化开关：TT 原始键 miss 后用对称视角键二次探测并统计（只计数，不参与存储/截断）
+    pub tt_sym_probe: bool,
     /// 可选 NNUE 求值网络引擎
     pub nnue_evaluator: Option<Arc<NnueEvaluator>>,
 }
@@ -54,6 +57,7 @@ impl Default for SearchConfig {
             features: FEAT_ORDERING | FEAT_TT | FEAT_LMR | FEAT_REP,
             tt_bits: 18,
             threads: 1,
+            tt_sym_probe: false,
             nnue_evaluator: None,
         }
     }
@@ -289,24 +293,47 @@ fn negamax(
     // 置换表探测（决策节点；SharedTT 原子读，跨线程安全）
     let mut tt_move: Option<usize> = None;
     if cfg.feat(FEAT_TT) {
-        if let Some((value, e_depth, flag, best_hint)) = ctx.tt.probe(key) {
-            if e_depth >= depth {
-                match flag {
-                    1 => return Ok(value), // exact
-                    2 => {
-                        if value >= beta {
-                            return Ok(value);
+        match ctx.tt.probe(key) {
+            Some((value, e_depth, flag, best_hint)) => {
+                ctx.tt.bump(1);
+                if e_depth >= depth {
+                    match flag {
+                        1 => return Ok(value), // exact
+                        2 => {
+                            if value >= beta {
+                                return Ok(value);
+                            }
+                        }
+                        3 => {
+                            if value <= alpha {
+                                return Ok(value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                tt_move = Some(best_hint as usize);
+            }
+            None => {
+                // 对称合并量化：原始键 miss 后用对称视角键二次探测（只统计，不参与截断）。
+                if cfg.tt_sym_probe {
+                    ctx.tt.bump(0);
+                    for &sym in search_group(env.config.rows, env.config.cols) {
+                        if sym == Symmetry::Identity {
+                            continue;
+                        }
+                        if let Some((_, e_depth, _, _)) =
+                            ctx.tt.probe(zobrist::sym_zkey(env, sym))
+                        {
+                            ctx.tt.bump(2);
+                            if e_depth >= depth {
+                                ctx.tt.bump(3);
+                            }
+                            break;
                         }
                     }
-                    3 => {
-                        if value <= alpha {
-                            return Ok(value);
-                        }
-                    }
-                    _ => {}
                 }
             }
-            tt_move = Some(best_hint as usize);
         }
     }
 
@@ -517,6 +544,14 @@ fn search_with_tt(
             }
             _ => break,
         }
+    }
+    if cfg.tt_sym_probe && cfg.feat(FEAT_TT) {
+        let [misses, raw_hits, sym_hits, sym_deep] = ctx.tt.tt_stats();
+        let rate = if misses > 0 { sym_hits as f64 / misses as f64 } else { 0.0 };
+        eprintln!(
+            "[tt-sym-quant] 探测节点={} 原始命中={raw_hits} miss={misses} 对称命中={sym_hits} 对称命中(深度足够)={sym_deep} miss挽回率={rate:.1}%",
+            misses + raw_hits
+        );
     }
     Some(SearchResult {
         action: best,
