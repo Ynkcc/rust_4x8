@@ -50,6 +50,8 @@ pub struct ExpectimaxSelfPlayStats {
 
 /// 运行 Expectimax + NNUE 自对弈。
 ///
+/// - `variant_id`：变体字符串（"4x8"/"dark"、"4x2"/"mini"、"4x4"），
+///   决定环境构造器与 NNUE 特征维度（`.nnue` 文件须与变体匹配）。
 /// - `num_workers`：局间并发 worker 数（1 = 单线程）。
 /// - `seed`：Some 时第 i 局使用 `s + i` 确定性种子（A/B 轮换先后手）。
 /// - `out_jsonl`：Some 时每局完成即追加一行 NNUE episode JSON。
@@ -60,10 +62,17 @@ pub fn run_expectimax_self_play(
     num_workers: usize,
     seed: Option<u64>,
     out_jsonl: Option<&Path>,
+    variant_id: &str,
 ) -> Result<ExpectimaxSelfPlayStats, String> {
     if n_games == 0 {
         return Ok(ExpectimaxSelfPlayStats::default());
     }
+    let make_env: fn() -> DarkChessEnv = match variant_id.to_ascii_lowercase().as_str() {
+        "4x8" | "dark" | "" => DarkChessEnv::new,
+        "4x2" | "mini" => DarkChessEnv::new_mini,
+        "4x4" | "game4x4" => DarkChessEnv::new_4x4,
+        other => return Err(format!("未知变体: {other:?}（应为 4x8 | 4x2 | 4x4）")),
+    };
     let engine = {
         let mut e = ExpectimaxEngine::from_nnue_file(nnue_path)?;
         e.config.node_budget = config.node_budget;
@@ -99,7 +108,7 @@ pub fn run_expectimax_self_play(
                     &engine,
                     player_a_is_red,
                     game_seed,
-                    DarkChessEnv::new,
+                    make_env,
                 );
                 let ep = outcome
                     .nnue_episode

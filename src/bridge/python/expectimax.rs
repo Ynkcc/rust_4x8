@@ -19,7 +19,7 @@ use crate::pipeline::self_play::{
 /// `out_jsonl` 每局完成即追加一行 NNUE episode JSON（契约与
 /// `NnueSampleDataset` 一致，`value_source="completed_q"` 直接可用）。
 #[pyfunction]
-#[pyo3(signature = (nnue_path, n_games=16, num_workers=4, node_budget=500_000, max_depth=8, threads_per_search=1, seed=None, out_jsonl=None))]
+#[pyo3(signature = (nnue_path, n_games=16, num_workers=4, node_budget=500_000, max_depth=8, threads_per_search=1, seed=None, out_jsonl=None, variant_id="4x8"))]
 pub fn run_expectimax_self_play<'py>(
     py: Python<'py>,
     nnue_path: &str,
@@ -30,6 +30,7 @@ pub fn run_expectimax_self_play<'py>(
     threads_per_search: usize,
     seed: Option<u64>,
     out_jsonl: Option<PathBuf>,
+    variant_id: &str,
 ) -> PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
     if n_games == 0 {
         return Err(PyValueError::new_err("n_games 必须大于 0"));
@@ -50,6 +51,7 @@ pub fn run_expectimax_self_play<'py>(
                 num_workers,
                 seed,
                 out_ref,
+                variant_id,
             )
         })
         .map_err(PyValueError::new_err)?;
