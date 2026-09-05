@@ -18,6 +18,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::core::env::{DarkChessEnv, Game4x4Env, GameEnv, MiniDarkChessEnv};
+use crate::core::expectimax::ExpectimaxEngine;
 use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
 use crate::engine::evaluation::{evaluate, EvalParams};
 use crate::engine::mcts_heuristic::prior_logit;
@@ -106,10 +107,12 @@ fn nnue_meta_and_features(
 // 统一选手抽象 PlayerSpec
 // ============================================================================
 
-/// 统一选手抽象：支持模型 / 启发式 MCTS / Minimax / Python 推理 / 随机任意组合。
+/// 统一选手抽象：支持模型 / 启发式 MCTS / Minimax / Expectimax+NNUE / Python 推理 / 随机任意组合。
 pub enum PlayerSpec<G: GameEnv> {
     Minimax { depth: usize },
     Heuristic { sims: usize },
+    /// Expectimax + NNUE 引擎（独立 DFS 决策，不经 Gumbel MCTS）。
+    Expectimax(Arc<ExpectimaxEngine>),
     /// Rust 侧持有 .pt / .onnx 模型的评估器（推理不经过 GIL）。
     ModelEval(Arc<dyn Evaluator<G> + Send + Sync>),
     /// Python 侧 predict_fn 推理服务（单线程，GIL 边界内调用）。
@@ -248,6 +251,9 @@ where
             _marker: PhantomData,
         }),
         PlayerSpec::Random => PlayerEval::Random(RandomEval),
+        PlayerSpec::Expectimax(_) => {
+            unreachable!("Expectimax 选手不经 make_evaluator / MCTS 路径（应在调用处分流）")
+        }
     }
 }
 
@@ -296,6 +302,9 @@ where
         PlayerSpec::Minimax { depth } => {
             minimax_best_action(env.as_darkchess_ref(), *depth).map(|r| r.action)
         }
+        PlayerSpec::Expectimax(e) => {
+            e.search_par(env.as_darkchess_ref()).map(|r| r.action)
+        }
         PlayerSpec::Heuristic { sims } => {
             let dark_ref = env.as_darkchess_ref();
             let policy = HeuristicMctsPolicy::new(*sims);
@@ -314,11 +323,13 @@ where
 // 单局驱动
 // ============================================================================
 
-/// 单局结果（从选手 A 视角）。`episode` 仅在记录模式下 Some。
-struct GameOutcome {
-    result: i32,
-    moves: usize,
-    episode: Option<GameEpisode>,
+/// 单局结果（从选手 A 视角）。`episode` 仅在 MCTS 记录模式下 Some；
+/// `nnue_episode` 仅在 Expectimax 记录模式下 Some。
+pub(crate) struct GameOutcome {
+    pub(crate) result: i32,
+    pub(crate) moves: usize,
+    pub(crate) episode: Option<GameEpisode>,
+    pub(crate) nnue_episode: Option<super::NnueEpisode>,
 }
 
 /// 非记录（评估）路径：A vs B 直接推进，不生成 Episode。
@@ -382,10 +393,131 @@ where
         result: r,
         moves,
         episode: None,
+        nnue_episode: None,
+    }
+}
+
+/// Expectimax 记录（自对弈）路径：每步由 `engine.search_par` 直接决策，
+/// 仅收集 NNUE 训练所需稀疏特征 + 搜索标量，产出 [`super::NnueEpisode`]。
+pub(crate) fn play_one_game_expectimax<G>(
+    engine: &ExpectimaxEngine,
+    player_a_is_red: bool,
+    game_seed: Option<u64>,
+    make_env: fn() -> G,
+) -> GameOutcome
+where
+    G: GameEnv + AsDarkChessRef + SeedableEnv + Default,
+{
+    let mut env = make_env();
+    if let Some(s) = game_seed {
+        env.set_seed(s);
+    }
+
+    let meta = {
+        let cfg = &env.as_darkchess_ref().config;
+        super::NnueEpisodeMeta {
+            feature_dim: cfg.nnue_feature_dim(),
+            states_per_square: cfg.nnue_states_per_square(),
+            bag_stride: cfg.nnue_bag_stride(),
+            num_active: cfg.num_active,
+            total_positions: cfg.total_positions,
+        }
+    };
+
+    let mut features = Vec::new();
+    let mut search_values = Vec::new();
+    let mut players = Vec::new();
+    let mut actions = Vec::new();
+    let mut step = 0usize;
+
+    fn finish(
+        meta: super::NnueEpisodeMeta,
+        winner: Option<i32>,
+        moves: usize,
+        player_a_is_red: bool,
+        features: Vec<super::NnueStepFeatures>,
+        search_values: Vec<f32>,
+        players: Vec<i32>,
+        actions: Vec<usize>,
+    ) -> (super::NnueEpisode, i32) {
+        let ep = super::NnueEpisode {
+            meta,
+            features,
+            search_values,
+            players,
+            actions,
+            game_length: moves,
+            winner,
+        };
+        let r = match winner {
+            Some(1) => {
+                if player_a_is_red {
+                    1
+                } else {
+                    -1
+                }
+            }
+            Some(-1) => {
+                if player_a_is_red {
+                    -1
+                } else {
+                    1
+                }
+            }
+            _ => 0,
+        };
+        (ep, r)
+    }
+
+    loop {
+        let cur = env.get_current_player().val();
+        let d = env.as_darkchess_ref();
+
+        // NNUE 特征收集：须在 step 前取当前局面的行棋方/对方双视角索引
+        let mover_player = d.get_current_player();
+        let mut mover = Vec::with_capacity(d.config.total_positions + 16);
+        let mut opponent = Vec::with_capacity(d.config.total_positions + 16);
+        d.nnue_active_features_for_player_into(mover_player, &mut mover);
+        d.nnue_active_features_for_player_into(mover_player.opposite(), &mut opponent);
+        features.push(super::NnueStepFeatures {
+            mover: mover.into_iter().map(|i| i as u16).collect(),
+            opponent: opponent.into_iter().map(|i| i as u16).collect(),
+        });
+
+        let Some(result) = engine.search_par(d) else {
+            let (_, _, winner) = env.check_game_over_conditions();
+            let (ep, r) = finish(meta, winner, step, player_a_is_red, features, search_values, players, actions);
+            return GameOutcome { result: r, moves: step, episode: None, nnue_episode: Some(ep) };
+        };
+
+        search_values.push(result.value);
+        players.push(cur);
+        actions.push(result.action);
+
+        match env.step(result.action) {
+            Ok((_, terminated, truncated, winner)) => {
+                if terminated || truncated {
+                    let (ep, r) = finish(meta, winner, step + 1, player_a_is_red, features, search_values, players, actions);
+                    return GameOutcome { result: r, moves: step + 1, episode: None, nnue_episode: Some(ep) };
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠️ Expectimax 记录对局 step 错误: {e}");
+                let (ep, r) = finish(meta, None, step, player_a_is_red, features, search_values, players, actions);
+                return GameOutcome { result: r, moves: step, episode: None, nnue_episode: Some(ep) };
+            }
+        }
+
+        step += 1;
+        if step >= G::max_steps() {
+            let (ep, r) = finish(meta, Some(0), step, player_a_is_red, features, search_values, players, actions);
+            return GameOutcome { result: r, moves: step, episode: None, nnue_episode: Some(ep) };
+        }
     }
 }
 
 /// 记录（自对弈）路径：每步用当前选手的评估器驱动 Gumbel MCTS，收集完整 Episode。
+/// 双方均为 `PlayerSpec::Expectimax` 时走 Expectimax 专属 NNUE 记录循环。
 fn play_one_game_recorded<G>(
     player_a_spec: &PlayerSpec<G>,
     player_b_spec: &PlayerSpec<G>,
@@ -397,6 +529,17 @@ fn play_one_game_recorded<G>(
 where
     G: GameEnv + AsDarkChessRef + SeedableEnv + Default,
 {
+    // 双方均为 Expectimax：走 NNUE 专属记录循环（Expectimax 为 DFS 串行搜索，
+    // 无 improved_policy / completed_q / 访问计数等 MCTS 概念，不产出 GameEpisode）。
+    if let (PlayerSpec::Expectimax(ea), PlayerSpec::Expectimax(eb)) = (player_a_spec, player_b_spec) {
+        let engine: &ExpectimaxEngine = if player_a_is_red { ea } else { eb };
+        return play_one_game_expectimax::<G>(engine, player_a_is_red, game_seed, make_env);
+    }
+    if matches!(player_a_spec, PlayerSpec::Expectimax(_)) || matches!(player_b_spec, PlayerSpec::Expectimax(_)) {
+        eprintln!("❌ 记录（自对弈）路径仅支持 Expectimax vs Expectimax 或双方均非 Expectimax 的组合");
+        return GameOutcome { result: 0, moves: 0, episode: None, nnue_episode: None };
+    }
+
     let mut env = make_env();
     if let Some(s) = game_seed {
         env.set_seed(s);
@@ -533,6 +676,7 @@ fn outcome_from_episode(ep: GameEpisode, player_a_is_red: bool) -> GameOutcome {
         result: r,
         moves,
         episode: Some(ep),
+        nnue_episode: None,
     }
 }
 
@@ -559,6 +703,8 @@ pub struct MatchParams<'a, G: GameEnv> {
 /// 多局比赛结果。
 pub struct MatchResult {
     pub episodes: Vec<GameEpisode>,
+    /// Expectimax 记录路径产出的 NNUE 专属 Episode（与 `episodes` 互斥出现）。
+    pub nnue_episodes: Vec<super::NnueEpisode>,
     pub wins: usize,
     pub draws: usize,
     pub losses: usize,
@@ -608,6 +754,7 @@ where
     let mut losses = 0;
     let mut total_moves = 0;
     let mut episodes = Vec::new();
+    let mut nnue_episodes = Vec::new();
     let block_size = 20;
     let mut block_wr = Vec::new();
     let mut blk_w = 0;
@@ -635,6 +782,11 @@ where
                 episodes.push(ep.clone());
             }
         }
+        if let Some(ep) = &g.nnue_episode {
+            if !ep.features.is_empty() {
+                nnue_episodes.push(ep.clone());
+            }
+        }
     }
     if blk_tot > 0 && n % block_size != 0 {
         block_wr.push(100.0 * (blk_w as f32) / (blk_tot as f32));
@@ -643,6 +795,7 @@ where
     let avg_moves = (total_moves as f32) / (n.max(1) as f32);
     MatchResult {
         episodes,
+        nnue_episodes,
         wins,
         draws,
         losses,

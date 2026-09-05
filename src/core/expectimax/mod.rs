@@ -17,16 +17,17 @@ use crate::core::env::DarkChessEnv;
 use crate::engine::movegen::Move;
 use crate::inference::nnue::NnueEvaluator;
 
-use zobrist::{TT_EMPTY, TtEntry};
-
 pub mod ordering;
 pub mod search;
+pub mod smp;
 pub mod zobrist;
 
 #[cfg(test)]
 mod tests;
 
-pub use search::{SearchConfig, SearchResult, search};
+pub use search::{SearchConfig, SearchResult, search, search_par};
+
+pub use smp::SharedTT;
 
 // 搜索特性标志位
 pub const FEAT_ORDERING: u32 = 1 << 0; // 走子排序（MVV-LVA + 杀手 + 历史）
@@ -34,10 +35,10 @@ pub const FEAT_TT: u32 = 1 << 1; // 置换表（决策节点）
 pub const FEAT_LMR: u32 = 1 << 2; // 晚走子减深（late move reductions）
 pub const FEAT_REP: u32 = 1 << 3; // 重复局面检测（路径 zkey）
 
-/// 正交方向（用于送子检测）。
-pub(crate) const ORTHO: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-
 /// 搜索上下文。
+///
+/// `tt` 为共享置换表句柄：单线程搜索时独占一个实例；Lazy SMP 多线程时由
+/// 主/助线程共享同一 `Arc` 交换信息。
 pub struct Ctx {
     nodes: u64,
     budget: u64,
@@ -45,21 +46,15 @@ pub struct Ctx {
     time_limit_ms: u64,
     killers: Vec<[usize; 2]>, // 每个剩余深度的两个杀手动作
     history: Vec<i32>,        // [total_positions*total_positions] 静走子截断历史
-    tt: Vec<TtEntry>,
-    tt_mask: usize,
+    tt: Arc<smp::SharedTT>,
     path: Vec<u64>, // 当前搜索路径上的祖先 zkey（重复检测）
     root: usize,    // 根走子方 idx（contempt 方向）
 }
 
 impl Ctx {
-    fn new(cfg: &SearchConfig, env: &DarkChessEnv) -> Self {
+    fn with_tt(cfg: &SearchConfig, env: &DarkChessEnv, tt: Arc<smp::SharedTT>) -> Self {
         let total = env.config.total_positions;
         let kd = (cfg.max_depth.max(1) + 2) as usize;
-        let tt_size = if cfg.feat(FEAT_TT) {
-            1usize << cfg.tt_bits
-        } else {
-            0
-        };
         Self {
             nodes: 0,
             budget: cfg.node_budget.max(1),
@@ -67,8 +62,7 @@ impl Ctx {
             time_limit_ms: cfg.time_limit_ms,
             killers: vec![[0; 2]; kd],
             history: vec![0; total * total],
-            tt: vec![TT_EMPTY; tt_size],
-            tt_mask: tt_size.wrapping_sub(1),
+            tt,
             path: Vec::with_capacity(64),
             root: env.get_current_player().idx(),
         }
@@ -147,6 +141,11 @@ impl ExpectimaxEngine {
     /// 搜寻最佳走子
     pub fn search(&self, env: &DarkChessEnv) -> Option<SearchResult> {
         search(env, &self.config)
+    }
+
+    /// 搜寻最佳走子（Lazy SMP 多线程；`config.threads <= 1` 时等价 `search`）
+    pub fn search_par(&self, env: &DarkChessEnv) -> Option<SearchResult> {
+        search_par(env, &self.config)
     }
 
     /// 搜寻最佳动作编号

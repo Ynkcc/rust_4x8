@@ -7,17 +7,22 @@
 
 pub mod types;
 pub mod batched;
+pub mod expectimax_batch;
 pub mod finalize;
 pub mod match_core;
 pub mod serialize;
 
 // 对外重新导出，保持 `crate::pipeline::self_play::*` 命名空间兼容旧调用方。
 pub use types::{
-    GameEpisode, GameStats, NnueEpisodeMeta, NnueStepFeatures, ScenarioType, SelfPlayConfig,
-    SelfPlayRunner, run_batch_self_play, run_self_play,
+    GameEpisode, GameStats, NnueEpisode, NnueEpisodeMeta, NnueStepFeatures, ScenarioType,
+    SelfPlayConfig, SelfPlayRunner, run_batch_self_play, run_self_play,
 };
 pub use batched::run_batched_self_play;
+pub use expectimax_batch::{
+    ExpectimaxSelfPlayConfig, ExpectimaxSelfPlayStats, run_expectimax_self_play,
+};
 pub use finalize::{finalize_episode, get_top_k_actions, select_completed_q_action};
 pub use match_core::{
     AsDarkChessRef, MatchParams, MatchResult, PlayerSpec, SeedableEnv, run_match_core,
 };
+pub use serialize::{nnue_episode_to_dict_json, nnue_episode_to_jsonl};

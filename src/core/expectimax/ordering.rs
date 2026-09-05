@@ -1,7 +1,6 @@
 //! 走子排序（MVV-LVA + 杀手 + 历史）与终局评估辅助。
 
 use crate::core::env::DarkChessEnv;
-use crate::core::env::types::Player;
 use crate::engine::movegen::Move;
 
 use super::search::SearchConfig;

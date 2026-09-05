@@ -31,6 +31,9 @@ pub mod ttt;
 #[cfg(feature = "pyo3")]
 pub mod eval;
 
+#[cfg(feature = "pyo3")]
+pub mod expectimax;
+
 // ---- 公共 re-export：保持 `crate::bridge::python::*` 与既有调用方的引用路径不变 ----
 
 #[cfg(feature = "pyo3")]

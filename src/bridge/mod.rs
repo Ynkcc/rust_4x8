@@ -36,6 +36,12 @@ fn banqi_4x8(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::bridge::python::eval::run_native_match, m)?)?;
     m.add_function(wrap_pyfunction!(crate::bridge::python::eval::run_python_match, m)?)?;
 
+    // --- Expectimax + NNUE 自对弈入口（NNUE 训练回环） ---
+    m.add_function(wrap_pyfunction!(
+        crate::bridge::python::expectimax::run_expectimax_self_play,
+        m
+    )?)?;
+
     m.add_function(wrap_pyfunction!(describe_record, m)?)?;
     m.add_function(wrap_pyfunction!(decode_scalar_state, m)?)?;
 

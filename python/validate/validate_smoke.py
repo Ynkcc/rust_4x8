@@ -116,6 +116,30 @@ def main():
     print(f"\n对局统计: 胜场={exp_wins}, 平局={draws}, 胜率={win_rate:.1%}")
     assert win_rate >= 0.70, f"Expectimax 对随机走子胜率需 >= 70%, 实际: {win_rate:.1%}"
 
+    # 6. Expectimax + NNUE 自对弈回环：用训练好的 .nnue 生成 NNUE 专属 JSONL
+    #    并验证可被 NnueSampleDataset 直接消费（契约一致性）
+    print("\n[Step 6/6] Expectimax + NNUE 自对弈 (N=4, workers=2) → NNUE JSONL...")
+    exp_jsonl = os.path.join(workdir, "smoke_expectimax_selfplay.jsonl")
+    stats = banqi_4x8.run_expectimax_self_play(
+        nnue_path,
+        n_games=4,
+        num_workers=2,
+        node_budget=2000,
+        max_depth=2,
+        seed=42,
+        out_jsonl=exp_jsonl,
+    )
+    print(f"  自对弈完成: {stats['games']} 局, 共 {stats['steps']} 步 "
+          f"(A胜={stats['a_wins']}, B胜={stats['b_wins']}, 平={stats['draws']})")
+    assert stats["games"] == 4, "Expectimax 自对弈局数不符"
+
+    exp_ds = NnueSampleDataset([exp_jsonl])
+    print(f"  NNUE JSONL 有效样本数: {len(exp_ds)}")
+    assert len(exp_ds) > 0, "Expectimax 自对弈必须产出可消费的 NNUE 样本"
+    x0, y0 = exp_ds[0]
+    assert x0.shape[0] == feature_dim, "NNUE 样本特征维度与模型布局不符"
+    print("  NNUE 数据契约验证通过!")
+
     print(f"\n=== [全部验证通过! 总耗时: {time.time() - t_start:.1f}s] ===")
 
 

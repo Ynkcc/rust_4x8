@@ -37,6 +37,39 @@ pub struct NnueEpisodeMeta {
     pub total_positions: usize,
 }
 
+/// Expectimax 自对弈产出的 NNUE 专属数据契约。
+///
+/// 仅含稀疏特征索引 + 搜索标量，无 `GameEpisode` 的 ResNetObservation 大张量；
+/// `search_values` 为每步行棋方视角的 Expectimax 根值（最深完成迭代）。
+/// 每步 `features` / `search_values` / `players` / `actions` 严格对齐。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NnueEpisode {
+    pub meta: NnueEpisodeMeta,
+    pub features: Vec<NnueStepFeatures>,
+    pub search_values: Vec<f32>,
+    /// 每步行棋方 (1=红, -1=黑)
+    pub players: Vec<i32>,
+    pub actions: Vec<usize>,
+    pub game_length: usize,
+    pub winner: Option<i32>,
+}
+
+impl NnueEpisode {
+    /// 终局后按行棋方视角回填每步 game_result（红胜=+1 / 黑胜=-1 / 平=0）。
+    pub fn game_results(&self) -> Vec<f32> {
+        let r = match self.winner {
+            Some(1) => 1.0,
+            Some(-1) => -1.0,
+            _ => 0.0,
+        };
+        self.players.iter().map(|&p| p as f32 * r).collect()
+    }
+
+    pub fn num_steps(&self) -> usize {
+        self.features.len()
+    }
+}
+
 /// 游戏简要统计信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameStats {

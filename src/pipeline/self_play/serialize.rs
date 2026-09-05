@@ -12,7 +12,7 @@
 
 use serde_json::{json, Value};
 
-use super::GameEpisode;
+use super::{GameEpisode, NnueEpisode};
 
 /// 将 `GameEpisode` 序列化为与 PyO3 `episode_to_dict` 字段一致的 JSON 对象。
 ///
@@ -96,4 +96,40 @@ pub fn episode_to_dict_json(episode: &GameEpisode) -> Value {
     }
 
     dict
+}
+
+/// 将 `NnueEpisode` 序列化为与 `NnueSampleDataset`（python/banqi/nnue/train.py）
+/// 消费契约一致的 JSON 对象：字段名沿用 episode dict（`nnue_meta` /
+/// `nnue_features` / `completed_qs` / `game_results` / `is_full_search`），
+/// Expectimax 自对弈数据因此可被现有训练脚本直接加载。
+pub fn nnue_episode_to_dict_json(episode: &NnueEpisode) -> Value {
+    let n = episode.num_steps();
+    let results = episode.game_results();
+    json!({
+        "game_length": episode.game_length,
+        "winner": episode.winner,
+        "num_samples": n,
+        "nnue_meta": {
+            "feature_dim": episode.meta.feature_dim,
+            "states_per_square": episode.meta.states_per_square,
+            "bag_stride": episode.meta.bag_stride,
+            "num_active": episode.meta.num_active,
+            "total_positions": episode.meta.total_positions,
+        },
+        "nnue_features": {
+            "mover": episode.features.iter().map(|f| &f.mover).collect::<Vec<_>>(),
+            "opponent": episode.features.iter().map(|f| &f.opponent).collect::<Vec<_>>(),
+        },
+        // Expectimax 根值作为搜索价值来源（兼容训练脚本 value_source=completed_q）
+        "completed_qs": episode.search_values,
+        "mcts_values": episode.search_values,
+        "game_results": results,
+        "actions": episode.actions,
+        "is_full_search": vec![true; n],
+    })
+}
+
+/// 序列化为单行 JSONL 文本（不含换行符）。
+pub fn nnue_episode_to_jsonl(episode: &NnueEpisode) -> String {
+    nnue_episode_to_dict_json(episode).to_string()
 }

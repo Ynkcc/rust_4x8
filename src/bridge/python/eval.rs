@@ -76,6 +76,18 @@ fn parse_player_spec<G: GameEnv>(
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(3);
         Ok(PlayerSpec::Minimax { depth })
+    } else if spec_str.starts_with("expectimax") {
+        // 格式："expectimax"（内置 dummy NNUE）或 "expectimax:<path.nnue>"
+        let nnue_path = spec_str
+            .strip_prefix("expectimax")
+            .and_then(|s| s.strip_prefix(':'))
+            .filter(|s| !s.is_empty());
+        let engine = match nnue_path {
+            Some(p) => crate::core::expectimax::ExpectimaxEngine::from_nnue_file(p),
+            None => Ok(crate::core::expectimax::ExpectimaxEngine::new()),
+        }
+        .map_err(|e| format!("加载 NNUE 失败 ({spec_str}): {e}"))?;
+        Ok(PlayerSpec::Expectimax(Arc::new(engine)))
     } else if spec_str.starts_with("heuristic") || spec_str.starts_with("mcts") {
         let default_sims = if let Some(rest) = spec_str.strip_prefix("heuristic") {
             rest.parse::<usize>().ok().unwrap_or(128)

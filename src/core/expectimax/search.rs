@@ -3,6 +3,7 @@
 //! 包含 Star1 期望值概率节点剪枝、置换表 (TT)、静态搜索 (Quiescence)、
 //! 晚走子减深 (LMR)、重复局面检测与迭代加深。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::env::DarkChessEnv;
@@ -10,6 +11,7 @@ use crate::engine::movegen::generate_moves;
 use crate::inference::nnue::{DualAccumulator, NnueEvaluator};
 
 use super::ordering;
+use super::smp::SharedTT;
 use super::zobrist;
 use super::{Ctx, FEAT_LMR, FEAT_ORDERING, FEAT_REP, FEAT_TT};
 
@@ -34,6 +36,8 @@ pub struct SearchConfig {
     pub features: u32,
     /// 置换表大小（2^tt_bits 项）
     pub tt_bits: u32,
+    /// Lazy SMP 并发线程数（1 = 单线程，>1 时共享置换表协同搜索）
+    pub threads: usize,
     /// 可选 NNUE 求值网络引擎
     pub nnue_evaluator: Option<Arc<NnueEvaluator>>,
 }
@@ -49,6 +53,7 @@ impl Default for SearchConfig {
             quiesce_max: 8,
             features: FEAT_ORDERING | FEAT_TT | FEAT_LMR | FEAT_REP,
             tt_bits: 18,
+            threads: 1,
             nnue_evaluator: None,
         }
     }
@@ -281,28 +286,27 @@ fn negamax(
         return Ok(ordering::terminal_value(env, Some(0), cfg, ctx));
     }
 
-    // 置换表探测（决策节点）
+    // 置换表探测（决策节点；SharedTT 原子读，跨线程安全）
     let mut tt_move: Option<usize> = None;
     if cfg.feat(FEAT_TT) {
-        let e = ctx.tt[(key as usize) & ctx.tt_mask];
-        if e.flag != 0 && e.key == key {
-            if e.depth as i32 >= depth {
-                match e.flag {
-                    1 => return Ok(e.value), // exact
+        if let Some((value, e_depth, flag, best_hint)) = ctx.tt.probe(key) {
+            if e_depth >= depth {
+                match flag {
+                    1 => return Ok(value), // exact
                     2 => {
-                        if e.value >= beta {
-                            return Ok(e.value);
+                        if value >= beta {
+                            return Ok(value);
                         }
                     }
                     3 => {
-                        if e.value <= alpha {
-                            return Ok(e.value);
+                        if value <= alpha {
+                            return Ok(value);
                         }
                     }
                     _ => {}
                 }
             }
-            tt_move = Some(e.best);
+            tt_move = Some(best_hint as usize);
         }
     }
 
@@ -353,7 +357,7 @@ fn negamax(
         ctx.path.pop();
     }
 
-    // 置换表存储（深度优先替换）
+    // 置换表存储（深度优先替换；last-write-wins，跨线程安全）
     if cfg.feat(FEAT_TT) {
         let flag = if best <= alpha_orig {
             3 // fail-low → 上界
@@ -362,17 +366,16 @@ fn negamax(
         } else {
             1 // exact
         };
-        let idx = (key as usize) & ctx.tt_mask;
-        let cur = ctx.tt[idx];
-        if cur.flag == 0 || cur.key != key || (cur.depth as i32) <= depth {
-            ctx.tt[idx] = TtEntry {
+        ctx.tt.store_cond(
+            key,
+            &TtEntry {
                 key,
                 value: best,
                 depth: depth as i16,
                 flag,
                 best: best_m,
-            };
-        }
+            },
+        );
     }
     Ok(best)
 }
@@ -415,6 +418,73 @@ fn best_at_depth(
 
 /// 节点/时间预算驱动的迭代加深 Expectimax 搜索。返回 `None` 表示无合法动作（终局）。
 pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
+    let shared = Arc::new(SharedTT::new(cfg.tt_bits));
+    search_with_tt(env, cfg, shared)
+}
+
+/// Lazy SMP 并发搜索：`threads <= 1` 时等价 `search`；>1 时主线程迭代加深，
+/// 助线程以独立上下文共享置换表协同搜索，主线程结果为准。
+pub fn search_par(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
+    let threads = cfg.threads.max(1);
+    if threads == 1 {
+        return search(env, cfg);
+    }
+    if let Some(nnue) = &cfg.nnue_evaluator {
+        if let Err(msg) = nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
+            eprintln!("❌ {msg}");
+            return None;
+        }
+    }
+    let moves = generate_moves(env, env.get_current_player());
+    if moves.is_empty() {
+        return None;
+    }
+    let shared = Arc::new(SharedTT::new(cfg.tt_bits));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            let shared = Arc::clone(&shared);
+            let stop = Arc::clone(&stop);
+            let helper_env = *env;
+            let helper_cfg = cfg.clone();
+            scope.spawn(move || {
+                // 助线程独立迭代加深，仅通过共享 TT 贡献信息，结果被丢弃。
+                let budget = (helper_cfg.node_budget / threads as u64).max(1024);
+                let mut helper_cfg = helper_cfg;
+                helper_cfg.node_budget = budget;
+                let root_acc = match helper_cfg.nnue_evaluator.as_ref() {
+                    Some(nnue) => DualAccumulator::init_from_env(&helper_env, nnue),
+                    None => DualAccumulator::default(),
+                };
+                let mut ctx = Ctx::with_tt(&helper_cfg, &helper_env, shared);
+                if helper_cfg.feat(FEAT_REP) {
+                    ctx.path.push(zobrist::zkey(&helper_env));
+                }
+                let mut hint: Option<usize> = None;
+                for depth in 1..=helper_cfg.max_depth {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match best_at_depth(&helper_env, &root_acc, depth, &helper_cfg, &mut ctx, hint) {
+                        Ok(Some((a, _))) => hint = Some(a),
+                        _ => break,
+                    }
+                }
+            });
+        }
+        let result = search_with_tt(env, cfg, Arc::clone(&shared));
+        stop.store(true, Ordering::Relaxed);
+        result
+    })
+}
+
+/// 以指定共享置换表执行迭代加深主搜索。
+fn search_with_tt(
+    env: &DarkChessEnv,
+    cfg: &SearchConfig,
+    shared: Arc<SharedTT>,
+) -> Option<SearchResult> {
     if let Some(nnue) = &cfg.nnue_evaluator {
         if let Err(msg) = nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
             eprintln!("❌ {msg}");
@@ -429,7 +499,7 @@ pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
         Some(nnue) => DualAccumulator::init_from_env(env, nnue),
         None => DualAccumulator::default(),
     };
-    let mut ctx = Ctx::new(cfg, env);
+    let mut ctx = Ctx::with_tt(cfg, env, shared);
     if cfg.feat(FEAT_REP) {
         ctx.path.push(zobrist::zkey(env));
     }
