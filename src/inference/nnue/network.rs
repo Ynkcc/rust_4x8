@@ -121,9 +121,9 @@ impl NnueEvaluator {
 
         for &feat_idx in active_features {
             if feat_idx < self.feature_dim {
-                let w_offset = feat_idx * TRANSFORMER_OUT_DIM;
+                let w = &self.feature_weights[feat_idx * TRANSFORMER_OUT_DIM..][..TRANSFORMER_OUT_DIM];
                 for j in 0..TRANSFORMER_OUT_DIM {
-                    acc.vals[j] += self.feature_weights[w_offset + j];
+                    acc.vals[j] += w[j];
                 }
             }
         }
@@ -131,17 +131,19 @@ impl NnueEvaluator {
     }
 
     pub fn forward_accumulator(&self, acc: &Accumulator) -> f32 {
+        // clamp 为固定长度数组，LLVM 可全展开并生成 AVX2 向量指令
         let mut h0 = [0.0f32; TRANSFORMER_OUT_DIM];
-        for i in 0..TRANSFORMER_OUT_DIM {
-            h0[i] = acc.vals[i].clamp(0.0, 1.0);
+        for (dst, &src) in h0.iter_mut().zip(acc.vals.iter()) {
+            *dst = src.clamp(0.0, 1.0);
         }
 
+        // FC1: 32×256 矩阵-向量乘，每行固定宽度 256，LLVM 自动向量化点积
         let mut h1 = [0.0f32; FC1_OUT_DIM];
         for i in 0..FC1_OUT_DIM {
+            let row = &self.fc1_weights[i * TRANSFORMER_OUT_DIM..][..TRANSFORMER_OUT_DIM];
             let mut sum = self.fc1_bias[i];
-            let row_offset = i * TRANSFORMER_OUT_DIM;
             for j in 0..TRANSFORMER_OUT_DIM {
-                sum += self.fc1_weights[row_offset + j] * h0[j];
+                sum += row[j] * h0[j];
             }
             h1[i] = sum.clamp(0.0, 1.0);
         }

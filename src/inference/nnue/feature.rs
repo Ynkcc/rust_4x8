@@ -47,7 +47,11 @@ impl FeatureDiff {
 }
 
 /// NNUE 累加器（Feature Transformer 输出）
+///
+/// 对齐到 64 字节（缓存行），消除多线程 Lazy SMP 场景中的 false sharing，
+/// 并保证 AVX2/AVX-512 对齐加载的前提。
 #[derive(Clone, Copy, Debug)]
+#[repr(align(64))]
 pub struct Accumulator {
     pub vals: [f32; TRANSFORMER_OUT_DIM],
 }
@@ -71,39 +75,46 @@ impl Accumulator {
         if old_feature == new_feature {
             return;
         }
-        let old_offset = old_feature * TRANSFORMER_OUT_DIM;
-        let new_offset = new_feature * TRANSFORMER_OUT_DIM;
+        let vals: &mut [f32; TRANSFORMER_OUT_DIM] = &mut self.vals;
+        let weights = &evaluator.feature_weights;
 
-        for j in 0..TRANSFORMER_OUT_DIM {
-            let mut val = self.vals[j];
-            if old_feature < evaluator.feature_dim {
-                val -= evaluator.feature_weights[old_offset + j];
+        if old_feature < evaluator.feature_dim {
+            let w = &weights[old_feature * TRANSFORMER_OUT_DIM..][..TRANSFORMER_OUT_DIM];
+            for j in 0..TRANSFORMER_OUT_DIM {
+                vals[j] -= w[j];
             }
-            if new_feature < evaluator.feature_dim {
-                val += evaluator.feature_weights[new_offset + j];
+        }
+        if new_feature < evaluator.feature_dim {
+            let w = &weights[new_feature * TRANSFORMER_OUT_DIM..][..TRANSFORMER_OUT_DIM];
+            for j in 0..TRANSFORMER_OUT_DIM {
+                vals[j] += w[j];
             }
-            self.vals[j] = val;
         }
     }
 
     /// 应用单视角特征差分
+    ///
+    /// 内层循环固定长度 TRANSFORMER_OUT_DIM=256，编译器可展开并生成 AVX2/AVX-512 向量指令。
     #[inline]
     pub fn apply_diff(&mut self, diff: &FeatureDiff, evaluator: &NnueEvaluator) {
+        let vals: &mut [f32; TRANSFORMER_OUT_DIM] = &mut self.vals;
+        let weights = &evaluator.feature_weights;
+
         for i in 0..diff.removed_count as usize {
             let feat = diff.removed[i] as usize;
             if feat < evaluator.feature_dim {
-                let offset = feat * TRANSFORMER_OUT_DIM;
+                let w = &weights[feat * TRANSFORMER_OUT_DIM..][..TRANSFORMER_OUT_DIM];
                 for j in 0..TRANSFORMER_OUT_DIM {
-                    self.vals[j] -= evaluator.feature_weights[offset + j];
+                    vals[j] -= w[j];
                 }
             }
         }
         for i in 0..diff.added_count as usize {
             let feat = diff.added[i] as usize;
             if feat < evaluator.feature_dim {
-                let offset = feat * TRANSFORMER_OUT_DIM;
+                let w = &weights[feat * TRANSFORMER_OUT_DIM..][..TRANSFORMER_OUT_DIM];
                 for j in 0..TRANSFORMER_OUT_DIM {
-                    self.vals[j] += evaluator.feature_weights[offset + j];
+                    vals[j] += w[j];
                 }
             }
         }
