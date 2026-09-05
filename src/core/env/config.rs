@@ -133,9 +133,9 @@ impl GameConfig {
     // NNUE 稀疏特征布局（由 config 推导，替代原 4x8 硬编码 562）
     // ------------------------------------------------------------------------
 
-    /// NNUE 标量段桶数：6(步数桶) + 1(无吃子标记)。
+    /// NNUE 标量段桶数：仅 1 个无吃子标记（总步数不进观测）。
     /// 行棋方信息由格位段的己方/对方视角内建，不设身份标量。
-    pub const NNUE_SCALAR_BUCKETS: usize = 7;
+    pub const NNUE_SCALAR_BUCKETS: usize = 1;
 
     /// 每格状态数：空 / 暗子 / 每型红黑明子（2 + 2*num_active）。
     pub fn nnue_states_per_square(&self) -> usize {
@@ -153,7 +153,7 @@ impl GameConfig {
     }
 
     /// NNUE 总输入维度。
-    /// 4x8: 32*16 + 7*6 + 7 = 561。
+    /// 4x8: 32*16 + 7*6 + 1 = 555。
     pub fn nnue_feature_dim(&self) -> usize {
         self.total_positions * self.nnue_states_per_square()
             + self.num_active * self.nnue_bag_stride()

@@ -149,4 +149,56 @@ impl NnueEvaluator {
         let acc = self.compute_accumulator(&active);
         self.forward_accumulator(&acc)
     }
+
+    /// 基于累加器直接求值（O(1) 无特征提取）。
+    #[inline]
+    pub fn evaluate_accumulator(&self, acc: &Accumulator) -> f32 {
+        self.forward_accumulator(acc)
+    }
+
+    /// 基于双累加器与视角求值。
+    #[inline]
+    pub fn evaluate_dual(&self, dual: &super::feature::DualAccumulator, player: crate::core::env::types::Player) -> f32 {
+        self.forward_accumulator(dual.get(player))
+    }
 }
+
+/// 内嵌 NNUE 双累加器的暗棋环境包装体。
+///
+/// 保持 Copy 语义，执行 `step` 时自动增量维护双累加器，
+/// 使得局面评估时间由 O(Features * Dim) 降至 O(Dim) 常数时间。
+#[derive(Clone, Copy, Debug)]
+pub struct NnueBoard {
+    pub env: DarkChessEnv,
+    pub accumulators: super::feature::DualAccumulator,
+}
+
+impl NnueBoard {
+    /// 从已有环境与评估器初始化。
+    pub fn new(env: DarkChessEnv, evaluator: &NnueEvaluator) -> Self {
+        let accumulators = super::feature::DualAccumulator::init_from_env(&env, evaluator);
+        Self { env, accumulators }
+    }
+
+    /// 执行动作，并自动增量更新双累加器。
+    pub fn step(
+        &mut self,
+        action: usize,
+        reveal_piece: Option<crate::core::env::types::Piece>,
+        evaluator: &NnueEvaluator,
+    ) -> Result<(f32, bool, bool, Option<i32>), String> {
+        let before_env = self.env;
+        let res = self.env.step(action, reveal_piece)?;
+        let (diff_red, diff_black) = super::feature::compute_step_diff(&before_env, &self.env, action);
+        self.accumulators.apply_diffs(&diff_red, &diff_black, evaluator);
+        Ok(res)
+    }
+
+    /// O(1) 快速局面评估（根据当前行棋方）。
+    #[inline]
+    pub fn evaluate(&self, evaluator: &NnueEvaluator) -> f32 {
+        let current_player = self.env.get_current_player();
+        evaluator.forward_accumulator(self.accumulators.get(current_player))
+    }
+}
+
