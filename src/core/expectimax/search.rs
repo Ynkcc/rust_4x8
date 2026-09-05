@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::core::env::DarkChessEnv;
 use crate::engine::movegen::generate_moves;
-use crate::inference::nnue::NnueEvaluator;
+use crate::inference::nnue::{DualAccumulator, NnueEvaluator};
 
 use super::ordering;
 use super::zobrist;
@@ -82,9 +82,63 @@ pub fn eval_state(env: &DarkChessEnv, cfg: &SearchConfig) -> f32 {
     }
 }
 
+/// 基于双累加器的 O(1) 叶节点评估（当前行棋方视角）。
+#[inline]
+fn eval_acc(env: &DarkChessEnv, acc: &DualAccumulator, cfg: &SearchConfig) -> f32 {
+    match cfg.nnue_evaluator.as_ref() {
+        Some(nnue) => nnue.forward_accumulator(acc.get(env.get_current_player())),
+        None => eval_state(env, cfg),
+    }
+}
+
+/// 在父局面上执行一步动作，生成子局面并增量更新双累加器。
+#[inline]
+fn step_with_acc(
+    env: &DarkChessEnv,
+    acc: &DualAccumulator,
+    action: usize,
+    child: &mut DarkChessEnv,
+    nnue: Option<&NnueEvaluator>,
+) -> DualAccumulator {
+    let before = *env;
+    let _ = child.step(action, None);
+    match nnue {
+        Some(nnue) => {
+            let mut child_acc = *acc;
+            let (diff_red, diff_black) =
+                crate::inference::nnue::compute_step_diff(&before, child, action);
+            child_acc.apply_diffs(&diff_red, &diff_black, nnue);
+            child_acc
+        }
+        None => *acc,
+    }
+}
+
+/// 机会节点结果局面的双累加器（结果环境由 chance_outcomes 产生）。
+#[inline]
+fn outcome_acc(
+    env: &DarkChessEnv,
+    acc: &DualAccumulator,
+    action: usize,
+    next_env: &DarkChessEnv,
+    nnue: Option<&NnueEvaluator>,
+) -> DualAccumulator {
+    match nnue {
+        Some(nnue) => {
+            let mut child_acc = *acc;
+            let (diff_red, diff_black) =
+                crate::inference::nnue::compute_step_diff(env, next_env, action);
+            child_acc.apply_diffs(&diff_red, &diff_black, nnue);
+            child_acc
+        }
+        None => *acc,
+    }
+}
+
 /// 静态搜索：仅延展吃明子走法。
 fn quiesce(
     env: &DarkChessEnv,
+    acc: &DualAccumulator,
     mut alpha: f32,
     beta: f32,
     cfg: &SearchConfig,
@@ -96,7 +150,7 @@ fn quiesce(
     if let Some(winner) = ordering::terminal_info(env, &moves) {
         return Ok(ordering::terminal_value(env, Some(winner), cfg, ctx));
     }
-    let stand = eval_state(env, cfg);
+    let stand = eval_acc(env, acc, cfg);
     if stand >= beta || qdepth <= 0 {
         return Ok(stand);
     }
@@ -109,11 +163,12 @@ fn quiesce(
         .map(|&m| (ordering::victim_value(env, &m), m))
         .collect();
     caps.sort_by(|a, b| b.0.cmp(&a.0));
+    let nnue = cfg.nnue_evaluator.as_deref();
     let mut best = stand;
     for (_, m) in caps {
         let mut child = *env;
-        let _ = child.step(m.action, None);
-        let v = -quiesce(&child, -beta, -alpha, cfg, ctx, qdepth - 1)?;
+        let child_acc = step_with_acc(env, acc, m.action, &mut child, nnue);
+        let v = -quiesce(&child, &child_acc, -beta, -alpha, cfg, ctx, qdepth - 1)?;
         if v > best {
             best = v;
         }
@@ -130,6 +185,7 @@ fn quiesce(
 /// Star1 机会节点：按概率加权期望值，用区间边界做剪枝。
 fn flip_value(
     env: &DarkChessEnv,
+    acc: &DualAccumulator,
     action: usize,
     depth: i32,
     alpha: f32,
@@ -141,6 +197,7 @@ fn flip_value(
     if outcomes.is_empty() {
         return Ok(0.0);
     }
+    let nnue = cfg.nnue_evaluator.as_deref();
     let (l, u) = (VMIN, VMAX);
     let mut vsum = 0.0f32;
     let mut rem = 1.0f32;
@@ -159,7 +216,8 @@ fn flip_value(
         }
         let cl = if ai > l { ai } else { l };
         let cu = if bi < u { bi } else { u };
-        let v = -negamax(&next_env, depth - 1, -cu, -cl, cfg, ctx)?;
+        let next_acc = outcome_acc(env, acc, action, &next_env, nnue);
+        let v = -negamax(&next_env, &next_acc, depth - 1, -cu, -cl, cfg, ctx)?;
         if v <= ai {
             return Ok(alpha);
         }
@@ -174,6 +232,7 @@ fn flip_value(
 /// 单条走子的值。
 fn move_value(
     env: &DarkChessEnv,
+    acc: &DualAccumulator,
     action: usize,
     depth: i32,
     alpha: f32,
@@ -182,15 +241,17 @@ fn move_value(
     ctx: &mut Ctx,
 ) -> Result<f32, ()> {
     if env.is_chance_action(action) {
-        return flip_value(env, action, depth, alpha, beta, cfg, ctx);
+        return flip_value(env, acc, action, depth, alpha, beta, cfg, ctx);
     }
+    let nnue = cfg.nnue_evaluator.as_deref();
     let mut child = *env;
-    let _ = child.step(action, None);
-    Ok(-negamax(&child, depth - 1, -beta, -alpha, cfg, ctx)?)
+    let child_acc = step_with_acc(env, acc, action, &mut child, nnue);
+    Ok(-negamax(&child, &child_acc, depth - 1, -beta, -alpha, cfg, ctx)?)
 }
 
 fn negamax(
     env: &DarkChessEnv,
+    acc: &DualAccumulator,
     depth: i32,
     mut alpha: f32,
     beta: f32,
@@ -204,9 +265,9 @@ fn negamax(
     }
     if depth <= 0 {
         if cfg.quiesce {
-            return quiesce(env, alpha, beta, cfg, ctx, cfg.quiesce_max);
+            return quiesce(env, acc, alpha, beta, cfg, ctx, cfg.quiesce_max);
         }
-        return Ok(eval_state(env, cfg));
+        return Ok(eval_acc(env, acc, cfg));
     }
     let alpha_orig = alpha;
     let key = if cfg.feat(FEAT_TT) || cfg.feat(FEAT_REP) {
@@ -259,19 +320,20 @@ fn negamax(
 
     let mut best = -INF;
     let mut best_m = ordered[0].action;
+    let nnue = cfg.nnue_evaluator.as_deref();
     for (i, &m) in ordered.iter().enumerate() {
         let quiet = !m.is_chance && !m.is_capture;
         let v = if cfg.feat(FEAT_LMR) && quiet && i >= 3 && depth >= 3 {
             let mut child = *env;
-            let _ = child.step(m.action, None);
-            let probe = -negamax(&child, depth - 2, -alpha - 1e-6, -alpha, cfg, ctx)?;
+            let child_acc = step_with_acc(env, acc, m.action, &mut child, nnue);
+            let probe = -negamax(&child, &child_acc, depth - 2, -alpha - 1e-6, -alpha, cfg, ctx)?;
             if probe > alpha {
-                -negamax(&child, depth - 1, -beta, -alpha, cfg, ctx)?
+                -negamax(&child, &child_acc, depth - 1, -beta, -alpha, cfg, ctx)?
             } else {
                 probe
             }
         } else {
-            move_value(env, m.action, depth, alpha, beta, cfg, ctx)?
+            move_value(env, acc, m.action, depth, alpha, beta, cfg, ctx)?
         };
         if v > best {
             best = v;
@@ -318,6 +380,7 @@ fn negamax(
 /// 单层根搜索：返回 (最优动作, 根走子方视角值)。
 fn best_at_depth(
     env: &DarkChessEnv,
+    acc: &DualAccumulator,
     depth: i32,
     cfg: &SearchConfig,
     ctx: &mut Ctx,
@@ -338,7 +401,7 @@ fn best_at_depth(
     let mut best = None;
     let mut alpha = VMIN;
     for &m in &moves {
-        let v = move_value(env, m.action, depth, alpha, VMAX, cfg, ctx)?;
+        let v = move_value(env, acc, m.action, depth, alpha, VMAX, cfg, ctx)?;
         if v > best_val {
             best_val = v;
             best = Some(m.action);
@@ -356,6 +419,10 @@ pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
     if moves.is_empty() {
         return None;
     }
+    let root_acc = match cfg.nnue_evaluator.as_ref() {
+        Some(nnue) => DualAccumulator::init_from_env(env, nnue),
+        None => DualAccumulator::default(),
+    };
     let mut ctx = Ctx::new(cfg, env);
     if cfg.feat(FEAT_REP) {
         ctx.path.push(zobrist::zkey(env));
@@ -365,7 +432,7 @@ pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
     let mut hint: Option<usize> = None;
     let mut depth_reached = 0;
     for depth in 1..=cfg.max_depth {
-        match best_at_depth(env, depth, cfg, &mut ctx, hint) {
+        match best_at_depth(env, &root_acc, depth, cfg, &mut ctx, hint) {
             Ok(Some((a, v))) => {
                 best = a;
                 best_score = v;

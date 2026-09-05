@@ -23,6 +23,29 @@ fn engine_returns_legal_action() {
 }
 
 #[test]
+fn engine_incremental_nnue_matches_full_recompute() {
+    use crate::inference::nnue::NnueEvaluator;
+
+    let feature_dim = DarkChessEnv::default().config.nnue_feature_dim();
+    let eval = NnueEvaluator::new_dummy(feature_dim);
+    let mut cfg = SearchConfig::default();
+    cfg.node_budget = 50_000;
+    cfg.max_depth = 5;
+    cfg.nnue_evaluator = Some(std::sync::Arc::new(eval));
+
+    for seed in [7u64, 33u64] {
+        let mut env = DarkChessEnv::new();
+        env.seed = Some(seed);
+        env.reset();
+        let res = search(&env, &cfg).expect("NNUE 增量搜索应返回动作");
+        let mut masks = vec![0i32; env.config.action_space_size];
+        env.action_masks_into(&mut masks);
+        assert_eq!(masks[res.action], 1, "Seed {}: 引擎返回非法动作 {}", seed, res.action);
+        assert!(res.value.abs() <= 1.0, "Seed {}: 评估值越界 {}", seed, res.value);
+    }
+}
+
+#[test]
 fn engine_survives_random_games() {
     for seed in 1..=4u64 {
         let mut env = DarkChessEnv::new();
