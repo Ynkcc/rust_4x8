@@ -60,7 +60,9 @@ class BanqiNNUE(nn.Module):
         """导出为 Rust 引擎可读取的二进制 .nnue 格式小端 float32 文件"""
         self.eval()
         with torch.no_grad():
-            w0 = self.ft.weight.detach().cpu().flatten().tolist()  # [256*feature_dim]
+            # PyTorch Linear weight 形状为 [out_features, in_features]
+            # Rust 累加器查找偏移为 feat_idx * TRANSFORMER_OUT_DIM，因此需要转置为 [in_features, out_features]
+            w0 = self.ft.weight.detach().cpu().t().flatten().tolist()  # [feature_dim * 256]
             b0 = self.ft.bias.detach().cpu().flatten().tolist()    # [256]
             w1 = self.fc1.weight.detach().cpu().flatten().tolist() # [32*256]
             b1 = self.fc1.bias.detach().cpu().flatten().tolist()   # [32]

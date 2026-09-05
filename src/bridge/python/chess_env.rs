@@ -151,6 +151,11 @@ macro_rules! define_chess_env {
                     .collect()
             }
 
+            /// 当前行棋方视角的 NNUE 稀疏特征激活索引列表
+            fn nnue_active_features(&self) -> Vec<usize> {
+                self.inner.nnue_active_features()
+            }
+
             /// 终局胜者：None=未结束，Some(0)=平局，Some(1)=红胜，Some(-1)=黑胜
             fn winner(&self) -> Option<i32> {
                 self.inner.check_game_over_conditions().2
@@ -191,6 +196,27 @@ macro_rules! define_chess_env {
                 };
                 let mut mcts = GumbelMCTS::new(&self.inner, &evaluator, config);
                 Ok(mcts.run().map(|r| r.action))
+            }
+
+            /// 用 Expectimax + NNUE 引擎搜索最佳动作。
+            #[pyo3(signature = (nnue_path=None, max_depth=2, node_budget=1500))]
+            fn expectimax_action(&self, nnue_path: Option<&str>, max_depth: i32, node_budget: u64) -> PyResult<Option<usize>> {
+                let mut engine = if let Some(path) = nnue_path {
+                    crate::core::expectimax::ExpectimaxEngine::from_nnue_file(path)
+                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?
+                } else {
+                    crate::core::expectimax::ExpectimaxEngine::new()
+                };
+                engine.set_max_depth(max_depth);
+                engine.set_node_budget(node_budget);
+                Ok(engine.best_action(self.inner.as_darkchess()))
+            }
+
+            /// 使用指定 .nnue 文件评估当前棋盘（返回 [-1, 1] 价值）。
+            fn nnue_evaluate(&self, nnue_path: &str) -> PyResult<f32> {
+                let evaluator = crate::inference::nnue::NnueEvaluator::load_from_file(nnue_path)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+                Ok(evaluator.evaluate(self.inner.as_darkchess()))
             }
 
             /// 用 expectiminimax + alpha-beta 搜索选动作（不依赖网络，纯规则搜索）。

@@ -94,6 +94,10 @@ impl MiniDarkChessEnv {
         self.inner.step_outcome_id(action)
     }
 
+    pub fn nnue_active_features(&self) -> Vec<usize> {
+        self.inner.nnue_active_features()
+    }
+
     /// 打印棋盘（方便演示/调试）。
     pub fn print_board(&self) {
         self.inner.print_board();

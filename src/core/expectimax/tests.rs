@@ -46,6 +46,37 @@ fn engine_incremental_nnue_matches_full_recompute() {
 }
 
 #[test]
+fn engine_feature_ablation_consistency() {
+    // 验证关闭启发式优化（排序、置换表、晚走子减深）不破坏搜索合法性及基本界限
+    let mut env = DarkChessEnv::new();
+    env.seed = Some(12345);
+    env.reset();
+
+    let base_cfg = SearchConfig {
+        node_budget: 10_000,
+        max_depth: 3,
+        ..Default::default()
+    };
+
+    let res_full = search(&env, &base_cfg).expect("全特性搜索应返回结果");
+
+    let no_opt_cfg = SearchConfig {
+        features: 0,
+        node_budget: 10_000,
+        max_depth: 3,
+        ..Default::default()
+    };
+    let res_no_opt = search(&env, &no_opt_cfg).expect("无优化搜索应返回结果");
+
+    let mut masks = vec![0i32; env.config.action_space_size];
+    env.action_masks_into(&mut masks);
+    assert_eq!(masks[res_full.action], 1);
+    assert_eq!(masks[res_no_opt.action], 1);
+    // 在相同深度下，无剪枝与有剪枝产出的根评估值符号或胜负倾向应当一致或接近
+    assert!((res_full.value - res_no_opt.value).abs() < 0.5, "全特性与无优化搜索价值偏离过大");
+}
+
+#[test]
 fn engine_survives_random_games() {
     for seed in 1..=4u64 {
         let mut env = DarkChessEnv::new();
