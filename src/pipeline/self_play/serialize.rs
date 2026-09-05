@@ -59,7 +59,7 @@ pub fn episode_to_dict_json(episode: &GameEpisode) -> Value {
         is_full_searches.push(*is_full_search);
     }
 
-    json!({
+    let mut dict = json!({
         "game_length": episode.game_length,
         "winner": episode.winner,
         "num_samples": n,
@@ -78,5 +78,22 @@ pub fn episode_to_dict_json(episode: &GameEpisode) -> Value {
         "board_shape": board_shape,
         "scalar_shape": scalar_shape,
         "action_space": action_space,
-    })
+    });
+
+    // NNUE 稀疏特征（可选字段：仅在收集开启时存在，旧数据流不受影响）
+    if let Some((meta, feats)) = &episode.nnue {
+        dict["nnue_meta"] = json!({
+            "feature_dim": meta.feature_dim,
+            "states_per_square": meta.states_per_square,
+            "bag_stride": meta.bag_stride,
+            "num_active": meta.num_active,
+            "total_positions": meta.total_positions,
+        });
+        dict["nnue_features"] = json!({
+            "mover": feats.iter().map(|f| &f.mover).collect::<Vec<_>>(),
+            "opponent": feats.iter().map(|f| &f.opponent).collect::<Vec<_>>(),
+        });
+    }
+
+    dict
 }

@@ -25,9 +25,13 @@ pub struct NnueEvaluator {
 }
 
 /// 由权重文件总浮点数反推特征维度。
-/// 布局：OUT*DIM + OUT + FC1*OUT + FC1 + FC1 + 1（OUT=TRANSFORMER_OUT_DIM）。
+/// 布局：OUT*DIM + OUT + FC1_OUT*OUT + FC1_OUT + FC1_OUT + 1
+///     = DIM*256 + 256 + 8192 + 32 + 32 + 1（OUT=TRANSFORMER_OUT_DIM）。
 fn infer_feature_dim(total_floats: usize) -> usize {
-    let fixed = 2 * TRANSFORMER_OUT_DIM + 2 * FC1_OUT_DIM + 1;
+    let fixed = TRANSFORMER_OUT_DIM
+        + FC1_OUT_DIM * TRANSFORMER_OUT_DIM
+        + 2 * FC1_OUT_DIM
+        + 1;
     (total_floats.saturating_sub(fixed)) / TRANSFORMER_OUT_DIM
 }
 
@@ -98,6 +102,19 @@ impl NnueEvaluator {
         })
     }
 
+    /// 校验特征维度与环境推导维度一致（维度错位会导致评估静默失真，必须硬失败）。
+    pub fn validate_feature_dim(&self, expected: usize) -> Result<(), String> {
+        if self.feature_dim != expected {
+            Err(format!(
+                "[nnue] 特征维度不匹配: 权重文件维度({}) != 环境推导维度({})。\
+                 请确认 .nnue 文件与当前变体的 NNUE 特征布局一致",
+                self.feature_dim, expected
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn compute_accumulator(&self, active_features: &[usize]) -> Accumulator {
         let mut acc = Accumulator::default();
         acc.vals.copy_from_slice(&self.feature_bias);
@@ -160,6 +177,40 @@ impl NnueEvaluator {
     #[inline]
     pub fn evaluate_dual(&self, dual: &super::feature::DualAccumulator, player: crate::core::env::types::Player) -> f32 {
         self.forward_accumulator(dual.get(player))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归测试：加载 .nnue 文件反推的特征维度必须与写出时一致。
+    /// （曾因 fixed 常量算错导致维度恒多推 31。）
+    #[test]
+    fn test_infer_feature_dim_roundtrip() {
+        let dim = crate::core::env::darkchess_config().nnue_feature_dim();
+        let evaluator = NnueEvaluator::new_dummy(dim);
+
+        let mut buf = Vec::new();
+        for v in evaluator
+            .feature_weights
+            .iter()
+            .chain(&evaluator.feature_bias)
+            .chain(&evaluator.fc1_weights)
+            .chain(&evaluator.fc1_bias)
+            .chain(&evaluator.fc2_weights)
+        {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf.extend_from_slice(&evaluator.fc2_bias.to_le_bytes());
+
+        let path = std::env::temp_dir().join(format!("banqi_nnue_dim_test_{}.nnue", std::process::id()));
+        std::fs::write(&path, &buf).expect("写测试文件失败");
+        let loaded = NnueEvaluator::load_from_file(&path).expect("加载失败");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(loaded.feature_dim, dim);
+        assert!(loaded.validate_feature_dim(dim).is_ok());
     }
 }
 

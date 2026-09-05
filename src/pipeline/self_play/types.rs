@@ -15,6 +15,28 @@ use std::time::Instant;
 
 // ================ 数据结构定义 ================
 
+/// 单步 NNUE 稀疏特征（双视角）。
+///
+/// 索引编码与 `DarkChessEnv::nnue_active_features_for_player_into` 一致，
+/// 布局参数由 `NnueEpisodeMeta` 描述（随变体推导，无硬编码维度）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NnueStepFeatures {
+    /// 行棋方视角的活性特征索引
+    pub mover: Vec<u16>,
+    /// 对方视角的活性特征索引
+    pub opponent: Vec<u16>,
+}
+
+/// NNUE 特征布局元信息（由 env.config 推导，供 Python 侧免硬编码还原维度）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct NnueEpisodeMeta {
+    pub feature_dim: usize,
+    pub states_per_square: usize,
+    pub bag_stride: usize,
+    pub num_active: usize,
+    pub total_positions: usize,
+}
+
 /// 游戏简要统计信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameStats {
@@ -44,6 +66,10 @@ pub struct GameEpisode {
     pub winner: Option<i32>,
     /// 终局归一化血量差（红方视角为正）：(红HP-黑HP)/(初始总HP+最大子力分值)，大致落在 [-1,1]。
     pub health_diff_red: Option<f32>,
+    /// NNUE 稀疏特征：None = 未收集；Some 时元组为 (布局元信息, 每步特征)，
+    /// 每步特征长度与 samples 严格对齐。
+    #[serde(default)]
+    pub nnue: Option<(NnueEpisodeMeta, Vec<NnueStepFeatures>)>,
 }
 
 // ================ 场景定义 ================
@@ -122,6 +148,8 @@ pub struct SelfPlayConfig {
     pub health_weight: f32,
     /// λ 随 |v_win| 的自适应幂指数（0 = 常量 λ）
     pub health_confidence_exp: f32,
+    /// 是否在记录 Episode 时同步收集 NNUE 稀疏特征（供 NNUE 训练管道）
+    pub collect_nnue_features: bool,
 }
 
 impl Default for SelfPlayConfig {
@@ -138,6 +166,7 @@ impl Default for SelfPlayConfig {
             health_enabled: false,
             health_weight: 0.0,
             health_confidence_exp: 0.0,
+            collect_nnue_features: false,
         }
     }
 }
@@ -237,6 +266,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                         episode_data,
                         winner,
                         env.terminal_health_diff_red(),
+                        None,
                     );
                 }
             };
@@ -274,6 +304,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                             episode_data,
                             winner,
                             env.terminal_health_diff_red(),
+                            None,
                         );
                     }
                 }
@@ -284,6 +315,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                         game_length: step,
                         winner: None,
                         health_diff_red: env.terminal_health_diff_red(),
+                        nnue: None,
                     };
                 }
             }
@@ -297,6 +329,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> SelfPlayRunner<'a, G, E> {
                     episode_data,
                     Some(0),
                     env.terminal_health_diff_red(),
+                    None,
                 );
             }
         }

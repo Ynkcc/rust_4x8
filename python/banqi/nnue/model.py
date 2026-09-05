@@ -1,10 +1,13 @@
 """python/banqi/nnue/model.py — 神经网络评估器 (BanqiNNUE)
 
 模型包含:
-1. Feature Transformer: (562 -> 256) 稀疏输入到 256 维隐向量
+1. Feature Transformer: (feature_dim -> 256) 稀疏输入到 256 维隐向量
 2. Clipped ReLU 激活 (0.0 .. 1.0)
 3. 隐层 1: (256 -> 32)
 4. 输出层: (32 -> 1), Tanh 归一化 [-1, 1]
+
+feature_dim 由变体 config 推导（与 Rust `GameConfig::nnue_feature_dim` 一致）:
+    total_positions * (2 + 2*num_active) + num_active * (max_piece_count + 1) + 1
 """
 
 from __future__ import annotations
@@ -12,20 +15,29 @@ from __future__ import annotations
 import struct
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-FEATURE_DIM = 562
 TRANSFORMER_OUT_DIM = 256
 FC1_OUT_DIM = 32
 
 
-class BanqiNNUE(nn.Module):
-    """Banqi 4x8 NNUE 评估网络"""
+def nnue_feature_dim(
+    total_positions: int,
+    num_active: int,
+    max_piece_count: int,
+    scalar_buckets: int = 1,
+) -> int:
+    """由变体布局参数推导 NNUE 输入维度（与 Rust config 推导公式对齐）。"""
+    return total_positions * (2 + 2 * num_active) + num_active * (max_piece_count + 1) + scalar_buckets
 
-    def __init__(self) -> None:
+
+class BanqiNNUE(nn.Module):
+    """Banqi NNUE 评估网络（按变体维度参数化）"""
+
+    def __init__(self, feature_dim: int) -> None:
         super().__init__()
-        # Feature Transformer (W0: [256, 562], B0: [256])
-        self.ft = nn.Linear(FEATURE_DIM, TRANSFORMER_OUT_DIM)
+        self.feature_dim = feature_dim
+        # Feature Transformer (W0: [256, feature_dim], B0: [256])
+        self.ft = nn.Linear(feature_dim, TRANSFORMER_OUT_DIM)
         # 隐层 1 (W1: [32, 256], B1: [32])
         self.fc1 = nn.Linear(TRANSFORMER_OUT_DIM, FC1_OUT_DIM)
         # 输出层 (W2: [1, 32], B2: [1])
@@ -48,7 +60,7 @@ class BanqiNNUE(nn.Module):
         """导出为 Rust 引擎可读取的二进制 .nnue 格式小端 float32 文件"""
         self.eval()
         with torch.no_grad():
-            w0 = self.ft.weight.detach().cpu().flatten().tolist()  # [256*562]
+            w0 = self.ft.weight.detach().cpu().flatten().tolist()  # [256*feature_dim]
             b0 = self.ft.bias.detach().cpu().flatten().tolist()    # [256]
             w1 = self.fc1.weight.detach().cpu().flatten().tolist() # [32*256]
             b1 = self.fc1.bias.detach().cpu().flatten().tolist()   # [32]
@@ -63,8 +75,10 @@ class BanqiNNUE(nn.Module):
 
 
 if __name__ == "__main__":
-    net = BanqiNNUE()
-    dummy_input = torch.randn(4, FEATURE_DIM)
+    dim = nnue_feature_dim(total_positions=32, num_active=7, max_piece_count=5)
+    assert dim == 555, f"4x8 变体维度应为 555, 实际为 {dim}"
+    net = BanqiNNUE(dim)
+    dummy_input = torch.randn(4, dim)
     out = net(dummy_input)
     assert out.shape == (4, 1), f"输出维度应为 (4, 1), 实际为 {out.shape}"
     print(f"[BanqiNNUE] Test OK. Dummy output: {out.squeeze().tolist()}")

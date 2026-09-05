@@ -29,6 +29,7 @@ impl PySelfPlayConfig {
         health_enabled = false,
         health_weight = 0.0,
         health_confidence_exp = 0.0,
+        collect_nnue_features = false,
     ))]
     fn new(
         mcts_sims: usize,
@@ -41,6 +42,7 @@ impl PySelfPlayConfig {
         health_enabled: bool,
         health_weight: f32,
         health_confidence_exp: f32,
+        collect_nnue_features: bool,
     ) -> Self {
         Self {
             inner: SelfPlayConfig {
@@ -55,6 +57,7 @@ impl PySelfPlayConfig {
                 health_enabled,
                 health_weight,
                 health_confidence_exp,
+                collect_nnue_features,
             },
         }
     }

@@ -84,6 +84,24 @@ impl SeedableEnv for Game4x4Env {
     }
 }
 
+/// 从收集到的每步特征与 env.config 组装 `GameEpisode.nnue` 字段。
+/// 未启用收集时返回 None；env 仅用于读取 config 推导布局元信息。
+fn nnue_meta_and_features(
+    env: &DarkChessEnv,
+    features: Option<Vec<super::NnueStepFeatures>>,
+) -> Option<(super::NnueEpisodeMeta, Vec<super::NnueStepFeatures>)> {
+    let feats = features?;
+    let cfg = &env.config;
+    let meta = super::NnueEpisodeMeta {
+        feature_dim: cfg.nnue_feature_dim(),
+        states_per_square: cfg.nnue_states_per_square(),
+        bag_stride: cfg.nnue_bag_stride(),
+        num_active: cfg.num_active,
+        total_positions: cfg.total_positions,
+    };
+    Some((meta, feats))
+}
+
 // ============================================================================
 // 统一选手抽象 PlayerSpec
 // ============================================================================
@@ -395,6 +413,11 @@ where
     };
 
     let mut episode_data = Vec::new();
+    let mut nnue_features = if config.collect_nnue_features {
+        Some(Vec::new())
+    } else {
+        None
+    };
     let mut step = 0;
 
     let eval_a = make_evaluator(player_a_spec);
@@ -428,10 +451,24 @@ where
             Some(r) => r,
             None => {
                 let (_, _, winner) = env.check_game_over_conditions();
-                let ep = finalize_episode(episode_data, winner, env.terminal_health_diff_red());
+                let ep = finalize_episode(episode_data, winner, env.terminal_health_diff_red(), nnue_meta_and_features(env.as_darkchess_ref(), nnue_features));
                 return outcome_from_episode(ep, player_a_is_red);
             }
         };
+
+        // NNUE 特征收集：须在 step 前取当前局面的行棋方/对方双视角索引
+        if let Some(feats) = &mut nnue_features {
+            let d = env.as_darkchess_ref();
+            let mover_player = d.get_current_player();
+            let mut mover = Vec::with_capacity(d.config.total_positions + 16);
+            let mut opponent = Vec::with_capacity(d.config.total_positions + 16);
+            d.nnue_active_features_for_player_into(mover_player, &mut mover);
+            d.nnue_active_features_for_player_into(mover_player.opposite(), &mut opponent);
+            feats.push(super::NnueStepFeatures {
+                mover: mover.into_iter().map(|i| i as u16).collect(),
+                opponent: opponent.into_iter().map(|i| i as u16).collect(),
+            });
+        }
 
         // 落子：直接采用 Gumbel 搜索选出的动作。探索由每次搜索重新抽的 Gumbel
         // 噪声提供（sample_gumbel_top_k），无需根温度采样，详见 SelfPlayConfig。
@@ -455,7 +492,7 @@ where
         match env.step(action) {
             Ok((_, terminated, truncated, winner)) => {
                 if terminated || truncated {
-                    let ep = finalize_episode(episode_data, winner, env.terminal_health_diff_red());
+                    let ep = finalize_episode(episode_data, winner, env.terminal_health_diff_red(), nnue_meta_and_features(env.as_darkchess_ref(), nnue_features));
                     return outcome_from_episode(ep, player_a_is_red);
                 }
             }
@@ -466,6 +503,7 @@ where
                     game_length: step,
                     winner: None,
                     health_diff_red: env.terminal_health_diff_red(),
+                    nnue: None,
                 };
                 return outcome_from_episode(ep, player_a_is_red);
             }
@@ -473,7 +511,7 @@ where
 
         step += 1;
         if step >= G::max_steps() {
-            let ep = finalize_episode(episode_data, Some(0), env.terminal_health_diff_red());
+            let ep = finalize_episode(episode_data, Some(0), env.terminal_health_diff_red(), nnue_meta_and_features(env.as_darkchess_ref(), nnue_features));
             return outcome_from_episode(ep, player_a_is_red);
         }
     }

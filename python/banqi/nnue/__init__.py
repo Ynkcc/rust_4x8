@@ -1,3 +1,3 @@
-from banqi.nnue.model import BanqiNNUE, FEATURE_DIM, TRANSFORMER_OUT_DIM, FC1_OUT_DIM
+from banqi.nnue.model import BanqiNNUE, TRANSFORMER_OUT_DIM, FC1_OUT_DIM, nnue_feature_dim
 
-__all__ = ["BanqiNNUE", "FEATURE_DIM", "TRANSFORMER_OUT_DIM", "FC1_OUT_DIM"]
+__all__ = ["BanqiNNUE", "TRANSFORMER_OUT_DIM", "FC1_OUT_DIM", "nnue_feature_dim"]

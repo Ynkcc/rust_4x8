@@ -415,6 +415,12 @@ fn best_at_depth(
 
 /// 节点/时间预算驱动的迭代加深 Expectimax 搜索。返回 `None` 表示无合法动作（终局）。
 pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
+    if let Some(nnue) = &cfg.nnue_evaluator {
+        if let Err(msg) = nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
+            eprintln!("❌ {msg}");
+            return None;
+        }
+    }
     let moves = generate_moves(env, env.get_current_player());
     if moves.is_empty() {
         return None;

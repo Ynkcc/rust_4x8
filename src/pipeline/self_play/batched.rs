@@ -340,6 +340,7 @@ pub fn run_batched_self_play<G: GameEnv + Sync, E: Evaluator<G> + Sync>(
                     std::mem::take(&mut episode_data[i]),
                     winner,
                     health_diff_red,
+                    None,
                 ));
                 done += 1;
                 if done >= num_games {

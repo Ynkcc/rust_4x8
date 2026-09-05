@@ -184,5 +184,23 @@ fn episode_to_dict_with_shapes<'py>(
     dict.set_item("scalar_shape", vec![sc])?;
     dict.set_item("action_space", ac)?;
 
+    // NNUE 稀疏特征（可选字段：仅在收集开启时存在）
+    if let Some((meta, feats)) = &episode.nnue {
+        let meta_dict = PyDict::new(py);
+        meta_dict.set_item("feature_dim", meta.feature_dim)?;
+        meta_dict.set_item("states_per_square", meta.states_per_square)?;
+        meta_dict.set_item("bag_stride", meta.bag_stride)?;
+        meta_dict.set_item("num_active", meta.num_active)?;
+        meta_dict.set_item("total_positions", meta.total_positions)?;
+        dict.set_item("nnue_meta", meta_dict)?;
+
+        let nnue_list = PyDict::new(py);
+        let movers: Vec<&Vec<u16>> = feats.iter().map(|f| &f.mover).collect();
+        let opponents: Vec<&Vec<u16>> = feats.iter().map(|f| &f.opponent).collect();
+        nnue_list.set_item("mover", movers)?;
+        nnue_list.set_item("opponent", opponents)?;
+        dict.set_item("nnue_features", nnue_list)?;
+    }
+
     Ok(dict)
 }

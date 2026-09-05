@@ -13,8 +13,8 @@ pub mod serialize;
 
 // 对外重新导出，保持 `crate::pipeline::self_play::*` 命名空间兼容旧调用方。
 pub use types::{
-    GameEpisode, GameStats, ScenarioType, SelfPlayConfig, SelfPlayRunner, run_batch_self_play,
-    run_self_play,
+    GameEpisode, GameStats, NnueEpisodeMeta, NnueStepFeatures, ScenarioType, SelfPlayConfig,
+    SelfPlayRunner, run_batch_self_play, run_self_play,
 };
 pub use batched::run_batched_self_play;
 pub use finalize::{finalize_episode, get_top_k_actions, select_completed_q_action};
