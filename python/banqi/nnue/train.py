@@ -3,13 +3,17 @@
 从 self-play 导出的 episode JSONL 读取 NNUE 稀疏特征样本进行训练。
 标签采用「搜索价值 + 终局回报」混合：y = w * value + (1 - w) * game_result。
 训练完成后导出二进制 .nnue 格式模型（维度由数据集 nnue_meta 推导，按变体自适应）。
+
+样本解析/过滤逻辑统一在 banqi.nnue.samples.NnueSampleBuffer：
+- CLI（main）路径：JSONL 批量装载 → to_dataset()；
+- 主闭环蒸馏路径：NnueDistillWorker 流式 add_episode → to_dataset()。
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -17,94 +21,53 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 
 from banqi.nnue.model import BanqiNNUE
+from banqi.nnue.samples import NnueSampleBuffer
 
 logger = logging.getLogger(__name__)
 
 
 class NnueSampleDataset(Dataset):
-    """NNUE 训练数据集。
+    """NNUE 训练数据集（稀疏特征索引 + 混合价值标签）。
 
-    输入为 self-play episode dict（PyO3 episode_to_dict / serialize.rs JSON 契约）：
-    - nnue_meta:    特征布局元信息（feature_dim 等，随变体推导）
-    - nnue_features: {"mover": [[索引...]每步], "opponent": [[索引...]每步]}
-    - completed_qs / mcts_values: 搜索价值（行棋方视角）
-    - game_results: 终局回报（行棋方视角）
-    - is_full_search: 算力随机化标记
-
-    默认仅使用行棋方（mover）视角样本；dual_perspective=True 时同时纳入对方视角，
-    其搜索价值取反（零和对局近似）。
+    两种构造方式：
+    1. NnueSampleDataset(jsonl_paths=[...], ...) — 兼容旧 CLI 签名，内部经
+       NnueSampleBuffer 解析（契约与 PyO3 episode_to_dict / serialize.rs 一致）；
+    2. NnueSampleDataset(jsonl_paths=None, features=..., targets=..., feature_dim=...)
+       — 供 NnueSampleBuffer.to_dataset() 流式物化使用。
     """
 
     def __init__(
         self,
-        jsonl_paths: list[str],
+        jsonl_paths: Optional[List[str]] = None,
         value_source: str = "completed_q",
         value_weight: float = 0.7,
         full_only: bool = False,
         dual_perspective: bool = False,
+        features: Optional[List[List[int]]] = None,
+        targets: Optional[torch.Tensor] = None,
+        feature_dim: Optional[int] = None,
     ) -> None:
-        if value_source not in ("completed_q", "mcts_value"):
-            raise ValueError(f"未知 value_source: {value_source}")
-        # episode dict 字段为复数形式（与 serialize.rs / episode.rs 契约一致）
-        value_key = value_source + "s"
-        self.feature_dim: int | None = None
-        features: list[list[int]] = []
-        targets: list[float] = []
-
-        for path in jsonl_paths:
-            n_eps = n_steps = 0
-            with open(path, encoding="utf-8") as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        ep = json.loads(line)
-                    except json.JSONDecodeError as e:
-                        logger.warning("跳过非法 JSON 行 %s:%d: %s", path, line_no, e)
-                        continue
-                    nnue = ep.get("nnue_features")
-                    meta = ep.get("nnue_meta")
-                    if nnue is None or meta is None:
-                        continue
-                    dim = int(meta["feature_dim"])
-                    if self.feature_dim is None:
-                        self.feature_dim = dim
-                    elif self.feature_dim != dim:
-                        raise ValueError(
-                            f"{path}:{line_no} 特征维度不一致: {dim} != {self.feature_dim}，"
-                            "数据集中混入了不同变体的样本"
-                        )
-
-                    n_eps += 1
-                    movers: list[list[int]] = nnue["mover"]
-                    opponents: list[list[int]] = nnue.get("opponent") or []
-                    values = ep[value_key]
-                    results = ep["game_results"]
-                    full_flags = ep.get("is_full_search") or [True] * len(movers)
-
-                    for i, feats in enumerate(movers):
-                        if full_only and not full_flags[i]:
-                            continue
-                        features.append(feats)
-                        targets.append(value_weight * values[i] + (1.0 - value_weight) * results[i])
-                        n_steps += 1
-                        if dual_perspective and i < len(opponents):
-                            features.append(opponents[i])
-                            targets.append(
-                                value_weight * (-values[i]) + (1.0 - value_weight) * (-results[i])
-                            )
-                            n_steps += 1
-            logger.info("加载 %s: %d 个 episode, 累计 %d 个 NNUE 样本", path, n_eps, n_steps)
-
-        if not features:
-            raise ValueError(
-                "数据集中没有任何 NNUE 样本。请确认 JSONL 由开启 collect_nnue_features 的 "
-                "self-play 生成（episode dict 需含 nnue_meta / nnue_features 字段）"
+        if jsonl_paths is not None:
+            buffer = NnueSampleBuffer(
+                value_source=value_source,
+                value_weight=value_weight,
+                full_only=full_only,
+                dual_perspective=dual_perspective,
             )
-        assert self.feature_dim is not None
+            for path in jsonl_paths:
+                buffer.ingest_jsonl(path)
+            features, targets, feature_dim = buffer.to_tensors()
+            if features is None:
+                raise ValueError(
+                    "数据集中没有任何 NNUE 样本。请确认 JSONL 由开启 collect_nnue_features 的 "
+                    "self-play 生成（episode dict 需含 nnue_meta / nnue_features 字段）"
+                )
+
+        if not features or feature_dim is None or targets is None:
+            raise ValueError("NnueSampleDataset 需要非空 features/targets/feature_dim")
         self.features = features
-        self.targets = torch.tensor(targets, dtype=torch.float32).unsqueeze(1)
+        self.targets = targets
+        self.feature_dim = int(feature_dim)
 
     def __len__(self) -> int:
         return len(self.features)

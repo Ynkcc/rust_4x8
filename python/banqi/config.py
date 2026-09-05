@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 import typing
 import warnings
+import dataclasses
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -63,6 +64,8 @@ _PATH_FIELDS = (
     "ARCHIVE_TRAIN_DIR",
     "MONITOR_CSV_PATH",
     "ARCHIVE_PREFILL_DIR",
+    "NNUE_DISTILL_DATA_DIR",
+    "NNUE_DISTILL_OUTPUT_DIR",
 )
 
 
@@ -189,6 +192,11 @@ def _get_config_data() -> Dict[str, Dict[str, Any]]:
             f"  生成 config.local.yaml，再修改其中的参数。"
         )
     known = set(Config.__dataclass_fields__) - {"variant_id"}
+    # 带默认值的字段（新增可选模块，如 NNUE 蒸馏）不在本地配置文件中时按默认值兜底
+    optional_fields = {
+        name for name, f in Config.__dataclass_fields__.items()
+        if name != "variant_id" and f.default is not dataclasses.MISSING
+    }
 
     if _COMMON_KEY not in raw_data:
         raise RuntimeError(
@@ -367,6 +375,32 @@ class Config:
     RULE_SELFPLAY_TEMPERATURE: float  # 走子温度（温度越高越随机；0=贪心）
     RULE_SELFPLAY_BACKEND: str        # 并发后端：thread（多线程，默认）| process（多进程 spawn）
 
+    # ============ NNUE 蒸馏（主闭环旁路，可选，带默认值向后兼容） ============
+    # 主闭环 MCTS 自对弈 episode 经 TeeQueue 分流到 NnueDistillWorker：
+    # 稀疏特征+混合价值标签蒸馏训练 BanqiNNUE，周期导出 .nnue 供 expectimax 使用。
+    NNUE_DISTILL_ENABLED: bool = False              # 是否启用主闭环 NNUE 蒸馏
+    NNUE_DISTILL_DATA_DIR: str = ""                 # episode JSONL 落盘目录（留档复训）
+    NNUE_DISTILL_OUTPUT_DIR: str = ""               # .nnue 导出目录（expectimax 选手消费）
+    NNUE_DISTILL_EVERY_N_CHECKPOINTS: int = 5       # 每 N 次 checkpoint 蒸馏一次
+    NNUE_DISTILL_MIN_SAMPLES: int = 50000           # 触发蒸馏的最小累积样本数
+    NNUE_VALUE_SOURCE: str = "completed_q"          # 搜索价值来源：completed_q | mcts_value
+    NNUE_VALUE_WEIGHT: float = 0.7                  # 混合标签中搜索价值权重（终局回报 = 1-w）
+    NNUE_DUAL_PERSPECTIVE: bool = True              # 同时使用对方视角样本（价值取反）
+    NNUE_FULL_ONLY: bool = False                    # 仅使用 Full Search 样本
+    NNUE_EPOCHS: int = 20                           # 蒸馏训练轮数
+    NNUE_BATCH_SIZE: int = 256                      # 蒸馏训练批次
+    NNUE_LR: float = 1.0e-3                         # 蒸馏学习率
+    NNUE_MAX_SAMPLES: int = 2000000                 # 蒸馏样本池容量上限（FIFO 淘汰）
+    # ============ Expectimax 强自对弈旁路（可选，默认关闭） ============
+    # checkpoint 事件驱动的周期任务：expectimax 强搜索自对弈生成高质量
+    # NNUE JSONL（精调）+ 对局统计。成本高，仅作低频 sidecar。
+    EXPECTIMAX_SIDECAR_ENABLED: bool = False            # 是否启用 expectimax 旁路
+    EXPECTIMAX_SIDECAR_EVERY_N_CHECKPOINTS: int = 20    # 每 N 次 checkpoint 触发一次
+    EXPECTIMAX_SIDECAR_GAMES: int = 200                 # 每次触发对局数
+    EXPECTIMAX_SIDECAR_WORKERS: int = 4                 # 局间并发 worker 数
+    EXPECTIMAX_SIDECAR_NODE_BUDGET: int = 500000        # 每步搜索节点预算
+    EXPECTIMAX_SIDECAR_MAX_DEPTH: int = 8               # 每步搜索最大深度
+
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -400,7 +434,7 @@ def make_config(variant_id: str) -> Config:
                 f"[banqi.config] 配置文件 {_config_path} 中缺少变体 {variant_id!r}\n"
                 f"  可用变体: {sorted(data)}"
             )
-        missing = sorted(_KNOWN_FIELDS - set(fields))
+        missing = sorted(_KNOWN_FIELDS - set(fields) - optional_fields)
         if missing:
             raise RuntimeError(
                 f"[banqi.config] 配置文件 {_config_path} 中变体 {variant_id!r} 缺少字段: {missing}\n"
@@ -410,7 +444,11 @@ def make_config(variant_id: str) -> Config:
         c.variant_id = variant_id
         field_types = typing.get_type_hints(Config)
         for name in _FIELD_NAMES:
-            value = fields[name]
+            if name not in fields:
+                # 带默认值的可选字段：本地配置未给出时用 dataclass 默认值
+                value = Config.__dataclass_fields__[name].default
+            else:
+                value = fields[name]
             # 路径字段：相对 python/ 目录解析（绝对路径直接使用）
             if (
                 name in _PATH_FIELDS

@@ -127,10 +127,40 @@ common:
     HEALTH_UTILITY_WEIGHT: 0.15        # MCTS 复合效用中血量期望权重 λ（0=禁用血量影响搜索，P3 使用）
     HEALTH_UTILITY_CONFIDENCE_EXP: 0.0 # λ 随 |v_win| 的自适应幂指数；0=常量 λ（P3 使用）
 
+  # ---------------- NNUE 蒸馏（主闭环旁路，可选） ----------------
+  # 主闭环 MCTS 自对弈 episode 分流到 NnueDistillWorker：稀疏特征蒸馏训练
+  # BanqiNNUE，周期导出 .nnue（outputs/nnue/<variant>_latest.nnue）供
+  # expectimax 选手 / sidecar 热加载。开启后自对弈自动附带
+  # collect_nnue_features=true（episode dict 增大，推理吞吐略降）。
+  nnue_distill:
+    NNUE_DISTILL_ENABLED: false               # 是否启用主闭环 NNUE 蒸馏
+    NNUE_DISTILL_DATA_DIR: "data/nnue"        # episode JSONL 落盘目录（留档复训）
+    NNUE_DISTILL_OUTPUT_DIR: "models/nnue"    # .nnue 导出目录
+    NNUE_DISTILL_EVERY_N_CHECKPOINTS: 5       # 每 N 次 checkpoint 蒸馏一次
+    NNUE_DISTILL_MIN_SAMPLES: 50000           # 触发蒸馏的最小累积样本数
+    NNUE_VALUE_SOURCE: "completed_q"          # 搜索价值来源：completed_q | mcts_value
+    NNUE_VALUE_WEIGHT: 0.7                    # 混合标签中搜索价值权重（终局回报 = 1-w）
+    NNUE_DUAL_PERSPECTIVE: true               # 同时使用对方视角样本（价值取反）
+    NNUE_FULL_ONLY: false                     # 仅使用 Full Search 样本
+    NNUE_EPOCHS: 20                           # 蒸馏训练轮数
+    NNUE_BATCH_SIZE: 256                      # 蒸馏训练批次
+    NNUE_LR: 1.0e-3                           # 蒸馏学习率
+    NNUE_MAX_SAMPLES: 2000000                 # 蒸馏样本池容量上限（FIFO 淘汰）
+
+  # ---------------- Expectimax 强自对弈旁路（可选，默认关闭） ----------------
+  # checkpoint 事件驱动的低频任务：expectimax 强搜索自对弈生成高质量
+  # NNUE JSONL（精调）+ 对局统计。强搜索成本高，仅作 sidecar。
+  expectimax_sidecar:
+    EXPECTIMAX_SIDECAR_ENABLED: false         # 是否启用 expectimax 旁路
+    EXPECTIMAX_SIDECAR_EVERY_N_CHECKPOINTS: 20 # 每 N 次 checkpoint 触发一次
+    EXPECTIMAX_SIDECAR_GAMES: 200             # 每次触发对局数
+    EXPECTIMAX_SIDECAR_WORKERS: 4             # 局间并发 worker 数
+    EXPECTIMAX_SIDECAR_NODE_BUDGET: 500000    # 每步搜索节点预算
+    EXPECTIMAX_SIDECAR_MAX_DEPTH: 8           # 每步搜索最大深度
+
   # ---------------- 训练模式分流 ----------------
   train_mode:
-    TRAIN_MODE: "selfplay"        # selfplay | archive | rule_selfplay
-    ARCHIVE_TRAIN_DIR: ""
+    TRAIN_MODE: "selfplay"        # selfplay | archive | rule_selfplay    ARCHIVE_TRAIN_DIR: ""
     ARCHIVE_TRAIN_GAMES: 0
     ARCHIVE_TRAIN_ROUNDS: 100
     rule_selfplay:

@@ -164,4 +164,6 @@ def build_self_play_config(variant: Variant) -> "SelfPlayConfig":
         health_enabled=bool(getattr(cfg, "HEALTH_VALUE_HEAD_ENABLED", False)),
         health_weight=float(getattr(cfg, "HEALTH_UTILITY_WEIGHT", 0.0)),
         health_confidence_exp=float(getattr(cfg, "HEALTH_UTILITY_CONFIDENCE_EXP", 0.0)),
+        # NNUE 蒸馏开启时收集稀疏特征（episode dict 附带 nnue_meta/nnue_features）
+        collect_nnue_features=bool(getattr(cfg, "NNUE_DISTILL_ENABLED", False)),
     )

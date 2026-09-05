@@ -57,6 +57,61 @@ class CountingQueue:
         self._q.put(*args, **kwargs)
 
 
+class TeeQueue:
+    """数据旁路分流队列：put 同时转发主队列与旁路队列，get 仅消费主队列。
+
+    主闭环自对弈生产者（rust 线程 / python spawn 子进程）把 episode put 进
+    本对象：主队列照常供 TrainWorker 消费，旁路队列供 NnueDistillWorker
+    蒸馏消费。旁路队列满时非阻塞丢弃并计数（蒸馏为旁路，不反压主闭环）。
+    """
+
+    def __init__(self, main_q, side_q) -> None:
+        self.main_q = main_q
+        self.side_q = side_q
+        self.dropped = 0
+        self.forwarded = 0
+
+    def put(self, item, *args, **kwargs):
+        try:
+            self.side_q.put_nowait(item)
+            self.forwarded += 1
+        except Exception:
+            self.dropped += 1
+        return self.main_q.put(item, *args, **kwargs)
+
+    def put_nowait(self, item, *args, **kwargs):
+        try:
+            self.side_q.put_nowait(item)
+            self.forwarded += 1
+        except Exception:
+            self.dropped += 1
+        return self.main_q.put_nowait(item, *args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        return self.main_q.get(*args, **kwargs)
+
+    def get_nowait(self, *args, **kwargs):
+        return self.main_q.get_nowait(*args, **kwargs)
+
+    def qsize(self):
+        return self.main_q.qsize()
+
+    def empty(self):
+        return self.main_q.empty()
+
+    def close(self):
+        for q in (self.main_q, self.side_q):
+            close = getattr(q, "close", None)
+            if callable(close):
+                close()
+
+    def cancel_join_thread(self):
+        for q in (self.main_q, self.side_q):
+            fn = getattr(q, "cancel_join_thread", None)
+            if callable(fn):
+                fn()
+
+
 class TeeStream:
     """将 stdout/stderr 同时输出到控制台与日志文件。"""
 

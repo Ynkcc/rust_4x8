@@ -12,7 +12,7 @@ import signal
 import sys
 import threading
 import time
-from typing import List
+from typing import List, Optional
 
 from banqi.archiver import ArchiverWorker
 from banqi.config import Config, make_config
@@ -27,10 +27,12 @@ from .context import (
     HAS_TORCH,
     SystemMonitor,
     CountingQueue,
+    TeeQueue,
     build_const,
     log_meta_tb,
     setup_variant_logging,
 )
+from .expectimax_sidecar import ExpectimaxSidecar
 
 
 def run_selfplay(variant_id: str) -> None:
@@ -104,6 +106,26 @@ def run_selfplay(variant_id: str) -> None:
 
     counting_q = CountingQueue(data_q)
 
+    # ---- NNUE 蒸馏 / Expectimax 旁路（可选，默认关闭）----
+    # data_q 升级为 TeeQueue：put 同时分流到旁路 side_q（NnueDistillWorker 消费），
+    # 主队列消费路径（TrainWorker）与计数逻辑完全不变。
+    nnue_distill = None
+    expectimax_sidecar = None
+    ckpt_event_distill = threading.Event()
+    ckpt_event_sidecar = threading.Event()
+    ckpt_events: List[threading.Event] = []
+    if bool(getattr(config, "NNUE_DISTILL_ENABLED", False)):
+        from banqi.nnue.distill import NnueDistillWorker
+
+        side_q = ctx.Queue(maxsize=max(config.DATA_QUEUE_MAXSIZE, 8))
+        data_q = TeeQueue(data_q, side_q)
+        counting_q = CountingQueue(data_q)
+        ckpt_events.append(ckpt_event_distill)
+        print(f"{tag} 🧠 NNUE 蒸馏已启用（数据旁路分流 + 周期蒸馏导出 .nnue）")
+    if bool(getattr(config, "EXPECTIMAX_SIDECAR_ENABLED", False)):
+        ckpt_events.append(ckpt_event_sidecar)
+        print(f"{tag} ⚡ Expectimax 强自对弈旁路已启用（checkpoint 事件触发）")
+
     print(
         f"{tag} banqi_4x8 {variant.id} 常量: "
         f"BOARD=({build_const(variant, 'BOARD_CHANNELS')},"
@@ -155,9 +177,25 @@ def run_selfplay(variant_id: str) -> None:
         print(f"{tag} 🚀 自对弈子进程 × {len(procs)} 已启动 "
               f"(推理设备={config.INFER_DEVICE}, Python 推理, 独立 GIL/CUDA)")
 
-    workers: List[threading.Thread] = [TrainWorker(variant, config, counting_q, thread_stop)]
+    workers: List[threading.Thread] = [
+        TrainWorker(variant, config, counting_q, thread_stop, ckpt_events=ckpt_events)
+    ]
+    if bool(getattr(config, "NNUE_DISTILL_ENABLED", False)):
+        from banqi.nnue.distill import NnueDistillWorker
+
+        nnue_distill = NnueDistillWorker(
+            variant, config, side_q, thread_stop, ckpt_event_distill, tag=f"{tag}[NNUE]"
+        )
+        workers.append(nnue_distill)
+    if bool(getattr(config, "EXPECTIMAX_SIDECAR_ENABLED", False)):
+        expectimax_sidecar = ExpectimaxSidecar(
+            variant, config, thread_stop, ckpt_event_sidecar, tag=f"{tag}[EXPMAX]"
+        )
+        workers.append(expectimax_sidecar)
+    archiver_worker: Optional[ArchiverWorker] = None
     if use_archive:
-        workers.append(ArchiverWorker(archive_q, thread_stop, variant))
+        archiver_worker = ArchiverWorker(archive_q, thread_stop, variant)
+        workers.append(archiver_worker)
 
     for w in workers:
         w.start()
@@ -224,10 +262,13 @@ def run_selfplay(variant_id: str) -> None:
         thread_stop.set()
         train_worker.join(timeout=10)
     train_worker.finalize()
-    if use_archive:
-        archiver_worker: ArchiverWorker = workers[1]  # type: ignore[assignment]
+    if archiver_worker is not None:
         if archiver_worker.is_alive():
             archiver_worker.join(timeout=15)
+    # 旁路 worker：蒸馏线程在 stop 前做最终蒸馏；sidecar 随 stop 退出
+    for w in (nnue_distill, expectimax_sidecar):
+        if w is not None and w.is_alive():
+            w.join(timeout=15)
     if monitor is not None and monitor.is_alive():
         monitor.join(timeout=3)
     close_summary_writer()

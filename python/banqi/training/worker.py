@@ -46,11 +46,14 @@ class TrainWorker(threading.Thread):
         ckpt_dir: Optional[str] = None,
         device=None,
         run_dir: Optional[str] = None,
+        ckpt_events: Optional[List[threading.Event]] = None,
     ):
         """标准签名：(variant, cfg, data_queue, stop_event, ...)。
 
         cfg 必须是 make_config 构造的完整 Config（不设源码兜底）。旧式
         (data_q, stop_event, variant) 调用顺序请使用 from_legacy 类方法。
+        ckpt_events: 可选的旁路事件列表（NnueDistillWorker / ExpectimaxSidecar），
+        每次 checkpoint 实际落盘后逐个 set。
         """
         super().__init__(name=f"TrainWorker-{variant.id}", daemon=True)
         self.variant = variant
@@ -59,6 +62,7 @@ class TrainWorker(threading.Thread):
         self.stop_event = stop_event
         self.ckpt_dir = ckpt_dir or variant.checkpoints_dir
         self.run_dir = run_dir
+        self.ckpt_events = ckpt_events or []
         self.device = device or _resolve_device(cfg.TRAIN_DEVICE)
         # 血量差异价值头开关：开启时使用独立 _health 模型文件，与标准模型物理隔离。
         self.health_enabled = bool(cfg.HEALTH_VALUE_HEAD_ENABLED)
@@ -303,6 +307,9 @@ class TrainWorker(threading.Thread):
             self.metrics["last_global_step"] = self.global_step
         print(f"[TR-{self.variant.id}] 💾 checkpoint 已保存/更新: {path} + {pt_path} "
               f"(global_step={self.global_step}, v{self.version}, force={force})")
+        # 通知旁路 worker（NNUE 蒸馏 / expectimax sidecar）checkpoint 已更新
+        for ev in self.ckpt_events:
+            ev.set()
 
 
     def _anneal_value_weight(self, round_idx: int):

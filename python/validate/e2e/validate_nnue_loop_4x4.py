@@ -205,7 +205,12 @@ def main() -> None:
 
     # 终检：checkpoint 可加载回 BanqiNNUE
     final_ckpt = os.path.join(out_dir, f"model_r{args.rounds}.pth")
-    dim = nnue_feature_dim(16, get_variant("4x4").num_active_piece_types, 2)
+    variant = get_variant("4x4")
+    dim = nnue_feature_dim(
+        variant.total_positions,
+        variant.num_active_piece_types,
+        max(variant.piece_counts),
+    )
     BanqiNNUE(dim).load_state_dict(torch.load(final_ckpt, map_location="cpu"))
     print("=== [回环验证 PASSED] 随机基座 → 自对弈 → 训练 → 深度展开 全链路 OK ===")
 

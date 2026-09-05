@@ -32,6 +32,12 @@ SelfPlayConfig = banqi_4x8.SelfPlayConfig
 run_native_match = banqi_4x8.run_native_match
 run_python_match = banqi_4x8.run_python_match
 
+# ---- Expectimax + NNUE 自对弈（NNUE 蒸馏回环 sidecar） ----
+if hasattr(banqi_4x8, "run_expectimax_self_play"):
+    run_expectimax_self_play = banqi_4x8.run_expectimax_self_play
+else:  # pragma: no cover — 旧版扩展未编译 expectimax 入口
+    run_expectimax_self_play = None
+
 # ---- 对称增强 ----
 get_action_symmetry_table = banqi_4x8.get_action_symmetry_table
 transform_board = banqi_4x8.transform_board
@@ -43,6 +49,7 @@ __all__ = [
     "SelfPlayConfig",
     "run_native_match",
     "run_python_match",
+    "run_expectimax_self_play",
     "get_action_symmetry_table",
     "transform_board",
     "transform_policy",
