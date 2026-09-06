@@ -228,9 +228,11 @@ pub fn game_4x4_config() -> GameConfig {
         total_pieces_per_player: total_pieces,
         piece_values,
         initial_health: 60,
-        initial_revealed_pieces: 4,
-        max_consecutive_moves_for_draw: 24,
-        max_steps_per_episode: 100,
+        // 验证用：开局翻开全部棋子（= total_positions 16），等同明棋/全信息，
+        // 消除翻棋机会节点，便于验证搜索/NNUE 逻辑。
+        initial_revealed_pieces: 16,
+        max_consecutive_moves_for_draw: 8, // 未吃子步数为 8 时强制判和
+        max_steps_per_episode: 48,
         reveal_actions_count: reveal,
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,

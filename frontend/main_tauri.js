@@ -436,10 +436,11 @@ function updateAiSettingsVisibility() {
     MctsHeuristic: 'settings-heuristic',
     MctsDL: 'settings-mctsdl',
     MctsOnnx: 'settings-mctsdl',
+    Nnue: 'settings-nnue',
   };
   const targetId = settingsMap[opponent];
 
-  ['settings-minimax', 'settings-engine', 'settings-heuristic', 'settings-mctsdl'].forEach(id => {
+  ['settings-minimax', 'settings-engine', 'settings-heuristic', 'settings-mctsdl', 'settings-nnue'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {
       el.style.display = (id === targetId) ? '' : 'none';
@@ -498,7 +499,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   async function refreshModels() {
     if (!modelSelect) return;
     try {
-      const models = await invoke('list_models');
+      const models = (await invoke('list_models')).filter(m => !m.path.toLowerCase().endsWith('.nnue'));
       modelSelect.innerHTML = '';
       if (!models || models.length === 0) {
         modelSelect.innerHTML = '<option value="">未找到 .pt / .onnx 模型</option>';
@@ -624,6 +625,75 @@ window.addEventListener('DOMContentLoaded', async () => {
       alert('设置失败: ' + e);
     }
   };
+
+  // 绑定 NNUE（Expectimax）深度/节点预算设置
+  const applyNnueBtn = document.getElementById('btn-apply-nnue');
+  const nnueDepthInput = document.getElementById('nnue-depth');
+  const nnueBudgetInput = document.getElementById('nnue-budget');
+  if (applyNnueBtn) applyNnueBtn.onclick = async () => {
+    const depth = nnueDepthInput ? parseInt(nnueDepthInput.value, 10) : NaN;
+    const budget = nnueBudgetInput ? parseInt(nnueBudgetInput.value, 10) : NaN;
+    if (!Number.isFinite(depth) || depth < 1 || !Number.isFinite(budget) || budget < 1) {
+      alert('搜索深度与节点预算都必须大于 0');
+      return;
+    }
+    try {
+      const d = await invoke('set_nnue_depth', { depth });
+      const b = await invoke('set_nnue_budget', { budget });
+      if (nnueDepthInput) nnueDepthInput.value = String(d);
+      if (nnueBudgetInput) nnueBudgetInput.value = String(b);
+      alert(`NNUE 设置已应用：深度 ${d} / 节点预算 ${b}`);
+    } catch (e) {
+      alert('设置失败: ' + e);
+    }
+  };
+
+  // NNUE 面板：模型列表 / 加载（仅 .nnue）
+  const nnueRefreshBtn = document.getElementById('btn-nnue-refresh-models');
+  const nnueLoadBtn = document.getElementById('btn-nnue-load-model');
+  const nnueModelSelect = document.getElementById('nnue-model-select');
+  const nnuePathInput = document.getElementById('nnue-model-path-input');
+
+  async function refreshNnueModels() {
+    if (!nnueModelSelect) return;
+    try {
+      const models = (await invoke('list_models')).filter(m => m.path.toLowerCase().endsWith('.nnue'));
+      nnueModelSelect.innerHTML = '';
+      if (!models || models.length === 0) {
+        nnueModelSelect.innerHTML = '<option value="">未找到 .nnue 模型</option>';
+        return;
+      }
+      models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.path;
+        opt.textContent = m.name;
+        nnueModelSelect.appendChild(opt);
+      });
+    } catch (e) {
+      console.error('list_models(nnue) failed:', e);
+      nnueModelSelect.innerHTML = '<option value="">加载模型列表失败</option>';
+    }
+  }
+
+  if (nnueRefreshBtn) nnueRefreshBtn.onclick = refreshNnueModels;
+  if (nnueLoadBtn) nnueLoadBtn.onclick = async () => {
+    const path = (nnuePathInput && nnuePathInput.value.trim()) || (nnueModelSelect ? nnueModelSelect.value : '');
+    if (!path) {
+      alert('请先选择 .nnue 模型（或手动输入模型路径）');
+      return;
+    }
+    try {
+      const result = await invoke('load_model', { path });
+      alert('NNUE 模型加载成功：' + result);
+      const oppSel = document.getElementById('opponent-select');
+      if (oppSel) oppSel.value = 'Nnue';
+      updateAiSettingsVisibility();
+    } catch (e) {
+      alert('NNUE 模型加载失败：' + e);
+    }
+  };
+
+  refreshNnueModels();
 
   // 加载初始状态
   console.log("Loading initial state...");

@@ -3,10 +3,10 @@ use banqi_4x8::engine::{MctsDlPolicy, ModelWrapper};
 use banqi_4x8::engine::{Policy, RandomPolicy, RevealFirstPolicy};
 #[cfg(feature = "onnx")]
 use banqi_4x8::inference::onnx::{OnnxMctsPolicy, OnnxModel};
+use banqi_4x8::inference::nnue::NnueEvaluator;
 use banqi_4x8::core::env::*;
 use serde::{Deserialize, Serialize}; // Added Deserialize
 use std::collections::HashMap;
-#[cfg(any(feature = "torch", feature = "onnx"))]
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -49,6 +49,7 @@ pub enum OpponentType {
     MctsHeuristic, // Gumbel MCTS + 纯计算启发式评估（无需 torch）
     MctsDL,        // MCTS + 深度学习（TorchScript，需 torch feature）
     MctsOnnx,      // MCTS + ONNX 深度学习（需 onnx feature，无需 libtorch）
+    Nnue,          // Expectimax + NNUE 叶评估（加载 .nnue，无需 torch/onnx feature）
 }
 
 // 应用状态：包含游戏环境和当前对手设置
@@ -74,6 +75,10 @@ struct AppState {
     onnx_model: Mutex<Option<Arc<OnnxModel>>>,
     #[cfg(feature = "onnx")]
     onnx_policy: Mutex<Option<OnnxMctsPolicy<DarkChessEnv>>>,
+    // NNUE 对手：已加载的 .nnue 评估器 + 搜索参数
+    nnue_evaluator: Mutex<Option<Arc<NnueEvaluator>>>,
+    nnue_depth: Mutex<i32>,
+    nnue_budget: Mutex<u64>,
 }
 
 // Tauri 命令：重置游戏
@@ -91,6 +96,7 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
         Some("MctsHeuristic") => OpponentType::MctsHeuristic,
         Some("MctsDL") => OpponentType::MctsDL,
         Some("MctsOnnx") => OpponentType::MctsOnnx,
+        Some("Nnue") => OpponentType::Nnue,
         _ => OpponentType::PvP,
     };
 
@@ -102,6 +108,18 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
         Some("4x4") => DarkChessEnv::new_4x4(),
         _ => DarkChessEnv::new(),
     };
+
+    // Nnue 对手：变体切换后校验特征维度，不匹配则清空（bot_move 会给出明确报错）
+    if *opp_type_lock == OpponentType::Nnue {
+        let mut eval_lock = state.nnue_evaluator.lock().unwrap();
+        let dim_ok = eval_lock
+            .as_ref()
+            .map(|e| e.feature_dim == game.config.nnue_feature_dim())
+            .unwrap_or(false);
+        if !dim_ok {
+            *eval_lock = None;
+        }
+    }
 
     // 若选择 MctsDL / MctsOnnx 且已有对应模型，创建策略实例
     #[cfg(feature = "torch")]
@@ -207,6 +225,35 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
             .await
             .map_err(|e| format!("启发式 MCTS 线程错误: {e}"))?
         }
+        OpponentType::Nnue => {
+            let evaluator = state
+                .nnue_evaluator
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("未加载 .nnue 模型，无法执行 NNUE 策略")?;
+            let dim_ok = evaluator.feature_dim == snapshot.config.nnue_feature_dim();
+            if !dim_ok {
+                return Err(format!(
+                    ".nnue 特征维度({})与当前变体({})不匹配，请切换变体或重新加载模型",
+                    evaluator.feature_dim,
+                    snapshot.config.nnue_feature_dim()
+                ));
+            }
+            let depth = *state.nnue_depth.lock().unwrap();
+            let budget = *state.nnue_budget.lock().unwrap();
+            tauri::async_runtime::spawn_blocking(move || {
+                let cfg = banqi_4x8::core::expectimax::SearchConfig {
+                    node_budget: budget,
+                    max_depth: depth,
+                    nnue_evaluator: Some(evaluator),
+                    ..Default::default()
+                };
+                banqi_4x8::core::expectimax::search(&snapshot, &cfg).map(|r| r.action)
+            })
+            .await
+            .map_err(|e| format!("NNUE Expectimax 搜索线程错误: {e}"))?
+        }
         _ => {
             let game = state.game.lock().unwrap();
             match opp_type {
@@ -252,6 +299,7 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
                 OpponentType::Minimax => unreachable!(),
                 OpponentType::Engine => unreachable!(),
                 OpponentType::MctsHeuristic => unreachable!(),
+                OpponentType::Nnue => unreachable!(),
             }
         }
     }
@@ -416,7 +464,7 @@ fn collect_models(dir: &std::path::Path, depth: usize, out: &mut Vec<ModelEntry>
         } else if ft.is_file() {
             let is_model = path
                 .extension()
-                .map(|x| x == "pt" || x == "onnx")
+                .map(|x| x == "pt" || x == "onnx" || x == "nnue")
                 .unwrap_or(false);
             if is_model {
                 let name = path
@@ -450,19 +498,32 @@ fn list_models() -> Vec<ModelEntry> {
     out
 }
 
-/// 载入模型：按扩展名分派（.pt → TorchScript（需 torch feature），.onnx → ONNX）。
+/// 载入模型：按扩展名分派（.pt → TorchScript（需 torch feature），.onnx → ONNX，
+/// .nnue → NNUE 叶评估（无需 feature））。
 #[cfg(any(feature = "torch", feature = "onnx"))]
 #[tauri::command]
 fn load_model(path: String, state: State<AppState>) -> Result<String, String> {
-    let is_onnx = std::path::Path::new(&path)
+    let ext = std::path::Path::new(&path)
         .extension()
-        .map(|x| x == "onnx")
-        .unwrap_or(false);
-    if is_onnx {
-        load_onnx_model_impl(&path, &state)
-    } else {
-        load_torch_model_impl(&path, &state)
+        .map(|x| x.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "onnx" => load_onnx_model_impl(&path, &state),
+        "nnue" => load_nnue_model_impl(&path, &state),
+        _ => load_torch_model_impl(&path, &state),
     }
+}
+
+/// 加载 .nnue 评估器并按当前环境校验特征维度。
+fn load_nnue_model_impl(path: &str, state: &State<AppState>) -> Result<String, String> {
+    let evaluator = NnueEvaluator::load_from_file(path)
+        .map_err(|e| format!("NNUE 模型加载失败: {e}"))?;
+    let expected = state.game.lock().unwrap().config.nnue_feature_dim();
+    evaluator
+        .validate_feature_dim(expected)
+        .map_err(|e| format!("{e}（当前变体维度 {expected}，请先选择匹配变体再加载）"))?;
+    *state.nnue_evaluator.lock().unwrap() = Some(Arc::new(evaluator));
+    Ok(format!("NNUE 模型已加载: {}", path))
 }
 
 #[cfg(feature = "onnx")]
@@ -513,11 +574,19 @@ fn load_torch_model_impl(path: &str, _state: &State<AppState>) -> Result<String,
     Err(format!("需要启用 torch 特性才能加载 TorchScript 模型（{path}）"))
 }
 
-/// 无 torch / onnx 特性时的占位函数
+/// 无 torch / onnx 特性时的占位函数（.nnue 不依赖 feature，仍可加载）
 #[cfg(not(any(feature = "torch", feature = "onnx")))]
 #[tauri::command]
-fn load_model(_path: String, _state: State<AppState>) -> Result<String, String> {
-    Err("需要启用 torch 或 onnx 特性才能加载模型".into())
+fn load_model(path: String, state: State<AppState>) -> Result<String, String> {
+    let is_nnue = std::path::Path::new(&path)
+        .extension()
+        .map(|x| x == "nnue")
+        .unwrap_or(false);
+    if is_nnue {
+        load_nnue_model_impl(&path, &state)
+    } else {
+        Err("需要启用 torch 或 onnx 特性才能加载该模型".into())
+    }
 }
 
 /// 设置 Minimax 搜索深度（默认 4，与 verify_mini_vs_minimax.py 的 minimax(depth=4) 对应）
@@ -577,6 +646,28 @@ fn set_heuristic_sims(sims: usize, state: State<AppState>) -> Result<usize, Stri
     Ok(*s)
 }
 
+/// 设置 NNUE 对手（Expectimax）的搜索深度
+#[tauri::command]
+fn set_nnue_depth(depth: i32, state: State<AppState>) -> Result<i32, String> {
+    if depth <= 0 {
+        return Err("搜索深度必须大于 0".into());
+    }
+    let mut d = state.nnue_depth.lock().unwrap();
+    *d = depth;
+    Ok(*d)
+}
+
+/// 设置 NNUE 对手（Expectimax）的节点预算
+#[tauri::command]
+fn set_nnue_budget(budget: u64, state: State<AppState>) -> Result<u64, String> {
+    if budget == 0 {
+        return Err("节点预算必须大于 0".into());
+    }
+    let mut b = state.nnue_budget.lock().unwrap();
+    *b = budget;
+    Ok(*b)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -597,6 +688,9 @@ pub fn run() {
                 onnx_model: Mutex::new(None),
                 #[cfg(feature = "onnx")]
                 onnx_policy: Mutex::new(None),
+                nnue_evaluator: Mutex::new(None),
+                nnue_depth: Mutex::new(8),
+                nnue_budget: Mutex::new(200_000),
             });
             Ok(())
         })
@@ -613,7 +707,9 @@ pub fn run() {
             set_minimax_depth,
             set_mcts_iterations,
             set_engine_budget,
-            set_heuristic_sims
+            set_heuristic_sims,
+            set_nnue_depth,
+            set_nnue_budget
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

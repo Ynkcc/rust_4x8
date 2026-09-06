@@ -30,6 +30,7 @@
                 <option value="MctsHeuristic">电脑 (启发式MCTS)</option>
                 <option value="MctsDL">电脑 (MCTS+DL)</option>
                 <option value="MctsOnnx">电脑 (MCTS+ONNX)</option>
+                <option value="Nnue">电脑 (NNUE)</option>
             </select>
         </div>
         <button id="btn-new-game">开始新游戏</button>
@@ -93,6 +94,33 @@
             <button id="btn-apply-iters">应用搜索次数</button>
           </div>
           <small>提示：先加载模型（.pt 走 MCTS+DL，.onnx 走 MCTS+ONNX），再选择对应对手开始新游戏。可手动输入模型路径以加载子目录中的模型。</small>
+        </div>
+        <div class="group-box" id="settings-nnue" style="margin-top:10px;">
+          <h3>NNUE 设置（Expectimax + .nnue）</h3>
+          <div class="status-row">
+            <label>选择模型:</label>
+            <select id="nnue-model-select" style="width: 60%; padding: 4px;"></select>
+          </div>
+          <div style="display:flex; gap:8px; margin:6px 0;">
+            <button id="btn-nnue-refresh-models">刷新模型列表</button>
+            <button id="btn-nnue-load-model">加载模型</button>
+          </div>
+          <div class="status-row">
+            <label>模型路径:</label>
+            <input id="nnue-model-path-input" type="text" placeholder="或手动输入 .nnue 路径，如 python/outputs/4x4/nnue_loop/best.nnue" style="width:60%;" />
+          </div>
+          <div class="status-row">
+            <label>搜索深度:</label>
+            <input id="nnue-depth" type="number" min="1" value="8" style="width:60%;" />
+          </div>
+          <div class="status-row">
+            <label>节点预算:</label>
+            <input id="nnue-budget" type="number" min="1" value="200000" style="width:60%;" />
+          </div>
+          <div style="display:flex; gap:8px; margin:6px 0;">
+            <button id="btn-apply-nnue">应用设置</button>
+          </div>
+          <small>加载 .nnue（如 python/outputs/4x4/nnue_loop/best.nnue）后开始新游戏；模型特征维度需与所选变体匹配。</small>
         </div>
         <div class="status-row">
           <label>当前玩家:</label>
