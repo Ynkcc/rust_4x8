@@ -385,7 +385,6 @@ class Config:
     NNUE_DISTILL_MIN_SAMPLES: int = 50000           # 触发蒸馏的最小累积样本数
     NNUE_VALUE_SOURCE: str = "completed_q"          # 搜索价值来源：completed_q | mcts_value
     NNUE_VALUE_WEIGHT: float = 0.7                  # 混合标签中搜索价值权重（终局回报 = 1-w）
-    NNUE_DUAL_PERSPECTIVE: bool = True              # 同时使用对方视角样本（价值取反）
     NNUE_FULL_ONLY: bool = False                    # 仅使用 Full Search 样本
     NNUE_EPOCHS: int = 20                           # 蒸馏训练轮数
     NNUE_BATCH_SIZE: int = 256                      # 蒸馏训练批次

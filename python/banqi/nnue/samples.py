@@ -39,7 +39,6 @@ class NnueSampleBuffer:
         value_source: str = "completed_q",
         value_weight: float = 0.7,
         full_only: bool = False,
-        dual_perspective: bool = False,
         max_samples: int = 2_000_000,
     ) -> None:
         if value_source not in ("completed_q", "mcts_value"):
@@ -47,7 +46,6 @@ class NnueSampleBuffer:
         self.value_key = value_source + "s"  # episode dict 字段为复数形式
         self.value_weight = float(value_weight)
         self.full_only = bool(full_only)
-        self.dual_perspective = bool(dual_perspective)
         self.max_samples = int(max_samples)
 
         self.feature_dim: Optional[int] = None
@@ -126,7 +124,8 @@ class NnueSampleBuffer:
             self.features.append(feats)
             self.targets.append(w * values[i] + (1.0 - w) * results[i])
             n += 1
-            if self.dual_perspective and i < len(opponents):
+            # 对方视角恒定追加（零和：价值/回报取反）；旧数据无 opponent 字段时跳过
+            if i < len(opponents):
                 self.features.append(opponents[i])
                 self.targets.append(
                     w * (-values[i]) + (1.0 - w) * (-results[i])

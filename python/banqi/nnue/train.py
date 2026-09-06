@@ -42,7 +42,6 @@ class NnueSampleDataset(Dataset):
         value_source: str = "completed_q",
         value_weight: float = 0.7,
         full_only: bool = False,
-        dual_perspective: bool = False,
         features: Optional[List[List[int]]] = None,
         targets: Optional[torch.Tensor] = None,
         feature_dim: Optional[int] = None,
@@ -52,7 +51,6 @@ class NnueSampleDataset(Dataset):
                 value_source=value_source,
                 value_weight=value_weight,
                 full_only=full_only,
-                dual_perspective=dual_perspective,
             )
             for path in jsonl_paths:
                 buffer.ingest_jsonl(path)
@@ -135,7 +133,6 @@ def main() -> None:
     parser.add_argument("--value-source", choices=["completed_q", "mcts_value"], default="completed_q", help="搜索价值来源")
     parser.add_argument("--value-weight", type=float, default=0.7, help="混合标签中搜索价值权重（终局回报权重 = 1 - w）")
     parser.add_argument("--full-only", action="store_true", help="仅使用 Full Search 样本")
-    parser.add_argument("--dual-perspective", action="store_true", help="同时使用对方视角样本（价值取反）")
     parser.add_argument("--output", type=str, default="banqi_model.nnue", help="输出二进制 .nnue 路径")
     parser.add_argument("--checkpoint", type=str, default=None, help="可选 checkpoint (.pth) 输出路径")
     args = parser.parse_args()
@@ -145,7 +142,6 @@ def main() -> None:
         value_source=args.value_source,
         value_weight=args.value_weight,
         full_only=args.full_only,
-        dual_perspective=args.dual_perspective,
     )
     train_nnue(
         dataset,

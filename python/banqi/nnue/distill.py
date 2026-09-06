@@ -48,7 +48,6 @@ class NnueDistillWorker(threading.Thread):
             value_source=getattr(cfg, "NNUE_VALUE_SOURCE", "completed_q"),
             value_weight=float(getattr(cfg, "NNUE_VALUE_WEIGHT", 0.7)),
             full_only=bool(getattr(cfg, "NNUE_FULL_ONLY", False)),
-            dual_perspective=bool(getattr(cfg, "NNUE_DUAL_PERSPECTIVE", True)),
             max_samples=int(getattr(cfg, "NNUE_MAX_SAMPLES", 2_000_000)),
         )
 
