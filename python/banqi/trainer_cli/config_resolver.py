@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 
-from banqi.config import Config
+from banqi.config import Config, make_config
 from banqi.variant import get_variant
 
 

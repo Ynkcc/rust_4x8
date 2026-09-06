@@ -368,6 +368,7 @@ class TrainWorker(threading.Thread):
         )
         pending_samples = 0   # 累积待训练的新样本数
         pending_round = 0     # 累积期间最新的 round_idx
+        last_eval_round = -1  # 上次对战评估的 round_idx（round_idx 间隔不均匀，按间隔门控而非取模）
         while not is_stopped(self.stop_event):
             try:
                 episode_dict = self.data_queue.get(timeout=2.0)
@@ -489,13 +490,24 @@ class TrainWorker(threading.Thread):
                 eval_value_drift(self.model, self.device, self._fixed_eval, step, tag, round_idx)
                 eval_policy_accuracy(self.model, self.device, self._fixed_eval, step, tag, round_idx)
 
-                # 周期性对战评估
+                # 周期性对战评估（round_idx 间隔不均匀，用间隔门控避免评估点被跳过）
                 eval_match_rounds = cfg.EVAL_MATCH_ROUNDS
-                if eval_match_rounds > 0 and (round_idx > 0) and (round_idx % eval_match_rounds == 0):
-                    eval_match(
+                if eval_match_rounds > 0 and (round_idx - last_eval_round) >= eval_match_rounds:
+                    last_eval_round = round_idx
+                    match_win_rates = eval_match(
                         self.model, self.device, self.variant, cfg,
-                        self._prev_weights, round_idx, step, tag
+                        self._prev_weights, round_idx, tag
                     )
+                    stop_wr = cfg.EVAL_MATCH_STOP_WIN_RATE
+                    if stop_wr > 0:
+                        for _opp, _wr in match_win_rates.items():
+                            if _wr >= stop_wr:
+                                print(
+                                    f"[TR-{self.variant.id}] 🏁 vs {_opp} 胜率 "
+                                    f"{_wr:.1%} ≥ {stop_wr:.0%}，达标停止训练"
+                                )
+                                self.stop_event.set()
+                                break
 
                 # 缓存本轮权重快照（供下一轮 vs prev 对战评估）
                 self._prev_weights = {

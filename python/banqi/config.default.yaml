@@ -104,8 +104,9 @@ common:
   eval_match:
     EVAL_MATCH_ROUNDS: 5          # 对战评估周期（轮次，0=关闭）
     EVAL_MATCH_GAMES: 20          # 每周期对弈局数
-    EVAL_MATCH_OPPONENTS: "random"  # 对手列表（random / expectimax:<path.nnue> / .pt路径）
+    EVAL_MATCH_OPPONENTS: ["random"]  # 对手列表（random / expectimax:<path.nnue> / .pt路径）
     EVAL_MATCH_VS_PREV: true      # 是否与上一轮模型对头守门
+    EVAL_MATCH_STOP_WIN_RATE: 0.0  # vs random 胜率达到该值时停止训练（0=关闭）
 
   # ---------------- 价值目标与漂移评估 ----------------
   value_target:

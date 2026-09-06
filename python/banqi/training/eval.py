@@ -253,9 +253,8 @@ def eval_match(
     cfg,
     prev_weights: Optional[Dict[str, torch.Tensor]],
     round_num: int,
-    global_step: int,
     tag: str,
-) -> None:
+) -> Dict[str, float]:
     """周期性对战评估：vs 对手 + 上一轮模型守门。
 
     注意：banqi.eval 的 play_match / play_match_stats 接受 torch.nn.Module 或
@@ -267,8 +266,12 @@ def eval_match(
     from banqi.nn_model import BanqiNet
 
     n = max(1, cfg.EVAL_MATCH_GAMES)
-    opp_str = cfg.EVAL_MATCH_OPPONENTS
-    opps = [o.strip() for o in opp_str.split(",") if o.strip()]
+    opps = [o.strip() for o in cfg.EVAL_MATCH_OPPONENTS if o and o.strip()]
+    win_rates: Dict[str, float] = {}
+    stop_wr = cfg.EVAL_MATCH_STOP_WIN_RATE
+    if stop_wr > 0:
+        # 停机阈值参考线（百分比，与其他胜率指标同刻度）
+        add_scalar("eval/stop_threshold", 100.0 * stop_wr, round_num)
     model.eval()
     try:
         # 当前模型 vs 各规则对手
@@ -282,18 +285,18 @@ def eval_match(
                     variant_id=variant.id,
                 )
                 tot = max(1, wins + draws + losses)
-                add_scalar(f"eval/win_rate_vs_{opp}", 100.0 * wins / tot, global_step)
-                add_scalar(f"eval/draw_rate_vs_{opp}", 100.0 * draws / tot, global_step)
-                add_scalar(f"eval/loss_rate_vs_{opp}", 100.0 * losses / tot, global_step)
-                add_scalar(f"eval/avg_game_length_vs_{opp}", avg_moves, global_step)
+                win_rates[opp] = wins / tot
+                add_scalar(f"eval/{opp}/win_rate", 100.0 * wins / tot, round_num)
+                add_scalar(f"eval/{opp}/draw_rate", 100.0 * draws / tot, round_num)
+                add_scalar(f"eval/{opp}/loss_rate", 100.0 * losses / tot, round_num)
+                add_scalar(f"eval/{opp}/avg_game_length", avg_moves, round_num)
                 print(
                     f"{tag} ⚔️ Round#{round_num} vs {opp}: "
                     f"胜{wins} 平{draws} 负{losses} (n={n}, 平均{avg_moves:.0f}步)"
                 )
             except Exception as exc:
                 print(f"{tag} ⚠️ 对战评估 vs {opp} 失败: {exc}")
-        # 当前模型 vs 上一轮模型（守门）
-        if cfg.EVAL_MATCH_VS_PREV and prev_weights is not None:
+        # 当前模型 vs 上一轮模型（守门）        if cfg.EVAL_MATCH_VS_PREV and prev_weights is not None:
             try:
                 prev_model = BanqiNet(
                     variant, enable_health=bool(cfg.HEALTH_VALUE_HEAD_ENABLED)
@@ -311,9 +314,9 @@ def eval_match(
                     variant_id=variant.id,
                 )
                 tot = max(1, wins + draws + losses)
-                add_scalar("eval/win_rate_vs_prev", 100.0 * wins / tot, global_step)
-                add_scalar("eval/draw_rate_vs_prev", 100.0 * draws / tot, global_step)
-                add_scalar("eval/loss_rate_vs_prev", 100.0 * losses / tot, global_step)
+                add_scalar("eval/prev/win_rate", 100.0 * wins / tot, round_num)
+                add_scalar("eval/prev/draw_rate", 100.0 * draws / tot, round_num)
+                add_scalar("eval/prev/loss_rate", 100.0 * losses / tot, round_num)
                 print(
                     f"{tag} ⚔️ Round#{round_num} vs prev: "
                     f"胜{wins} 平{draws} 负{losses} (n={n_prev})"
@@ -322,6 +325,7 @@ def eval_match(
                 print(f"{tag} ⚠️ 对战评估 vs prev 失败: {exc}")
     finally:
         model.train()
+    return win_rates
 
 
 # ==============================================================================

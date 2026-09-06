@@ -353,7 +353,7 @@ class Config:
     # EVAL_MATCH_ROUNDS=0 时关闭。
     EVAL_MATCH_ROUNDS: int            # 对战评估周期（训练轮，0=关闭）
     EVAL_MATCH_GAMES: int             # 每周期对弈局数（交替先后手）
-    EVAL_MATCH_OPPONENTS: str         # 对手列表，逗号分隔：random / expectimax:<path.nnue> / .pt路径
+    EVAL_MATCH_OPPONENTS: List[str]   # 对手列表：random / expectimax:<path.nnue> / .pt路径
     EVAL_MATCH_VS_PREV: bool          # 是否与上一轮训练后模型对头（守门）
     # ============ 训练模式（TRAIN_MODE 分流） ============
     # TRAIN_MODE: 标准模型自对弈闭环 / 归档训练
@@ -399,6 +399,8 @@ class Config:
     EXPECTIMAX_SIDECAR_WORKERS: int = 4                 # 局间并发 worker 数
     EXPECTIMAX_SIDECAR_NODE_BUDGET: int = 500000        # 每步搜索节点预算
     EXPECTIMAX_SIDECAR_MAX_DEPTH: int = 8               # 每步搜索最大深度
+    # ============ 对战评估达标停机（可选，0=关闭） ============
+    EVAL_MATCH_STOP_WIN_RATE: float = 0.0  # vs random 胜率达到该值时停止训练（0=关闭）
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -433,7 +435,11 @@ def make_config(variant_id: str) -> Config:
                 f"[banqi.config] 配置文件 {_config_path} 中缺少变体 {variant_id!r}\n"
                 f"  可用变体: {sorted(data)}"
             )
-        missing = sorted(_KNOWN_FIELDS - set(fields) - optional_fields)
+        optional = {
+            name for name, f in Config.__dataclass_fields__.items()
+            if name != "variant_id" and f.default is not dataclasses.MISSING
+        }
+        missing = sorted(_KNOWN_FIELDS - set(fields) - optional)
         if missing:
             raise RuntimeError(
                 f"[banqi.config] 配置文件 {_config_path} 中变体 {variant_id!r} 缺少字段: {missing}\n"

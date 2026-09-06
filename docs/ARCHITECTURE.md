@@ -3,6 +3,7 @@
 > **维护约定**：本文档是代码库的结构性快照，供 AI 助手与人类快速定位，避免每次需求变更都重新全库探索。
 > **更新规则**：
 > - 新增/删除模块、bin、feature、Python 子包、桥接 API（PyO3 / Tauri command / gRPC RPC）时，必须同步更新对应小节；
+> - 阅读实际代码发现与本文档描述不一致时，更新本文档；
 > - 仅函数级内部改动不需更新（本文只记录"结构性事实"：模块划分、关键类型、入口、数据流）；
 > - 文末「变更记录」每次结构变更追加一行。
 
@@ -31,7 +32,7 @@
 | `frontend/` | `index.html` + `main_tauri.js`（全部 UI/对局逻辑）+ `styles.css` |
 | `icons/`、`capabilities/`、`gen/schemas/` | Tauri 图标 / 权限 / 生成的 ACL schema |
 | `plot_lr_finder.py` | LR finder 绘图脚本 |
-| `docs/` | 本文 + `剪枝分析.md` + `nnue_expectimax_selfplay_refactor_plan.md` + `nnue_expectimax_validation_plan.md` |
+| `docs/` | 本文 + draft&archive + `mcts_chance_node_refactor_plan.md` |
 
 ### 2.1 feature 矩阵
 
@@ -170,3 +171,4 @@
 ## 变更记录
 
 - 2026-09-06：初版，由全库探索固化。
+- 2026-09-07：新增 `docs/mcts_chance_node_refactor_plan.md`（MCTS 机会节点 Single-Passage Outcome Sampling 重构计划）。
