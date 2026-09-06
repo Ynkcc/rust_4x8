@@ -43,7 +43,7 @@ pub struct SearchConfig {
     pub chance_reduction: i32,
     /// 量化开关：TT 原始键 miss 后用对称视角键二次探测并统计（只计数，不参与存储/截断）
     pub tt_sym_probe: bool,
-    /// 可选 NNUE 求值网络引擎
+    /// NNUE 求值网络引擎（叶评估唯一来源；未加载时 `search` 拒绝执行）
     pub nnue_evaluator: Option<Arc<NnueEvaluator>>,
 }
 
@@ -85,12 +85,15 @@ pub struct SearchResult {
     pub nodes: u64,
 }
 
-/// 叶节点局面评估入口（NNUE 为唯一评估来源）
+/// 叶节点局面评估入口（NNUE 为唯一评估来源；搜索入口处强制要求已加载权重）
 #[inline]
 pub fn eval_state(env: &DarkChessEnv, cfg: &SearchConfig) -> f32 {
     match cfg.nnue_evaluator.as_ref() {
         Some(nnue) => nnue.evaluate(env),
-        None => 0.0,
+        None => {
+            eprintln!("❌ Expectimax 搜索未加载 NNUE 权重（SearchConfig.nnue_evaluator = None），叶评估无效");
+            0.0
+        }
     }
 }
 
@@ -449,7 +452,20 @@ fn best_at_depth(
 }
 
 /// 节点/时间预算驱动的迭代加深 Expectimax 搜索。返回 `None` 表示无合法动作（终局）。
+///
+/// 强制要求 `cfg.nnue_evaluator` 已加载：未加载权重时直接拒绝搜索（叶评估
+/// 以 NNUE 为唯一来源，不提供规则评估兜底）。
 pub fn search(env: &DarkChessEnv, cfg: &SearchConfig) -> Option<SearchResult> {
+    let Some(nnue) = &cfg.nnue_evaluator else {
+        eprintln!(
+            "❌ Expectimax 搜索需要 NNUE 评估器：请经 ExpectimaxEngine::from_nnue_file 加载 .nnue 权重（SearchConfig.nnue_evaluator = None）"
+        );
+        return None;
+    };
+    if let Err(msg) = nnue.validate_feature_dim(env.config.nnue_feature_dim()) {
+        eprintln!("❌ {msg}");
+        return None;
+    }
     let shared = Arc::new(SharedTT::new(cfg.tt_bits));
     search_with_tt(env, cfg, shared)
 }

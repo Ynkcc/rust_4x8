@@ -25,26 +25,13 @@
                 <option value="PvP">本地双人 (PvP)</option>
                 <option value="Random">电脑 (随机)</option>
                 <option value="RevealFirst">电脑 (优先翻棋)</option>
-                <option value="Minimax">电脑 (Minimax)</option>
                 <option value="Engine">电脑 (强引擎)</option>
-                <option value="MctsHeuristic">电脑 (启发式MCTS)</option>
                 <option value="MctsDL">电脑 (MCTS+DL)</option>
                 <option value="MctsOnnx">电脑 (MCTS+ONNX)</option>
                 <option value="Nnue">电脑 (NNUE)</option>
             </select>
         </div>
         <button id="btn-new-game">开始新游戏</button>
-        <div class="group-box" id="settings-minimax" style="margin-top:10px;">
-          <h3>Minimax 设置</h3>
-          <div class="status-row">
-            <label>搜索深度:</label>
-            <input id="minimax-depth" type="number" min="1" max="10" value="4" style="width:60%;" />
-          </div>
-          <div style="display:flex; gap:8px; margin:6px 0;">
-            <button id="btn-apply-depth">应用搜索深度</button>
-          </div>
-          <small>纯规则搜索（expectiminimax + alpha-beta，已升级：多特征评估 / 置换表 / 走子排序 / 静态搜索）。</small>
-        </div>
         <div class="group-box" id="settings-engine" style="margin-top:10px;">
           <h3>强引擎设置</h3>
           <div class="status-row">
@@ -60,17 +47,6 @@
             <button id="btn-apply-engine">应用难度</button>
           </div>
           <small>αβ + Star1 + 置换表 + 迭代加深的纯计算强引擎（移植 misty-banqi），节点预算越高越强、耗时越长。</small>
-        </div>
-        <div class="group-box" id="settings-heuristic" style="margin-top:10px;">
-          <h3>启发式 MCTS 设置</h3>
-          <div class="status-row">
-            <label>模拟次数:</label>
-            <input id="heuristic-sims" type="number" min="1" value="300" style="width:60%;" />
-          </div>
-          <div style="display:flex; gap:8px; margin:6px 0;">
-            <button id="btn-apply-heuristic">应用模拟次数</button>
-          </div>
-          <small>Gumbel MCTS + 纯计算多特征启发式评估（无需 torch/模型）。</small>
         </div>
         <div class="group-box" id="settings-mctsdl" style="margin-top:10px;">
           <h3>MCTS+DL 设置（TorchScript / ONNX）</h3>

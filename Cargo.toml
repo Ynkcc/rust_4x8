@@ -35,9 +35,11 @@ path = "src/bin/py_data_collector.rs"
 required-features = ["pyo3"]
 
 # ── banqi-selfplay-worker ──────────────────────────────────────────────────
+# 评估器为纯神经网络（无启发式兜底），仅支持 torch 构建
 [[bin]]
 name = "banqi-selfplay-worker"
 path = "src/bin/selfplay_worker.rs"
+required-features = ["torch"]
 
 [dependencies]
 rand = "0.8"

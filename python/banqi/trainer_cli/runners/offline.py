@@ -71,7 +71,7 @@ def run_offline(variant_id: str, train_mode: str) -> None:
     if train_mode == "rule_selfplay":
         print(f"  RULE_BACKEND    = {config.RULE_SELFPLAY_BACKEND}（规则自对弈后端）")
         print(f"  RULE_CONCURRENCY= {config.RULE_SELFPLAY_CONCURRENCY}（规则自对弈并发数）")
-        print(f"  RULE_DEPTH      = {config.RULE_SELFPLAY_DEPTH}（minimax 搜索深度）")
+        print(f"  RULE_DEPTH      = {config.RULE_SELFPLAY_DEPTH}（已停用字段）")
         print(f"  RULE_ROUNDS     = {config.RULE_SELFPLAY_ROUNDS}（纯规则自对弈训练总轮数）")
     print("=" * 56)
 

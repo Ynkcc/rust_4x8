@@ -104,7 +104,7 @@ common:
   eval_match:
     EVAL_MATCH_ROUNDS: 5          # 对战评估周期（轮次，0=关闭）
     EVAL_MATCH_GAMES: 20          # 每周期对弈局数
-    EVAL_MATCH_OPPONENTS: "heuristic16,heuristic64"  # 规则对手列表（不同 sims 的 MCTS）
+    EVAL_MATCH_OPPONENTS: "random"  # 对手列表（random / expectimax:<path.nnue> / .pt路径）
     EVAL_MATCH_VS_PREV: true      # 是否与上一轮模型对头守门
 
   # ---------------- 价值目标与漂移评估 ----------------

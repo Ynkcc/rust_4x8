@@ -10,10 +10,9 @@
 //   2. **Server**（本地监听，供训练端拉取）：
 //      - `PullGameData`：按 data_id 返回样本流（对局数据）。
 //
-// 自对弈使用 `SelfPlayRunner`（同步）。评估器通过 `WorkerEvaluator` enum
-// 在「内置启发式」与「神经网络（TchEvaluator）」之间热切换，保持核心
-// MCTS（GumbelMCTS）的 `E: Sized` 约束不变，零侵入。神经网络推理需
-// `--features torch` 构建。
+// 自对弈使用 `SelfPlayRunner`（同步）。评估器为神经网络（TchEvaluator），
+// 经训练端周期推送模型文件热更新，保持核心 MCTS（GumbelMCTS）的 `E: Sized`
+// 约束不变，零侵入。神经网络推理需 `--features torch` 构建（必需特性）。
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -34,7 +33,6 @@ use tonic::{Request, Response, Status};
 
 use banqi_4x8::core::env::DarkChessEnv;
 use banqi_4x8::core::mcts::{Evaluator, EvaluatorOutput};
-use banqi_4x8::engine::mcts_heuristic::HeuristicEvaluator;
 use banqi_4x8::pipeline::self_play::serialize::episode_to_dict_json;
 use banqi_4x8::pipeline::self_play::{GameEpisode, ScenarioType, SelfPlayConfig, run_self_play};
 
@@ -89,6 +87,10 @@ struct CliArgs {
     /// 拉取模型文件的临时落盘路径
     #[arg(long, default_value = "/tmp/banqi_worker_model.pt")]
     model_cache_path: String,
+
+    /// 启动时加载的初始 TorchScript 模型路径（评估器无启发式兜底，必填）
+    #[arg(long)]
+    initial_model: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -101,14 +103,15 @@ struct WorkerConfigFile {
     mcts_sims: Option<usize>,
     worker_id: Option<String>,
     model_cache_path: Option<String>,
+    initial_model: Option<String>,
 }
 
 // ============================================================================
-// 评估器：内置启发式 / 神经网络 热切换（enum 保持 E: Sized，零侵入核心 MCTS）
+// 评估器：神经网络（TchEvaluator），经训练端推送模型文件热更新
+// （enum 保持 E: Sized，零侵入核心 MCTS；需 --features torch）
 // ============================================================================
 
 enum WorkerEvaluator {
-    Heuristic(HeuristicEvaluator),
     #[cfg(feature = "torch")]
     Torch(banqi_4x8::engine::mcts_dl::TchEvaluator<DarkChessEnv>),
 }
@@ -116,7 +119,6 @@ enum WorkerEvaluator {
 impl Evaluator<DarkChessEnv> for WorkerEvaluator {
     fn evaluate(&self, envs: &[DarkChessEnv]) -> EvaluatorOutput {
         match self {
-            Self::Heuristic(h) => h.evaluate(envs),
             #[cfg(feature = "torch")]
             Self::Torch(t) => t.evaluate(envs),
         }
@@ -145,9 +147,10 @@ struct WorkerState {
 }
 
 impl WorkerState {
-    fn new(initial_sims: usize) -> Self {
+    #[cfg(feature = "torch")]
+    fn new(initial_sims: usize, evaluator: WorkerEvaluator) -> Self {
         Self {
-            evaluator: RwLock::new(WorkerEvaluator::Heuristic(HeuristicEvaluator::new())),
+            evaluator: RwLock::new(evaluator),
             sample_queue: Mutex::new(VecDeque::new()),
             current_sims: AtomicUsize::new(initial_sims),
             is_paused: AtomicBool::new(false),
@@ -397,6 +400,13 @@ fn load_tch_evaluator(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(not(feature = "torch"))]
+    {
+        anyhow::bail!(
+            "selfplay_worker 需要 --features torch 构建：评估器仅支持神经网络热更新，无启发式/随机兜底"
+        );
+    }
+    #[cfg(feature = "torch")]
     let args = CliArgs::parse();
 
     // 1. 读取配置文件（若指定）
@@ -408,6 +418,7 @@ async fn main() -> Result<()> {
     let mut mcts_sims = args.sims;
     let mut worker_id = args.worker_id;
     let mut model_cache_path = args.model_cache_path;
+    let mut initial_model = args.initial_model;
 
     if let Some(config_path) = args.config {
         println!("📄 正在读取配置文件: {}", config_path);
@@ -426,6 +437,13 @@ async fn main() -> Result<()> {
         if let Some(s) = cfg.mcts_sims { mcts_sims = s; }
         if let Some(w) = cfg.worker_id { worker_id = w; }
         if let Some(p) = cfg.model_cache_path { model_cache_path = p; }
+        if let Some(p) = cfg.initial_model { initial_model = p; }
+    }
+
+    if initial_model.is_empty() {
+        anyhow::bail!(
+            "缺少初始模型：--initial-model <path.pt>（评估器为纯神经网络，无启发式兜底；初始模型可由训练端经 FetchLatestModel 热更新替换）"
+        );
     }
 
     println!("============================================================");
@@ -435,7 +453,7 @@ async fn main() -> Result<()> {
     println!("   - Serve  (server)  : {}:{}", serve_host, serve_port);
     println!("   - Parallel Threads : {}", threads);
     println!("   - MCTS Sims        : {}", mcts_sims);
-    println!("   - NN 推理          : {}", if cfg!(feature = "torch") { "已启用" } else { "未启用(启发式)" });
+    println!("   - NN 推理          : TchEvaluator（初始模型: {initial_model}）");
     println!("============================================================");
 
     // 2. 作为 client 连接 Python 训练服务端
@@ -448,8 +466,11 @@ async fn main() -> Result<()> {
     let grpc_client = SelfPlayServiceClient::new(channel);
     println!("✅ 已连接训练服务端 {}", server_addr);
 
-    // 3. 共享状态
-    let state = Arc::new(WorkerState::new(mcts_sims));
+    // 3. 共享状态（加载初始模型构建评估器，后续经 FetchLatestModel 热更新）
+    let initial_eval = load_tch_evaluator(&initial_model)
+        .with_context(|| format!("加载初始模型失败: {initial_model}"))?;
+    println!("✅ 初始模型加载成功: {initial_model}");
+    let state = Arc::new(WorkerState::new(mcts_sims, WorkerEvaluator::Torch(initial_eval)));
 
     // 4. 启动 gRPC Server（供训练端拉取样本）
     let serve_addr: std::net::SocketAddr = format!("{}:{}", serve_host, serve_port).parse()?;
@@ -479,13 +500,6 @@ async fn main() -> Result<()> {
         state.clone(),
         model_cache_path,
     ));
-    #[cfg(not(feature = "torch"))]
-    {
-        let _ = &model_cache_path;
-        println!(
-            "   (NN 推理未启用，Worker 使用内置启发式；如需神经网络热更新请以 --features torch 构建)"
-        );
-    }
 
     // 6. 主线程多线程自对弈数据收集循环
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
@@ -562,7 +576,7 @@ async fn main() -> Result<()> {
             model_version: {
                 let v = state.current_model_version.lock().unwrap();
                 if v.is_empty() {
-                    "heuristic-v1".to_string()
+                    "initial".to_string()
                 } else {
                     v.clone()
                 }

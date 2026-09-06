@@ -1,26 +1,11 @@
-"""banqi/rule_teacher.py — Rust 教师自对弈数据生产者（4x2 / 4x4 / 4x8 通用）。
+"""banqi/rule_teacher.py — Rust 教师自对弈数据生产者（已停用）。
 
-纯规则教师自对弈在 Rust 侧实现（src/bridge/python/self_play/teacher.rs），Python
-侧仅做编排：按变体分派到 Rust 导出的 `run_*_heuristic_self_play` /
-`run_*_minimax_self_play` 绑定，把返回的 `PyGameEpisode`（Rust 导出的 Episode
-格式）序列化为 dict 后压入训练队列，由 `TrainWorker` 消费训练。不依赖神经网络。
+Rust 侧的规则教师（engine/minimax、engine/evaluation、engine/mcts_heuristic）
+已整体移除：启发式规则评估不适用于全明子环境与不同环境变种，棋力评估/自对弈
+统一收敛到 Expectimax+NNUE（expectimax:<path.nnue>）与神经网络模型选手。
 
-用途：`TRAIN_MODE="rule_selfplay"` 时的数据源，用于：
-  - 模仿学习预热：让网络先学习强规则教师（minimax / 启发式）的走子与评估，
-    避免从随机自对弈冷启动时目标噪声过大。
-  - 数据增强：为模型自对弈补充高质量规则对局数据。
-
-并发后端（RULE_SELFPLAY_BACKEND）：
-  - "thread"  （默认）：多线程。启动 RULE_SELFPLAY_CONCURRENCY 个
-    `RuleTeacherWorker` 线程；Rust 绑定调用释放 GIL，可并行。
-  - "process"：多进程 spawn。每个 worker 独立进程 / GIL，彻底并行吃满多核。
-    通过 `rule_teacher_worker_main` 进程入口 + multiprocessing.Queue 通信。
-
-Episode 格式：Rust 导出的 `PyGameEpisode.to_dict()` 字段与 `TrainWorker` /
-`DataBuffer` 兼容（含 boards / scalars / policies / mcts_values / completed_qs /
-root_visits / game_results / health_diffs / action_masks / actions / game_length /
-winner / board_shape / scalar_shape / action_space 等）。策略头验证的 ground
-truth 采用 `actions`（教师实际走出的最优动作，见 training/buffer.py 的 fallback）。
+本模块保留进程/线程编排骨架，`generate_teacher_batch` 与两个 worker 入口均
+直接抛错，避免旧配置（RULE_SELFPLAY_TYPE=minimax/heuristic）静默退化。
 """
 
 from __future__ import annotations
@@ -89,9 +74,13 @@ def generate_teacher_batch(
 ) -> List[Dict]:
     """调用 Rust 统一 `run_native_match` 生成一批规则教师 episode。
 
-    `rule_type` : "minimax" | "heuristic"（由 config.RULE_SELFPLAY_TYPE 决定）。
-    双方选手均为同一规则教师（自对弈），`record_episodes=True` 收集训练数据。
+    已停用：规则教师（minimax / 启发式）随 Rust 侧 engine/evaluation 与
+    engine/mcts_heuristic 一并移除，教师自对弈请改用模型或 Expectimax+NNUE。
     """
+    raise RuntimeError(
+        "rule_teacher 已停用：Rust 侧规则教师（minimax/启发式）已移除，"
+        "教师自对弈请改用模型选手或 Expectimax+NNUE（expectimax:<path.nnue>）"
+    )
     del worker_id
     variant_id = _variant_id(variant)
     cfg = build_teacher_config(variant, sims)
@@ -149,6 +138,10 @@ class RuleTeacherWorker(threading.Thread):
                 continue
 
     def run(self) -> None:
+        raise RuntimeError(
+            "RuleTeacherWorker 已停用：规则教师（minimax/启发式）已从 Rust 侧移除，"
+            "请改用 TRAIN_MODE=selfplay 或归档训练"
+        )
         cfg = self.cfg
         rule_type = cfg.RULE_SELFPLAY_TYPE
         depth = cfg.RULE_SELFPLAY_DEPTH
@@ -225,6 +218,10 @@ def rule_teacher_worker_main(
     variant = get_variant(variant_id)
     cfg = make_config(variant_id)
     tag = f"[RuleT-{variant_id}-{worker_id}]"
+    raise RuntimeError(
+        "rule_teacher_worker_main 已停用：规则教师（minimax/启发式）已从 Rust 侧移除，"
+        "请改用 TRAIN_MODE=selfplay 或归档训练"
+    )
     rule_type = cfg.RULE_SELFPLAY_TYPE
     depth = cfg.RULE_SELFPLAY_DEPTH
     sims = cfg.RULE_SELFPLAY_SIMS

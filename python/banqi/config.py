@@ -349,26 +349,26 @@ class Config:
     HEALTH_UTILITY_WEIGHT: float          # MCTS 复合效用中血量期望权重 λ（0=禁用血量影响搜索，P3 使用）
     HEALTH_UTILITY_CONFIDENCE_EXP: float  # λ 随 |v_win| 的自适应幂指数；0=常量 λ（P3 使用）
     # ============ 对战评估（TensorBoard eval/*，通用） ============
-    # 周期性把当前模型与规则对手（启发式 MCTS / minimax）及上一轮模型对弈，
-    # 记录 eval/* 指标到 TensorBoard。EVAL_MATCH_ROUNDS=0 时关闭。
+    # 周期性把当前模型与对手及上一轮模型对弈，记录 eval/* 指标到 TensorBoard。
+    # EVAL_MATCH_ROUNDS=0 时关闭。
     EVAL_MATCH_ROUNDS: int            # 对战评估周期（训练轮，0=关闭）
     EVAL_MATCH_GAMES: int             # 每周期对弈局数（交替先后手）
-    EVAL_MATCH_OPPONENTS: str         # 对手列表，逗号分隔：heuristic64 / minimax3
+    EVAL_MATCH_OPPONENTS: str         # 对手列表，逗号分隔：random / expectimax:<path.nnue> / .pt路径
     EVAL_MATCH_VS_PREV: bool          # 是否与上一轮训练后模型对头（守门）
     # ============ 训练模式（TRAIN_MODE 分流） ============
-    # TRAIN_MODE: 标准模型自对弈闭环 / 归档训练 / 纯规则自对弈训练
+    # TRAIN_MODE: 标准模型自对弈闭环 / 归档训练
     #   - "selfplay"   : 默认。模型 MCTS 自对弈生成数据 + 训练（现有闭环）
     #   - "archive"    : 仅从冷存储归档数据训练，不启动模型自对弈
-    #   - "rule_selfplay": 用纯规则（minimax/heuristic）自对弈生成数据训练，不依赖模型
+    #   - "rule_selfplay": 已停用（Rust 侧规则教师已移除，入口会直接抛错）
     TRAIN_MODE: str
     # ---- 归档训练（TRAIN_MODE="archive"）----
     ARCHIVE_TRAIN_DIR: str            # 归档数据目录；空=自动探测 variant.archive_dir
     ARCHIVE_TRAIN_GAMES: int          # 从归档加载多少局用于训练（0=全部）
     ARCHIVE_TRAIN_ROUNDS: int         # 归档训练总轮数
-    # ---- 纯规则自对弈训练（TRAIN_MODE="rule_selfplay"）----
-    RULE_SELFPLAY_TYPE: str           # 规则类型：minimax | heuristic
-    RULE_SELFPLAY_DEPTH: int          # minimax 搜索深度（仅 RULE_SELFPLAY_TYPE="minimax"）
-    RULE_SELFPLAY_SIMS: int           # 启发式 MCTS 模拟数（仅 RULE_SELFPLAY_TYPE="heuristic"）
+    # ---- 纯规则自对弈训练（TRAIN_MODE="rule_selfplay"，已停用）----
+    RULE_SELFPLAY_TYPE: str           # （已停用）规则类型：minimax | heuristic
+    RULE_SELFPLAY_DEPTH: int          # （已停用）minimax 搜索深度
+    RULE_SELFPLAY_SIMS: int           # （已停用）启发式 MCTS 模拟数
     RULE_SELFPLAY_GAMES: int          # 每轮生成局数
     RULE_SELFPLAY_ROUNDS: int         # 纯规则自对弈训练总轮数
     RULE_SELFPLAY_CONCURRENCY: int    # 纯规则自对弈生成并发 worker 数（线程或进程，见 BACKEND）

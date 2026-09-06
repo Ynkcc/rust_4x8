@@ -14,11 +14,6 @@ from banqi.training.eval import (
     EVAL_MAX_ACTIONS,
     EVAL_C_SCALE,
     EVAL_GUMBEL_SCALE,
-    HM_SIMS,
-    MINIMAX_DEPTH,
-    OPP_HEURISTIC128,
-    OPP_MINIMAX3,
-    OPP_HEURISTIC64,
     OPPONENTS,
     _resolve_player_spec,
     play_match,
@@ -31,11 +26,6 @@ __all__ = [
     "EVAL_MAX_ACTIONS",
     "EVAL_C_SCALE",
     "EVAL_GUMBEL_SCALE",
-    "HM_SIMS",
-    "MINIMAX_DEPTH",
-    "OPP_HEURISTIC128",
-    "OPP_MINIMAX3",
-    "OPP_HEURISTIC64",
     "OPPONENTS",
     "_resolve_player_spec",
     "play_match",
@@ -46,12 +36,11 @@ __all__ = [
 
 def main():
     ap = argparse.ArgumentParser(description="暗棋双选手统一评估（Rust 原生下沉引擎）")
-    ap.add_argument("player_a", help="选手 A (格式: random / mcts128 / minimax3 / .pt路径)")
-    ap.add_argument("player_b", help="选手 B (格式: random / mcts128 / minimax3 / .pt路径)")
+    ap.add_argument("player_a", help="选手 A (格式: random / expectimax:<path.nnue> / .pt路径)")
+    ap.add_argument("player_b", help="选手 B (格式: random / expectimax:<path.nnue> / .pt路径)")
     ap.add_argument("n", nargs="?", type=int, default=100, help="评估局数（默认 100）")
     ap.add_argument("--variant", default="4x4", choices=("4x2", "4x4", "4x8"), help="棋盘变体（默认 4x4）")
     ap.add_argument("--seed", type=int, default=None, help="固定随机种子 (RNG Seed)")
-    ap.add_argument("--heuristic-sims", type=int, default=None, help="启发式 MCTS 对手的模拟数")
     ap.add_argument("--model-sims", type=int, default=EVAL_SIMS, help=f"模型 MCTS 模拟数（默认 {EVAL_SIMS}）")
     ap.add_argument("-j", "--num-threads", type=int, default=4, help="Rust 侧并发线程数（默认 4）")
 
@@ -64,7 +53,7 @@ def main():
         n=args.n,
         variant_id=args.variant,
         model_sims=args.model_sims,
-        heuristic_sims=args.heuristic_sims,
+        heuristic_sims=None,
         seed=args.seed,
         num_threads=args.num_threads,
     )

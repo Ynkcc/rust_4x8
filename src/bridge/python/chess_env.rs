@@ -3,7 +3,7 @@
 //
 // 重构说明：原 darkchess_env.rs / game4x4_env.rs / mini_darkchess_env.rs 三份
 // 副本逻辑一致度 >95%，仅差异为：具体环境类型、动作空间大小、pyclass 名、以及
-// minimax / 启发式搜索底层访问的 DarkChessEnv。本文件用一份公共实现 + 一个
+// Expectimax 搜索底层访问的 DarkChessEnv。本文件用一份公共实现 + 一个
 // 声明宏（`define_chess_env!`）为三个变体各生成一个 pyclass：
 //   - `DarkChess`（4x8，352 动作空间）
 //   - `Game4x4`（4x4，112 动作空间）
@@ -20,11 +20,6 @@
 //   step(action) -> (terminated, truncated, winner)
 //   mcts_search_action(predict_fn, sims, max_acts, c_scale, gumbel_scale=1.0)
 //   greedy_action(predict_fn)
-//   minimax_action(max_depth)          # 纯规则搜索
-//   heuristic_mcts_action(sims)        # 纯计算启发式
-//
-// 注：4x8 的 `DarkChess` 也补上了 minimax_action / heuristic_mcts_action（与
-// 4x4/4x2 对齐），使 Python 侧统一评估协议（banqi/eval.py）对所有变体一致可用。
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -36,7 +31,7 @@ use crate::core::mcts::{Evaluator, GumbelConfig, GumbelMCTS};
 use super::py_evaluator::PyEvaluator;
 
 // ============================================================================
-// 统一底层访问：三类暗棋环境 -> 底层 DarkChessEnv（minimax / 启发式搜索需要）
+// 统一底层访问：三类暗棋环境 -> 底层 DarkChessEnv（Expectimax 搜索需要）
 // ============================================================================
 
 /// 供三类暗棋环境统一访问底层 `DarkChessEnv` 的能力。
@@ -45,9 +40,9 @@ use super::py_evaluator::PyEvaluator;
 /// - `Game4x4Env` / `MiniDarkChessEnv` 各自包一层 `inner: DarkChessEnv`。
 ///
 /// `GameEnv` 已统一了绝大部分接口（动作掩码、落子、观测、终局、动作空间等），
-/// 这里仅补充 minimax / 启发式搜索所需的底层棋盘访问。
+/// 这里仅补充 Expectimax 搜索所需的底层棋盘访问。
 pub trait PyChessEnvCore: GameEnv {
-    /// 底层棋盘（用于 `minimax_best_action` / `HeuristicMctsPolicy`）。
+    /// 底层棋盘（用于 `ExpectimaxEngine`）。
     fn as_darkchess(&self) -> &DarkChessEnv;
 }
 
@@ -198,15 +193,11 @@ macro_rules! define_chess_env {
                 Ok(mcts.run().map(|r| r.action))
             }
 
-            /// 用 Expectimax + NNUE 引擎搜索最佳动作。
-            #[pyo3(signature = (nnue_path=None, max_depth=2, node_budget=1500))]
-            fn expectimax_action(&self, nnue_path: Option<&str>, max_depth: i32, node_budget: u64) -> PyResult<Option<usize>> {
-                let mut engine = if let Some(path) = nnue_path {
-                    crate::core::expectimax::ExpectimaxEngine::from_nnue_file(path)
-                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?
-                } else {
-                    crate::core::expectimax::ExpectimaxEngine::new()
-                };
+            /// 用 Expectimax + NNUE 引擎搜索最佳动作（NNUE 权重为必填）。
+            #[pyo3(signature = (nnue_path, max_depth=2, node_budget=1500))]
+            fn expectimax_action(&self, nnue_path: &str, max_depth: i32, node_budget: u64) -> PyResult<Option<usize>> {
+                let mut engine = crate::core::expectimax::ExpectimaxEngine::from_nnue_file(nnue_path)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
                 engine.set_max_depth(max_depth);
                 engine.set_node_budget(node_budget);
                 Ok(engine.best_action(self.inner.as_darkchess()))
@@ -217,23 +208,6 @@ macro_rules! define_chess_env {
                 let evaluator = crate::inference::nnue::NnueEvaluator::load_from_file(nnue_path)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
                 Ok(evaluator.evaluate(self.inner.as_darkchess()))
-            }
-
-            /// 用 expectiminimax + alpha-beta 搜索选动作（不依赖网络，纯规则搜索）。
-            ///
-            /// `max_depth` 为搜索深度；返回 None 表示无合法动作（终局）。
-            fn minimax_action(&self, max_depth: usize) -> PyResult<Option<usize>> {
-                let result =
-                    crate::engine::minimax::minimax_best_action(self.inner.as_darkchess(), max_depth);
-                Ok(result.map(|r| r.action))
-            }
-
-            /// 用纯计算启发式 Gumbel MCTS 选动作（不依赖网络，规则先验 + 多特征评估）。
-            ///
-            /// `sims` 为模拟次数；返回 None 表示无合法动作（终局）。
-            fn heuristic_mcts_action(&self, sims: usize) -> PyResult<Option<usize>> {
-                let policy = crate::engine::HeuristicMctsPolicy::new(sims);
-                Ok(policy.choose_action(self.inner.as_darkchess()))
             }
 
             /// 纯网络贪婪动作：对当前局面一次前向，取合法动作中 logit 最大者（无搜索）。

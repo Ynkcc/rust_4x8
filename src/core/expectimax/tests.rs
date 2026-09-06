@@ -1,8 +1,14 @@
 //! Expectimax 强引擎单元测试（自 engine/alpha_beta 合并）。
 
 use crate::core::env::DarkChessEnv;
+use crate::inference::nnue::NnueEvaluator;
+use std::sync::Arc;
 
 use super::search::{SearchConfig, search};
+
+fn dummy_nnue(env: &DarkChessEnv) -> Arc<NnueEvaluator> {
+    Arc::new(NnueEvaluator::new_dummy(env.config.nnue_feature_dim()))
+}
 
 #[test]
 fn engine_returns_legal_action() {
@@ -12,7 +18,7 @@ fn engine_returns_legal_action() {
     let mut cfg = SearchConfig::default();
     cfg.node_budget = 50_000;
     cfg.max_depth = 6;
-    cfg.nnue_evaluator = None; // 未加载 NNUE 时叶评估为 0，仅验证搜索骨架
+    cfg.nnue_evaluator = Some(dummy_nnue(&env)); // 叶评估以 NNUE 为唯一来源
     let res = search(&env, &cfg).expect("应返回动作");
     // 动作必须合法
     let mut masks = vec![0i32; env.config.action_space_size];
@@ -55,6 +61,7 @@ fn engine_feature_ablation_consistency() {
     let base_cfg = SearchConfig {
         node_budget: 10_000,
         max_depth: 3,
+        nnue_evaluator: Some(dummy_nnue(&env)),
         ..Default::default()
     };
 
@@ -64,6 +71,7 @@ fn engine_feature_ablation_consistency() {
         features: 0,
         node_budget: 10_000,
         max_depth: 3,
+        nnue_evaluator: Some(dummy_nnue(&env)),
         ..Default::default()
     };
     let res_no_opt = search(&env, &no_opt_cfg).expect("无优化搜索应返回结果");

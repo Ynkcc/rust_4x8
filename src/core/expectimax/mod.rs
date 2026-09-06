@@ -103,17 +103,11 @@ pub struct ExpectimaxEngine {
     pub config: SearchConfig,
 }
 
-impl Default for ExpectimaxEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ExpectimaxEngine {
-    /// 创建默认 Expectimax 引擎实体
-    pub fn new() -> Self {
+    /// 以指定 NNUE 评估器创建引擎（叶评估以 NNUE 为唯一来源，搜索强制要求）
+    pub fn with_nnue(evaluator: NnueEvaluator) -> Self {
         let mut config = SearchConfig::default();
-        config.nnue_evaluator = Some(Arc::new(NnueEvaluator::new_dummy(crate::core::env::darkchess_config().nnue_feature_dim())));
+        config.nnue_evaluator = Some(Arc::new(evaluator));
         Self { config }
     }
 
@@ -162,7 +156,8 @@ mod engine_entity_tests {
     #[test]
     fn test_expectimax_engine_standalone() {
         let env = DarkChessEnv::default();
-        let mut engine = ExpectimaxEngine::new();
+        let nnue = NnueEvaluator::new_dummy(env.config.nnue_feature_dim());
+        let mut engine = ExpectimaxEngine::with_nnue(nnue);
         engine.set_max_depth(4);
         engine.set_node_budget(5_000);
 

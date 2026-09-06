@@ -44,9 +44,7 @@ pub enum OpponentType {
     PvP,           // 本地双人
     Random,        // 随机对手
     RevealFirst,   // 优先翻棋
-    Minimax,       // 纯规则 Minimax（expectiminimax+alpha-beta，已升级：多特征评估/置换表/走子排序/静态搜索）
-    Engine,        // 纯计算强引擎（αβ + Star1 + 置换表 + 迭代加深，节点预算可控）
-    MctsHeuristic, // Gumbel MCTS + 纯计算启发式评估（无需 torch）
+    Engine,        // 纯计算强引擎（αβ + Star1 + 置换表 + 迭代加深，节点预算可控；需 NNUE）
     MctsDL,        // MCTS + 深度学习（TorchScript，需 torch feature）
     MctsOnnx,      // MCTS + ONNX 深度学习（需 onnx feature，无需 libtorch）
     Nnue,          // Expectimax + NNUE 叶评估（加载 .nnue，无需 torch/onnx feature）
@@ -56,12 +54,8 @@ pub enum OpponentType {
 struct AppState {
     game: Mutex<DarkChessEnv>,
     opponent_type: Mutex<OpponentType>,
-    // Minimax 搜索深度（对应 verify_mini_vs_minimax.py 的 minimax(depth=4) 档位）
-    minimax_depth: Mutex<usize>,
     // 强引擎节点预算
     engine_budget: Mutex<u64>,
-    // 启发式 MCTS 模拟次数
-    heuristic_sims: Mutex<usize>,
     // MCTS 配置
     mcts_num_simulations: Mutex<usize>,
     // 已加载的模型（可在选择 MctsDL 时构建策略）
@@ -91,9 +85,7 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
     *opp_type_lock = match opponent.as_deref() {
         Some("Random") => OpponentType::Random,
         Some("RevealFirst") => OpponentType::RevealFirst,
-        Some("Minimax") => OpponentType::Minimax,
         Some("Engine") => OpponentType::Engine,
-        Some("MctsHeuristic") => OpponentType::MctsHeuristic,
         Some("MctsDL") => OpponentType::MctsDL,
         Some("MctsOnnx") => OpponentType::MctsOnnx,
         Some("Nnue") => OpponentType::Nnue,
@@ -192,18 +184,10 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
     }
 
     // 调用策略模块选择动作。
-    // Minimax / Engine / MctsHeuristic 为计算密集搜索，放后台线程执行避免阻塞 UI；
+    // Engine / Nnue 为计算密集搜索，放后台线程执行避免阻塞 UI；
     // 其余策略廉价，直接同步执行。
     let snapshot = state.game.lock().unwrap().clone();
     let chosen_action = match opp_type {
-        OpponentType::Minimax => {
-            let depth = *state.minimax_depth.lock().unwrap();
-            tauri::async_runtime::spawn_blocking(move || {
-                banqi_4x8::engine::minimax::minimax_choose_action(&snapshot, depth)
-            })
-            .await
-            .map_err(|e| format!("Minimax 搜索线程错误: {e}"))?
-        }
         OpponentType::Engine => {
             let budget = *state.engine_budget.lock().unwrap();
             let cfg = banqi_4x8::core::expectimax::SearchConfig {
@@ -215,15 +199,6 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
             })
             .await
             .map_err(|e| format!("引擎搜索线程错误: {e}"))?
-        }
-        OpponentType::MctsHeuristic => {
-            let sims = *state.heuristic_sims.lock().unwrap();
-            tauri::async_runtime::spawn_blocking(move || {
-                let policy = banqi_4x8::engine::mcts_heuristic::HeuristicMctsPolicy::new(sims);
-                policy.choose_action(&snapshot)
-            })
-            .await
-            .map_err(|e| format!("启发式 MCTS 线程错误: {e}"))?
         }
         OpponentType::Nnue => {
             let evaluator = state
@@ -296,9 +271,7 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
                 #[cfg(not(feature = "onnx"))]
                 OpponentType::MctsOnnx => return Err("MctsOnnx 需要启用 onnx 特性".into()),
                 OpponentType::PvP => None,        // 已在上面返回 Err，这里兜底
-                OpponentType::Minimax => unreachable!(),
                 OpponentType::Engine => unreachable!(),
-                OpponentType::MctsHeuristic => unreachable!(),
                 OpponentType::Nnue => unreachable!(),
             }
         }
@@ -589,20 +562,6 @@ fn load_model(path: String, state: State<AppState>) -> Result<String, String> {
     }
 }
 
-/// 设置 Minimax 搜索深度（默认 4，与 verify_mini_vs_minimax.py 的 minimax(depth=4) 对应）
-#[tauri::command]
-fn set_minimax_depth(depth: usize, state: State<AppState>) -> Result<usize, String> {
-    if depth == 0 {
-        return Err("搜索深度必须大于 0".into());
-    }
-    if depth > 10 {
-        return Err("搜索深度过大（>10），可能导致搜索极慢或内存爆炸".into());
-    }
-    let mut d = state.minimax_depth.lock().unwrap();
-    *d = depth;
-    Ok(*d)
-}
-
 /// 设置 MCTS 每步搜索次数
 #[tauri::command]
 fn set_mcts_iterations(iters: usize, state: State<AppState>) -> Result<usize, String> {
@@ -635,17 +594,6 @@ fn set_engine_budget(budget: u64, state: State<AppState>) -> Result<u64, String>
     Ok(*b)
 }
 
-/// 设置启发式 MCTS（MctsHeuristic）的模拟次数
-#[tauri::command]
-fn set_heuristic_sims(sims: usize, state: State<AppState>) -> Result<usize, String> {
-    if sims == 0 {
-        return Err("模拟次数必须大于 0".into());
-    }
-    let mut s = state.heuristic_sims.lock().unwrap();
-    *s = sims;
-    Ok(*s)
-}
-
 /// 设置 NNUE 对手（Expectimax）的搜索深度
 #[tauri::command]
 fn set_nnue_depth(depth: i32, state: State<AppState>) -> Result<i32, String> {
@@ -676,9 +624,7 @@ pub fn run() {
             app.manage(AppState {
                 game: Mutex::new(env),
                 opponent_type: Mutex::new(OpponentType::PvP),
-                minimax_depth: Mutex::new(4),
                 engine_budget: Mutex::new(300_000),
-                heuristic_sims: Mutex::new(300),
                 mcts_num_simulations: Mutex::new(200),
                 #[cfg(feature = "torch")]
                 model: Mutex::new(None),
@@ -704,10 +650,8 @@ pub fn run() {
             get_move_action,
             list_models,
             load_model,
-            set_minimax_depth,
             set_mcts_iterations,
             set_engine_budget,
-            set_heuristic_sims,
             set_nnue_depth,
             set_nnue_budget
         ])

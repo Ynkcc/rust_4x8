@@ -2,7 +2,7 @@
 //!
 //! 在 Rust 侧直接加载 .pt (TorchScript) 或 .onnx 模型，结合 rayon 多线程并发
 //! 模拟对战对局（彻底释放 GIL 锁），支持固定随机种子（Seed）与两端玩家显式组合
-//! （模型 / 启发式 MCTS / Minimax / 随机）。对局推进全部下沉到统一的
+//! （Expectimax / 模型 / 随机）。对局推进全部下沉到统一的
 //! `pipeline::self_play::run_match_core` 主干，不再持有独立的对局循环。
 //!
 //! 这是 `run_native_match` 唯一入口：替代旧的 `run_eval_match`，并吸收旧
@@ -63,41 +63,27 @@ fn load_model_eval<G: GameEnv>(
 }
 
 // ============================================================================
-// 选手规范解析（模型 / 启发式 / Minimax / 随机）
+// 选手规范解析（Expectimax / 模型 / 随机）
 // ============================================================================
 
 fn parse_player_spec<G: GameEnv>(
     spec_str: &str,
-    heuristic_sims: Option<usize>,
+    _heuristic_sims: Option<usize>,
 ) -> Result<PlayerSpec<G>, String> {
-    if spec_str.starts_with("minimax") {
-        let depth = spec_str
-            .strip_prefix("minimax")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(3);
-        Ok(PlayerSpec::Minimax { depth })
-    } else if spec_str.starts_with("expectimax") {
-        // 格式："expectimax"（内置 dummy NNUE）或 "expectimax:<path.nnue>"
-        let nnue_path = spec_str
+    if spec_str.starts_with("expectimax") {
+        // 格式："expectimax:<path.nnue>"（NNUE 叶评估为必填，无模型搜索不支持）
+        let Some(nnue_path) = spec_str
             .strip_prefix("expectimax")
             .and_then(|s| s.strip_prefix(':'))
-            .filter(|s| !s.is_empty());
-        let engine = match nnue_path {
-            Some(p) => crate::core::expectimax::ExpectimaxEngine::from_nnue_file(p),
-            None => Ok(crate::core::expectimax::ExpectimaxEngine::new()),
-        }
-        .map_err(|e| format!("加载 NNUE 失败 ({spec_str}): {e}"))?;
-        Ok(PlayerSpec::Expectimax(Arc::new(engine)))
-    } else if spec_str.starts_with("heuristic") || spec_str.starts_with("mcts") {
-        let default_sims = if let Some(rest) = spec_str.strip_prefix("heuristic") {
-            rest.parse::<usize>().ok().unwrap_or(128)
-        } else if let Some(rest) = spec_str.strip_prefix("mcts") {
-            rest.parse::<usize>().ok().unwrap_or(128)
-        } else {
-            128
+            .filter(|s| !s.is_empty())
+        else {
+            return Err(format!(
+                "expectimax 选手必须指定 .nnue 权重路径（格式 expectimax:<path.nnue>）: {spec_str}"
+            ));
         };
-        let sims = heuristic_sims.unwrap_or(default_sims);
-        Ok(PlayerSpec::Heuristic { sims })
+        let engine = crate::core::expectimax::ExpectimaxEngine::from_nnue_file(nnue_path)
+            .map_err(|e| format!("加载 NNUE 失败 ({spec_str}): {e}"))?;
+        Ok(PlayerSpec::Expectimax(Arc::new(engine)))
     } else if spec_str.starts_with("random") {
         Ok(PlayerSpec::Random)
     } else {

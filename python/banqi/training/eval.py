@@ -24,14 +24,10 @@ EVAL_SIMS = 16
 EVAL_MAX_ACTIONS = 16
 EVAL_C_SCALE = 0.25
 EVAL_GUMBEL_SCALE = 1.0
-HM_SIMS = 128
-MINIMAX_DEPTH = 3
 
-# 规则对手预设
-OPP_HEURISTIC128 = "heuristic128"
-OPP_MINIMAX3 = "minimax3"
-OPP_HEURISTIC64 = "heuristic64"
-OPPONENTS = (OPP_HEURISTIC128, OPP_MINIMAX3, OPP_HEURISTIC64)
+# 规则对手预设（启发式/规则搜索对手已随 engine/evaluation、engine/mcts_heuristic 移除；
+# 对手仅支持模型路径与 random）
+OPPONENTS = ("random",)
 
 
 def select_balanced_fixed_samples(pool: List[Dict], n_fixed: int) -> List[Dict]:
@@ -260,12 +256,12 @@ def eval_match(
     global_step: int,
     tag: str,
 ) -> None:
-    """周期性对战评估：vs 规则对手 + 上一轮模型守门。
+    """周期性对战评估：vs 对手 + 上一轮模型守门。
 
-    注意：banqi.eval 的 play_match / play_match_stats 接受 torch.nn.Module 或规则
-    标识（heuristic64/minimax3 等），内部经 _resolve_player_spec 自动导出 TorchScript
-    供 Rust 原生评估。因此直接传模型对象即可，不依赖（已不存在的）ModelPredictor 与
-    play_match_vs。
+    注意：banqi.eval 的 play_match / play_match_stats 接受 torch.nn.Module 或
+    选手标识（random / expectimax:<path.nnue> / .pt 路径等），内部经
+    _resolve_player_spec 自动导出 TorchScript 供 Rust 原生评估。因此直接传模型
+    对象即可，不依赖（已不存在的）ModelPredictor 与 play_match_vs。
     """
     from banqi import eval as banqi_eval
     from banqi.nn_model import BanqiNet

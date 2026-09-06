@@ -7,12 +7,11 @@
 // 胜败逻辑。
 //
 // 设计要点：
-// - `PlayerSpec`：统一选手抽象（模型 / 启发式 MCTS / Expectimax / Python 推理 / 随机）。
+// - `PlayerSpec`：统一选手抽象（模型 / Expectimax / Python 推理 / 随机）。
 // - `run_match_core`：统一主干，支持固定 Seed、记录 Episode 或仅收集胜负统计。
 // - `AsDarkChessRef` / `SeedableEnv` 从旧 `bridge/python/eval.rs` 迁入，供规则选手
 //   取底层棋盘与设置种子。
 
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -20,10 +19,6 @@ use rayon::prelude::*;
 use crate::core::env::{DarkChessEnv, Game4x4Env, GameEnv, MiniDarkChessEnv};
 use crate::core::expectimax::ExpectimaxEngine;
 use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
-use crate::engine::evaluation::{evaluate, EvalParams};
-use crate::engine::mcts_heuristic::prior_logit;
-use crate::engine::movegen::generate_moves;
-use crate::engine::HeuristicMctsPolicy;
 
 #[cfg(feature = "pyo3")]
 use crate::bridge::python::py_evaluator::PyEvaluator;
@@ -106,9 +101,8 @@ fn nnue_meta_and_features(
 // 统一选手抽象 PlayerSpec
 // ============================================================================
 
-/// 统一选手抽象：支持模型 / 启发式 MCTS / Expectimax+NNUE / Python 推理 / 随机任意组合。
+/// 统一选手抽象：支持模型 / Expectimax+NNUE / Python 推理 / 随机任意组合。
 pub enum PlayerSpec<G: GameEnv> {
-    Heuristic { sims: usize },
     /// Expectimax + NNUE 引擎（独立 DFS 决策，不经 Gumbel MCTS）。
     Expectimax(Arc<ExpectimaxEngine>),
     /// Rust 侧持有 .pt / .onnx 模型的评估器（推理不经过 GIL）。
@@ -120,42 +114,8 @@ pub enum PlayerSpec<G: GameEnv> {
 }
 
 // ============================================================================
-// 规则 / 随机评估器（供记录 Episode 的 MCTS 自对弈路径使用）
+// 随机评估器（供记录 Episode 的 MCTS 自对弈路径使用）
 // ============================================================================
-
-/// 用纯计算启发式评估器驱动 Gumbel MCTS。
-struct HeuristicEval<G: GameEnv + AsDarkChessRef> {
-    params: EvalParams,
-    prior_scale: f32,
-    _marker: PhantomData<G>,
-}
-
-impl<G: GameEnv + AsDarkChessRef + Sync> Evaluator<G> for HeuristicEval<G> {
-    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
-        let params = &self.params;
-        let prior_scale = self.prior_scale;
-        let n = envs.len();
-        let results: Vec<_> = envs
-            .par_iter()
-            .map(|env| {
-                let inner = env.as_darkchess_ref();
-                let mut lg = vec![0.0f32; inner.config.action_space_size];
-                for m in generate_moves(inner, inner.get_current_player()) {
-                    lg[m.action] = prior_logit(inner, &m, params, prior_scale);
-                }
-                let val = evaluate(inner, params);
-                (lg, val)
-            })
-            .collect();
-        let mut logits = Vec::with_capacity(n);
-        let mut values = Vec::with_capacity(n);
-        for (lg, val) in results {
-            logits.push(lg);
-            values.push(val);
-        }
-        EvaluatorOutput { logits, values, health: None }
-    }
-}
 
 /// 随机评估器：对所有合法动作给均匀先验。
 struct RandomEval;
@@ -185,7 +145,6 @@ enum PlayerEval<G: GameEnv + AsDarkChessRef> {
     Model(Arc<dyn Evaluator<G> + Send + Sync>),
     #[cfg(feature = "pyo3")]
     Py(Arc<PyEvaluator<G>>),
-    Heuristic(HeuristicEval<G>),
     Random(RandomEval),
 }
 
@@ -195,7 +154,6 @@ impl<G: GameEnv + AsDarkChessRef + Sync> Evaluator<G> for PlayerEval<G> {
             PlayerEval::Model(e) => e.evaluate(envs),
             #[cfg(feature = "pyo3")]
             PlayerEval::Py(e) => e.evaluate(envs),
-            PlayerEval::Heuristic(e) => e.evaluate(envs),
             PlayerEval::Random(e) => e.evaluate(envs),
         }
     }
@@ -210,11 +168,6 @@ where
         PlayerSpec::ModelEval(e) => PlayerEval::Model(e.clone()),
         #[cfg(feature = "pyo3")]
         PlayerSpec::PyPredictor(p) => PlayerEval::Py(p.clone()),
-        PlayerSpec::Heuristic { .. } => PlayerEval::Heuristic(HeuristicEval {
-            params: EvalParams::default(),
-            prior_scale: 0.5,
-            _marker: PhantomData,
-        }),
         PlayerSpec::Random => PlayerEval::Random(RandomEval),
         PlayerSpec::Expectimax(_) => {
             unreachable!("Expectimax 选手不经 make_evaluator / MCTS 路径（应在调用处分流）")
@@ -266,11 +219,6 @@ where
     match spec {
         PlayerSpec::Expectimax(e) => {
             e.search_par(env.as_darkchess_ref()).map(|r| r.action)
-        }
-        PlayerSpec::Heuristic { sims } => {
-            let dark_ref = env.as_darkchess_ref();
-            let policy = HeuristicMctsPolicy::new(*sims);
-            policy.choose_action(dark_ref)
         }
         PlayerSpec::ModelEval(e) => model_mcts_action(env, &PlayerEval::Model(e.clone()), model_sims),
         #[cfg(feature = "pyo3")]
