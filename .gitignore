@@ -43,3 +43,5 @@ python/outputs
 
 python/banqi/proto/banqi_service_pb2_grpc.py
 python/banqi/proto/banqi_service_pb2.py
+
+docs/draft

@@ -7,7 +7,7 @@
 // 胜败逻辑。
 //
 // 设计要点：
-// - `PlayerSpec`：统一选手抽象（模型 / 启发式 MCTS / Minimax / Python 推理 / 随机）。
+// - `PlayerSpec`：统一选手抽象（模型 / 启发式 MCTS / Expectimax / Python 推理 / 随机）。
 // - `run_match_core`：统一主干，支持固定 Seed、记录 Episode 或仅收集胜负统计。
 // - `AsDarkChessRef` / `SeedableEnv` 从旧 `bridge/python/eval.rs` 迁入，供规则选手
 //   取底层棋盘与设置种子。
@@ -22,7 +22,6 @@ use crate::core::expectimax::ExpectimaxEngine;
 use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
 use crate::engine::evaluation::{evaluate, EvalParams};
 use crate::engine::mcts_heuristic::prior_logit;
-use crate::engine::minimax::minimax_best_action;
 use crate::engine::movegen::generate_moves;
 use crate::engine::HeuristicMctsPolicy;
 
@@ -107,9 +106,8 @@ fn nnue_meta_and_features(
 // 统一选手抽象 PlayerSpec
 // ============================================================================
 
-/// 统一选手抽象：支持模型 / 启发式 MCTS / Minimax / Expectimax+NNUE / Python 推理 / 随机任意组合。
+/// 统一选手抽象：支持模型 / 启发式 MCTS / Expectimax+NNUE / Python 推理 / 随机任意组合。
 pub enum PlayerSpec<G: GameEnv> {
-    Minimax { depth: usize },
     Heuristic { sims: usize },
     /// Expectimax + NNUE 引擎（独立 DFS 决策，不经 Gumbel MCTS）。
     Expectimax(Arc<ExpectimaxEngine>),
@@ -159,32 +157,6 @@ impl<G: GameEnv + AsDarkChessRef + Sync> Evaluator<G> for HeuristicEval<G> {
     }
 }
 
-/// 用 expectiminimax + alpha-beta 评估器驱动 Gumbel MCTS。
-struct MinimaxEval<G: GameEnv + AsDarkChessRef> {
-    depth: usize,
-    lambda: f32,
-    _marker: PhantomData<G>,
-}
-
-impl<G: GameEnv + AsDarkChessRef> Evaluator<G> for MinimaxEval<G> {
-    fn evaluate(&self, envs: &[G]) -> EvaluatorOutput {
-        let mut logits = Vec::with_capacity(envs.len());
-        let mut values = Vec::with_capacity(envs.len());
-        for env in envs {
-            let inner = env.as_darkchess_ref();
-            let mut lg = vec![0.0f32; inner.config.action_space_size];
-            let best = minimax_best_action(inner, self.depth);
-            let best_val = best.map(|r| r.value).unwrap_or(0.0);
-            if let Some(b) = best {
-                lg[b.action] = 6.0 * self.lambda;
-            }
-            logits.push(lg);
-            values.push(best_val);
-        }
-        EvaluatorOutput { logits, values, health: None }
-    }
-}
-
 /// 随机评估器：对所有合法动作给均匀先验。
 struct RandomEval;
 
@@ -214,7 +186,6 @@ enum PlayerEval<G: GameEnv + AsDarkChessRef> {
     #[cfg(feature = "pyo3")]
     Py(Arc<PyEvaluator<G>>),
     Heuristic(HeuristicEval<G>),
-    Minimax(MinimaxEval<G>),
     Random(RandomEval),
 }
 
@@ -225,7 +196,6 @@ impl<G: GameEnv + AsDarkChessRef + Sync> Evaluator<G> for PlayerEval<G> {
             #[cfg(feature = "pyo3")]
             PlayerEval::Py(e) => e.evaluate(envs),
             PlayerEval::Heuristic(e) => e.evaluate(envs),
-            PlayerEval::Minimax(e) => e.evaluate(envs),
             PlayerEval::Random(e) => e.evaluate(envs),
         }
     }
@@ -243,11 +213,6 @@ where
         PlayerSpec::Heuristic { .. } => PlayerEval::Heuristic(HeuristicEval {
             params: EvalParams::default(),
             prior_scale: 0.5,
-            _marker: PhantomData,
-        }),
-        PlayerSpec::Minimax { depth } => PlayerEval::Minimax(MinimaxEval {
-            depth: *depth,
-            lambda: 1.0,
             _marker: PhantomData,
         }),
         PlayerSpec::Random => PlayerEval::Random(RandomEval),
@@ -299,9 +264,6 @@ where
     G: GameEnv + AsDarkChessRef + Sync,
 {
     match spec {
-        PlayerSpec::Minimax { depth } => {
-            minimax_best_action(env.as_darkchess_ref(), *depth).map(|r| r.action)
-        }
         PlayerSpec::Expectimax(e) => {
             e.search_par(env.as_darkchess_ref()).map(|r| r.action)
         }
