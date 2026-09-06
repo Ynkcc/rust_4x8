@@ -111,6 +111,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                         path: Vec::new(),
                         env,
                         leaf_player,
+                        chance_seed: None,
                     });
                     true
                 }
@@ -153,6 +154,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                 self.ensure_search_prepared();
             }
             Stage::Searching => {
+                let mut eval_values: Vec<(f32, f32)> = Vec::with_capacity(evals.len());
                 for (pending, logits, value, health) in evals {
                     let mut masks = vec![0; G::action_space_size()];
                     pending.env.action_masks_into(&mut masks);
@@ -176,15 +178,18 @@ impl<'a, G: GameEnv, E: Evaluator<G>> BatchedTree<'a, G, E> {
                         *value,
                         *health,
                     );
-                    GumbelMCTS::<G, E>::backprop_from_path(
-                        &mut self.tree.arena,
-                        self.tree.root_idx,
-                        &pending.path,
-                        pending.leaf_player,
-                        *value,
-                        *health,
-                    );
+                    eval_values.push((*value, *health));
                 }
+                let backprop_evals: Vec<(&PendingEval<G>, f32, f32)> = evals
+                    .iter()
+                    .zip(eval_values)
+                    .map(|((pending, _, _, _), (v, h))| (*pending, v, h))
+                    .collect();
+                GumbelMCTS::<G, E>::backprop_evals(
+                    &mut self.tree.arena,
+                    self.tree.root_idx,
+                    &backprop_evals,
+                );
                 // 本轮收集已耗尽：若阶段轮次用完则推进阶段
                 if self.phase_visits_left == 0 {
                     self.advance_phase();

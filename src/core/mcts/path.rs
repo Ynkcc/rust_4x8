@@ -33,6 +33,22 @@ pub(crate) enum SelectPathOutcome {
     EarlyReturn,
 }
 
+/// 机会节点展开爆发的回传种子标记。
+///
+/// 展开瞬间批量评估的全部 outcome 共享同一机会节点，其价值回传不能逐路径
+/// 整数回溯（会使机会节点初始 Q 退化为无权均值），须按概率加权 \sum p_i v_i
+/// 单次回传。`prefix_len` 为路径中到达机会节点为止的前缀长度
+/// （即去掉末尾 `ChanceOutcome` 步后的长度）。
+#[derive(Clone, Copy, Debug)]
+pub struct ChanceSeed {
+    /// 所属机会节点在 Arena 中的索引
+    pub chance_idx: usize,
+    /// 该 outcome 的发生概率
+    pub prob: f32,
+    /// 路径前缀长度（到达机会节点，含其全部祖先步）
+    pub prefix_len: usize,
+}
+
 /// 待评估项 (Pending Evaluation)
 ///
 /// 表示在模拟过程中到达叶子节点后，需要进行网络评估的状态。
@@ -43,4 +59,6 @@ pub struct PendingEval<G: GameEnv> {
     pub env: G,
     /// 叶子节点的当前玩家
     pub leaf_player: Player,
+    /// 机会节点展开爆发标记：普通叶子为 None；展开爆发的 outcome 项为 Some。
+    pub chance_seed: Option<ChanceSeed>,
 }

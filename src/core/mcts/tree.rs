@@ -7,7 +7,7 @@
 
 use super::evaluator::Evaluator;
 use super::node::{value_from_perspective, MctsArena, MctsNode};
-use super::path::PathStep;
+use super::path::{ChanceSeed, PathStep, PendingEval};
 use super::search::GumbelMCTS;
 use crate::core::env::GameEnv;
 use crate::core::env::Player;
@@ -142,6 +142,82 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
         node.value_sum += my_value;
         node.health_sum += my_health;
         (my_value, my_health)
+    }
+
+    /// 应用一批评估结果的价值回传
+    ///
+    /// - 普通项（`chance_seed == None`）：按完整路径逐节点整数回传；
+    /// - 展开爆发项（`chance_seed == Some`）：同一机会节点的全部 outcome
+    ///   分组累积，按概率加权 \sum p_i·v_i 作为机会节点的单次种子回传，
+    ///   使机会节点初始 Q 精确等于期望而非无权均值。
+    ///
+    /// 每个元素为 `(待评估项, 叶子价值, 叶子血量期望)`，价值均从叶子玩家视角给出。
+    pub(crate) fn backprop_evals(
+        arena: &mut MctsArena<G>,
+        root_idx: usize,
+        evals: &[(&PendingEval<G>, f32, f32)],
+    ) {
+        struct BurstSeed {
+            prefix: Vec<PathStep>,
+            player: Player,
+            value: f32,
+            health: f32,
+        }
+        let mut bursts: Vec<(usize, BurstSeed)> = Vec::new();
+
+        for (pending, value, health) in evals {
+            match pending.chance_seed {
+                None => {
+                    Self::backprop_from_path(
+                        arena,
+                        root_idx,
+                        &pending.path,
+                        pending.leaf_player,
+                        *value,
+                        *health,
+                    );
+                }
+                Some(ChanceSeed {
+                    chance_idx,
+                    prob,
+                    prefix_len,
+                }) => {
+                    // outcome 子节点自身统计：整数访问，与普通叶子一致
+                    let leaf_idx =
+                        Self::get_node_idx_by_path(arena, root_idx, &pending.path);
+                    {
+                        let leaf = arena.get_mut(leaf_idx);
+                        leaf.visit_count += 1;
+                        leaf.value_sum += *value;
+                        leaf.health_sum += *health;
+                    }
+                    // 统一到机会节点玩家视角后按概率累积
+                    let chance_player = arena.get(chance_idx).player();
+                    let v = value_from_perspective(chance_player, pending.leaf_player, *value);
+                    let h = value_from_perspective(chance_player, pending.leaf_player, *health);
+                    if let Some((_, b)) = bursts.iter_mut().find(|(idx, _)| *idx == chance_idx) {
+                        b.value += prob * v;
+                        b.health += prob * h;
+                    } else {
+                        bursts.push((
+                            chance_idx,
+                            BurstSeed {
+                                prefix: pending.path[..prefix_len].to_vec(),
+                                player: chance_player,
+                                value: prob * v,
+                                health: prob * h,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 每个机会节点一次加权种子回传：机会节点 +1 访问 / +\sum p_i·v_i，
+        // 其祖先同样获得单次加权回传（替代原先 14 次整数回传）。
+        for (_, b) in bursts {
+            Self::backprop_from_path(arena, root_idx, &b.prefix, b.player, b.value, b.health);
+        }
     }
 
     /// 获取节点的 Q 值（包含 N=0 的初始化规则）

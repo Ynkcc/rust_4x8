@@ -12,7 +12,7 @@ use super::budget::SequentialHalvingBudget;
 use super::config::{GumbelConfig, MctsSearchResult};
 use super::evaluator::Evaluator;
 use super::node::{value_from_perspective, MctsArena, MctsNode};
-use super::path::{PathStep, PendingEval, SelectPathOutcome};
+use super::path::{ChanceSeed, PathStep, PendingEval, SelectPathOutcome};
 use rand::prelude::*;
 
 /// 单次 `select_path_collect` 允许的最大路径步数。
@@ -253,7 +253,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     }
 
                     let base_path = path.clone();
-                    for (outcome_id, _, child_idx) in possible_states.iter() {
+                    for (outcome_id, prob, child_idx) in possible_states.iter() {
                         let child_env = *self
                             .arena
                             .get(*child_idx)
@@ -267,6 +267,11 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                             path: outcome_path,
                             env: child_env,
                             leaf_player,
+                            chance_seed: Some(ChanceSeed {
+                                chance_idx: current_idx,
+                                prob: *prob,
+                                prefix_len: base_path.len(),
+                            }),
                         });
                     }
                     return SelectPathOutcome::Normal;
@@ -351,6 +356,7 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                     path,
                     env: *env,
                     leaf_player,
+                    chance_seed: None,
                 });
                 return SelectPathOutcome::Normal;
             }
@@ -537,20 +543,25 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
             let mut terminal_hits = 0;
             for _ in 0..visits_per_action {
                 let mut batch: Vec<PendingEval<G>> = Vec::new();
+                // 预算按模拟次数计量：一次 select_path_collect 调用 = 1 次模拟。
+                // 机会节点展开爆发的 N 路批量评估真实发生，但不占用模拟预算
+                // （否则 chance 子树密集的候选会窃取 Sequential Halving 后续阶段的预算）。
+                let mut eval_calls = 0;
                 for &action in &remaining {
-                    if self.select_path_collect(action, &mut batch)
-                        == SelectPathOutcome::TerminalBackprop
-                    {
-                        terminal_hits += 1;
+                    match self.select_path_collect(action, &mut batch) {
+                        SelectPathOutcome::TerminalBackprop => terminal_hits += 1,
+                        SelectPathOutcome::Normal => eval_calls += 1,
+                        SelectPathOutcome::EarlyReturn => {}
                     }
                 }
 
                 if !batch.is_empty() {
-                    total_phase_usage += batch.len();
+                    total_phase_usage += eval_calls;
                     let envs: Vec<G> = batch.iter().map(|pending| pending.env).collect();
                     let out = self.evaluator.evaluate(&envs);
 
-                    for (idx, pending) in batch.into_iter().enumerate() {
+                    let mut eval_values: Vec<(f32, f32)> = Vec::with_capacity(batch.len());
+                    for (idx, pending) in batch.iter().enumerate() {
                         let logits = &out.logits[idx];
                         let value = out.values[idx];
                         let health_mu = if self.config.health_enabled {
@@ -577,15 +588,14 @@ impl<'a, G: GameEnv, E: Evaluator<G>> GumbelMCTS<'a, G, E> {
                             value,
                             health_mu,
                         );
-                        Self::backprop_from_path(
-                            &mut self.arena,
-                            self.root_idx,
-                            &pending.path,
-                            pending.leaf_player,
-                            value,
-                            health_mu,
-                        );
+                        eval_values.push((value, health_mu));
                     }
+                    let evals: Vec<(&PendingEval<G>, f32, f32)> = batch
+                        .iter()
+                        .zip(eval_values)
+                        .map(|(pending, (v, h))| (pending, v, h))
+                        .collect();
+                    Self::backprop_evals(&mut self.arena, self.root_idx, &evals);
                 }
             }
 
