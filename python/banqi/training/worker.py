@@ -499,8 +499,11 @@ class TrainWorker(threading.Thread):
                         self._prev_weights, round_idx, tag
                     )
                     stop_wr = cfg.EVAL_MATCH_STOP_WIN_RATE
+                    stop_opp = cfg.EVAL_MATCH_STOP_OPPONENT
                     if stop_wr > 0:
                         for _opp, _wr in match_win_rates.items():
+                            if stop_opp and _opp != stop_opp:
+                                continue
                             if _wr >= stop_wr:
                                 print(
                                     f"[TR-{self.variant.id}] 🏁 vs {_opp} 胜率 "

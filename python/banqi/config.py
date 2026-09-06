@@ -400,7 +400,8 @@ class Config:
     EXPECTIMAX_SIDECAR_NODE_BUDGET: int = 500000        # 每步搜索节点预算
     EXPECTIMAX_SIDECAR_MAX_DEPTH: int = 8               # 每步搜索最大深度
     # ============ 对战评估达标停机（可选，0=关闭） ============
-    EVAL_MATCH_STOP_WIN_RATE: float = 0.0  # vs random 胜率达到该值时停止训练（0=关闭）
+    EVAL_MATCH_STOP_WIN_RATE: float = 0.0  # 达到该胜率时停止训练（0=关闭）
+    EVAL_MATCH_STOP_OPPONENT: str = ""     # 停机判定的对手（空=任一对手达标即停）
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)

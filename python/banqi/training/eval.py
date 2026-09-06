@@ -296,7 +296,8 @@ def eval_match(
                 )
             except Exception as exc:
                 print(f"{tag} ⚠️ 对战评估 vs {opp} 失败: {exc}")
-        # 当前模型 vs 上一轮模型（守门）        if cfg.EVAL_MATCH_VS_PREV and prev_weights is not None:
+  
+        if cfg.EVAL_MATCH_VS_PREV and prev_weights is not None:
             try:
                 prev_model = BanqiNet(
                     variant, enable_health=bool(cfg.HEALTH_VALUE_HEAD_ENABLED)

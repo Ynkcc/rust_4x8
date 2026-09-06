@@ -106,7 +106,8 @@ common:
     EVAL_MATCH_GAMES: 20          # 每周期对弈局数
     EVAL_MATCH_OPPONENTS: ["random"]  # 对手列表（random / expectimax:<path.nnue> / .pt路径）
     EVAL_MATCH_VS_PREV: true      # 是否与上一轮模型对头守门
-    EVAL_MATCH_STOP_WIN_RATE: 0.0  # vs random 胜率达到该值时停止训练（0=关闭）
+    EVAL_MATCH_STOP_WIN_RATE: 0.0  # 达到该胜率时停止训练（0=关闭）
+    EVAL_MATCH_STOP_OPPONENT: ""   # 停机判定的对手（空=任一对手达标即停）
 
   # ---------------- 价值目标与漂移评估 ----------------
   value_target:
