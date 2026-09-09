@@ -402,6 +402,7 @@ class Config:
     # ============ 对战评估达标停机（可选，0=关闭） ============
     EVAL_MATCH_STOP_WIN_RATE: float = 0.0  # 达到该胜率时停止训练（0=关闭）
     EVAL_MATCH_STOP_OPPONENT: str = ""     # 停机判定的对手（空=任一对手达标即停）
+    VALUE_MIX_GAME_WEIGHT: float = 0.5     # VALUE_TARGET_MODE=mixed 时终局价值的权重 λ
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)

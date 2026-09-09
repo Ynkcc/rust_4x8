@@ -101,7 +101,7 @@ class DataBuffer:
         """按 value 目标模式计算训练 target：
           mcts  -> mcts_value（搜索/教师平滑评估，噪声小）
           game  -> game_result_value（AlphaZero 标准，终局真值 ±1）
-          mixed -> 固定 0.5/0.5 混合
+          mixed -> (1-λ)*mcts_value + λ*game_result，λ = VALUE_MIX_GAME_WEIGHT
           anneal-> (1-w)*mcts_value + w*game_result，w 按轮退火
         """
         mode = self.cfg.VALUE_TARGET_MODE
@@ -110,7 +110,8 @@ class DataBuffer:
         if mode == "game":
             return float(gr)
         if mode == "mixed":
-            return 0.5 * float(mv) + 0.5 * float(gr)
+            lam = self.cfg.VALUE_MIX_GAME_WEIGHT
+            return (1.0 - lam) * float(mv) + lam * float(gr)
         if mode == "anneal":
             w = self.value_result_weight
             return (1.0 - w) * float(mv) + w * float(gr)

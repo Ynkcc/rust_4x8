@@ -485,6 +485,8 @@ class TrainWorker(threading.Thread):
                 add_scalar("queue/backlog", self._safe_qsize(), step)
                 if cfg.VALUE_TARGET_MODE == "anneal":
                     add_scalar("train/value_anneal_w", self.buffer.value_result_weight, step)
+                elif cfg.VALUE_TARGET_MODE == "mixed":
+                    add_scalar("train/value_game_weight", cfg.VALUE_MIX_GAME_WEIGHT, step)
 
                 # 固定验证集评估（价值漂移与策略命中率）
                 eval_value_drift(self.model, self.device, self._fixed_eval, step, tag, round_idx)

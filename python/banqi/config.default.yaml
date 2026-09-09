@@ -111,7 +111,8 @@ common:
 
   # ---------------- 价值目标与漂移评估 ----------------
   value_target:
-    VALUE_TARGET_MODE: "game"     # 价值目标模式（mcts->game：向终局胜负真值学习，摆脱自我评估循环）
+    VALUE_TARGET_MODE: "game"     # 价值目标模式（mcts/game/mixed/anneal；mcts->game：向终局胜负真值学习）
+    VALUE_MIX_GAME_WEIGHT: 0.5    # mixed 模式的终局价值权重 λ：target=(1-λ)*mcts_value+λ*game_result
     VALUE_TARGET_ANNEAL_ROUNDS: 0 # value 目标退火总轮数（0=关闭）
     VALUE_ANNEAL_START: 0.2       # 价值退火起始系数
     VALUE_ANNEAL_INCREMENT: 0.2   # 价值退火增量

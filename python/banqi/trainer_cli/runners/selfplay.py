@@ -302,3 +302,10 @@ def run_selfplay(variant_id: str) -> None:
         print(f"  Loss 变化:         {first['train_loss']:.4f} → {last['train_loss']:.4f} "
               f"(round {first['round']} → {last['round']})")
     print(f"{sep}")
+
+    # infer_side=rust 时 SelfPlayRust-0 daemon 线程可能仍在 run_native_match 批次内，
+    # 解释器 teardown 会拆除 PyTorch/oneDNN 全局状态导致 dnnl_primitive_execute SEGV
+    # （见 coredump 分析）。此处数据已落盘，硬退出让内核直接回收 daemon 线程。
+    # sys.stdout.flush()
+    # sys.stderr.flush()
+    # os._exit(0)

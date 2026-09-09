@@ -135,8 +135,10 @@ mod tests {
     #[test]
     fn sym_zkey_deterministic_and_orientation_sensitive() {
         // 初始局面全为暗子（各格非空），重排映射必然改变格位项 → 非恒等变换键应不同
+        // 注意：种子需避开"初始明子排布自对称"的局面（如 seed=3 时 4x4
+        // 仅 2 个初始明子且恰互为对角映射，任意明子数过少的种子都可能撞上）
         for mut env in [DarkChessEnv::default(), DarkChessEnv::new_4x4()] {
-            env.seed = Some(3);
+            env.seed = Some(4);
             env.reset();
             let raw = sym_zkey(&env, Symmetry::Identity);
             for &sym in search_group(env.config.rows, env.config.cols) {

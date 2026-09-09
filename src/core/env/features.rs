@@ -21,8 +21,8 @@ pub(crate) struct StateView {
     pub hidden_bb: u64,
     /// 空位位棋盘
     pub empty_bb: u64,
-    /// 暗子包按型计数（红黑合并；暗子归属对双方均不可见）
-    pub hidden_counts: [u8; super::config::NUM_PIECE_TYPES_MAX],
+    /// 暗子包按型计数 [PlayerIdx][PieceType]（真实归属，视角化由消费方处理）
+    pub hidden_counts: [[u8; super::config::NUM_PIECE_TYPES_MAX]; 2],
     /// 存活子力计数 [PlayerIdx][PieceType]
     pub alive_counts: [[u8; super::config::NUM_PIECE_TYPES_MAX]; 2],
     /// 血量 [Red, Black]
@@ -43,9 +43,9 @@ impl DarkChessEnv {
     /// 一次遍历内部状态，产出双架构共用的投影快照。
     pub(crate) fn state_view(&self) -> StateView {
         let cfg = &self.config;
-        let mut hidden_counts = [0u8; super::config::NUM_PIECE_TYPES_MAX];
+        let mut hidden_counts = [[0u8; super::config::NUM_PIECE_TYPES_MAX]; 2];
         for piece in self.get_hidden_pieces_raw() {
-            hidden_counts[piece.piece_type as usize] += 1;
+            hidden_counts[piece.player.idx()][piece.piece_type as usize] += 1;
         }
         let mut alive_counts = [[0u8; super::config::NUM_PIECE_TYPES_MAX]; 2];
         let dead_counts = self.get_dead_piece_counts_by_type();
@@ -114,6 +114,15 @@ impl DarkChessEnv {
         for counts in [mine, theirs] {
             for &pt in cfg.active_types.iter().take(cfg.num_active) {
                 let count = counts[pt] as usize;
+                vec.extend(std::iter::repeat(1.0).take(count));
+                vec.extend(std::iter::repeat(0.0).take(cfg.piece_counts[pt] - count));
+            }
+        }
+
+        // 2 组暗子向量（my/opp 视角）：与存活向量同构的按型计数桶
+        for player in [my, opp] {
+            for &pt in cfg.active_types.iter().take(cfg.num_active) {
+                let count = view.hidden_counts[player.idx()][pt] as usize;
                 vec.extend(std::iter::repeat(1.0).take(count));
                 vec.extend(std::iter::repeat(0.0).take(cfg.piece_counts[pt] - count));
             }
@@ -217,12 +226,13 @@ impl DarkChessEnv {
             }
         }
 
-        // --- 暗子包段：每型计数桶 ---
+        // --- 暗子包段：每型计数桶（红黑合并，归属不可见） ---
         let bag_base = cfg.total_positions * states;
         let stride = cfg.nnue_bag_stride();
         for &pt in cfg.active_types.iter().take(cfg.num_active) {
             let compact = cfg.compact_index(pt);
-            let count = (view.hidden_counts[pt] as usize).min(stride - 1);
+            let merged = view.hidden_counts[0][pt] + view.hidden_counts[1][pt];
+            let count = (merged as usize).min(stride - 1);
             out.push(bag_base + compact * stride + count);
         }
 

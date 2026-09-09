@@ -191,6 +191,7 @@ pub fn darkchess_config() -> GameConfig {
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
         resnet_board_channels: 2 * num_active + 2,
+        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活/暗子 × my/opp)
         resnet_scalar_feature_count: 3 + 2 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
@@ -228,14 +229,15 @@ pub fn game_4x4_config() -> GameConfig {
         total_pieces_per_player: total_pieces,
         piece_values,
         initial_health: 60,
-        initial_revealed_pieces: 8,
-        max_consecutive_moves_for_draw: 8, // 未吃子步数为 8 时强制判和
+        initial_revealed_pieces: 2,
+        max_consecutive_moves_for_draw: 16, // 未吃子步数为 16 时强制判和
         max_steps_per_episode: 48,
         reveal_actions_count: reveal,
         regular_move_actions_count: regular,
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
         resnet_board_channels: 2 * num_active + 2,
+        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活/暗子 × my/opp)
         resnet_scalar_feature_count: 3 + 2 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
@@ -274,6 +276,7 @@ pub fn mini_config() -> GameConfig {
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
         resnet_board_channels: 2 * num_active + 2,
+        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活/暗子 × my/opp)
         resnet_scalar_feature_count: 3 + 2 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
