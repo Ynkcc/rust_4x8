@@ -30,7 +30,10 @@
 | `src-tauri/` | 桌面 GUI 独立 crate `banqi-tauri`：`Cargo.toml`、`build.rs`（GTK/WebKit 预检 + `tauri_build::build()`）、`src/main.rs`（入口）、`tauri.conf.json`、`frontend/`、`icons/` |
 | `proto/banqi_service.proto` | 分布式自对弈 RPC 契约（4 个 RPC，见 §6.3） |
 | `plot_lr_finder.py` | LR finder 绘图脚本 |
-| `docs/` | 本文 + draft&archive + `mcts_chance_node_refactor_plan.md` |
+| `docs/` | 本文 + draft&archive + `mcts_chance_node_refactor_plan.md` + `distributed_training_reference_survey.md` |
+| `proto/scheduler.proto` | 分布式调度器契约（worker↔中心调度器，见 §6.4） |
+| `server/` | Go 中心调度器（module `banqi/server`，见 §6.4） |
+| `deploy/` | 2C2G 云服务器部署物（占位） |
 
 ### 2.1 feature 矩阵
 
@@ -154,6 +157,18 @@
 
 `py_data_collector` 与 Expectimax 强自对弈产 JSONL episode 文件。
 
+### 6.4 Go 中心调度器（`server/`，proto/scheduler.proto）
+
+调研结论（`docs/distributed_training_reference_survey.md`）落地：lczero 拉取式调度 + KataGo URL 下发/预签名直传 + fishtest/pentanomial 五项 GSPRT 判停。技术栈：Go + tonic 对位的 grpc-go + SQLite（modernc 纯 Go 驱动，WAL）+ aws-sdk-go-v2 S3 预签名（R2 兼容，凭据走标准 `AWS_*` 环境变量）。
+
+- `proto/scheduler.proto`：6 RPC——`GetTask`（worker 按机器规格拉任务：优先 gatekeeper rating，其次 best 网络 selfplay）、`ReportEpisode`（只收元数据，签发 R2 预签名 PUT，数据直传 R2）、`GetNetwork`（sha 或 best → 预签名 GET）、`RegisterNetwork`（trainer 登记新网络 → 自动创建 gatekeeper 对打；首个网络直接晋级）、`ReportMatchResult`（五项成对计数累计 → GSPRT 判停 → 晋级/拒绝 best 指针）、`Heartbeat`（worker 状态 + best sha 下发）。
+- `server/cmd/scheduler/main.go`：入口，配置全走 `SCHEDULER_*` 环境变量（`-h` 列出）。
+- `server/internal/store`：SQLite 元数据（networks/matches/episodes/workers，best 指针事务切换）。
+- `server/internal/r2`：预签名 PUT/GET，键布局 `episodes/<sha>/*.jsonl.gz`、`networks/<sha>.bin`。
+- `server/internal/sprt`：五项 GSPRT（正态近似 LLR，elo0/elo1/alpha/beta 可配，含单测）。
+- `server/internal/scheduler`：gRPC 服务实现 + 任务表（内存 task_id 注册校验）。
+- 生成方式：`protoc --proto_path=proto --go_out=server --go_opt=module=banqi/server --go-grpc_out=server --go-grpc_opt=module=banqi/server scheduler.proto`。
+
 ## 7. 端到端数据流（自对弈 → 训练 → NNUE → 搜索）
 
 1. **编排**：`python -m banqi.trainer_cli 4x8` 启动训练端（`cli.py` → runners）。
@@ -176,3 +191,4 @@
 - 2026-09-07：新增 `docs/mcts_chance_node_refactor_plan.md`（MCTS 机会节点 Single-Passage Outcome Sampling 重构计划）。
 - 2026-09-09：Tauri 桌面端拆分为独立 crate `src-tauri/`（workspace member `banqi-tauri`，path 依赖 `banqi_4x8`；`tauri.conf.json`/`frontend/`/`icons/` 一并迁入；根 crate 移除 `tauri` feature 与 tauri 依赖；GUI 构建命令改为 `cargo build -p banqi-tauri`）。
 - 2026-09-09：新增 `tmp_resnet_dump` bin 与 replay 标量解码暗子向量支持（`decode_scalar_state` 增 my/opp_hidden）；补充 ResNet 特征布局文档；修正 `resnet_scalar_feature_count` 为 `3 + 4×total_pieces`（4x8=67 / 4x4=35 / 4x2=19，Rust/Python 双侧同步，**旧 ckpt 标量维度不兼容需重训**）。
+- 2026-09-09：调度器改用 Go 实现：新增 `proto/scheduler.proto`（6 RPC）与 Go module `server/`（cmd/scheduler + internal/{store,r2,sprt,scheduler}，SQLite 元数据 + R2 预签名直传 + 五项 GSPRT 判停，含单测，构建/冒烟通过）；`deploy/` 部署物占位。见 §6.4 与 `docs/distributed_training_reference_survey.md`。
