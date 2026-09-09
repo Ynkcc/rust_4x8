@@ -1,0 +1,25 @@
+[package]
+name = "banqi-tauri"
+version = "0.1.0"
+edition = "2024"
+description = "4x8 暗棋桌面 GUI（Tauri 2）"
+
+[[bin]]
+name = "banqi-tauri"
+path = "src/main.rs"
+
+[dependencies]
+banqi_4x8 = { path = ".." }
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-shell = { version = "2.3" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = []
+# 透传到底层 lib 的推理后端 feature（MctsDL / MctsOnnx 对手）
+torch = ["banqi_4x8/torch"]
+onnx = ["banqi_4x8/onnx"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }

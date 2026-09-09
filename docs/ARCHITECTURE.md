@@ -24,13 +24,11 @@
 
 | 条目 | 说明 |
 |---|---|
-| `Cargo.toml` | crate `banqi_4x8`，edition 2024，`default-run = "banqi-tauri"`；`[lib]` crate-type=`["lib","cdylib"]`（cdylib 供 maturin） |
-| `build.rs` | ① 环境预检（pyo3 嵌入 bin 需 libpython 共享库；tauri 需 gtk3/webkit2gtk）；② `tauri_build::build()`；③ libtorch rpath/链接；④ `tonic_build` 编译 proto |
+| `Cargo.toml` | crate `banqi_4x8` + workspace root（members=`src-tauri`），edition 2024；`[lib]` crate-type=`["lib","cdylib"]`（cdylib 供 maturin） |
+| `build.rs` | ① 环境预检（pyo3 嵌入 bin 需 libpython 共享库）；② libtorch rpath/链接；③ `tonic_build` 编译 proto |
 | `pyproject.toml` | maturin 构建，`features=["pyo3-extension"]`（cdylib wheel，不链接 libpython） |
-| `tauri.conf.json` | productName「暗棋 4x8」，`frontendDist:"./frontend"`（纯静态前端），窗口 1600x1000 |
+| `src-tauri/` | 桌面 GUI 独立 crate `banqi-tauri`：`Cargo.toml`、`build.rs`（GTK/WebKit 预检 + `tauri_build::build()`）、`src/main.rs`（入口）、`tauri.conf.json`、`frontend/`、`icons/` |
 | `proto/banqi_service.proto` | 分布式自对弈 RPC 契约（4 个 RPC，见 §6.3） |
-| `frontend/` | `index.html` + `main_tauri.js`（全部 UI/对局逻辑）+ `styles.css` |
-| `icons/`、`capabilities/`、`gen/schemas/` | Tauri 图标 / 权限 / 生成的 ACL schema |
 | `plot_lr_finder.py` | LR finder 绘图脚本 |
 | `docs/` | 本文 + draft&archive + `mcts_chance_node_refactor_plan.md` |
 
@@ -39,7 +37,8 @@
 `torch`、`pyo3`（嵌入 bin，链接 libpython）、`pyo3-extension`（maturin wheel，不链接 libpython）、`onnx`、`onnx-cuda`、`tauri`、`mongodb`；组合：`rust-torch-collector=[torch,pyo3]`、`rust-onnx-collector=[onnx,pyo3]`。default 为空。
 
 工作区约定构建命令：
-- Rust：`cargo build --features tauri,torch,onnx`
+- Rust（lib + 训练相关 bin）：`cargo build --features torch,onnx`
+- 桌面 GUI（独立 crate）：`cargo build -p banqi-tauri`（在 `src-tauri/` 内直接 `cargo build` 亦可；torch/onnx 对手需加对应 feature，如 `-p banqi-tauri --features torch,onnx`）
 - Python wheel：`python -m maturin develop --features pyo3-extension,torch,onnx`
 
 ### 2.2 bin targets（`src/bin/`）
@@ -47,7 +46,6 @@
 | bin | 文件 | required-features | 作用 |
 |---|---|---|---|
 | `banqi` | `banqi.rs` | — | 随机策略对局演示 |
-| `banqi-tauri` | `banqi_tauri.rs` | `tauri` | 桌面 GUI 入口 |
 | `banqi-data-collector` | `data_collector.rs` | `torch`,`mongodb` | Rust 持 TorchScript 模型自对弈 → MongoDB |
 | `banqi-py-collector` | `py_data_collector.rs` | `pyo3` | 嵌入 Python 预测器自对弈 → JSONL |
 | `banqi-selfplay-worker` | `selfplay_worker.rs` | — | gRPC 双角色（client+server）分布式自对弈 worker |
@@ -134,9 +132,9 @@
 - `rule_teacher.py`、`memory_guard.py`、`system_monitor.py`、`tb_logger.py`、`constants.py`、`actions.py`、`eval.py`：辅助设施；
 - `legacy/`：旧 4x4 训练存档，勿新增依赖。
 
-## 5. Tauri 桌面端
+## 5. Tauri 桌面端（独立 crate `src-tauri/`）
 
-`src/bin/banqi_tauri.rs` 持有 `TauriState`（环境 + 各引擎）。`#[tauri::command]` 列表（前端 `frontend/main_tauri.js` 经 `invoke` 调用）：
+`src-tauri/src/main.rs` 持有 `AppState`（环境 + 各引擎）。`#[tauri::command]` 列表（前端 `src-tauri/frontend/main_tauri.js` 经 `invoke` 调用）：
 
 - 对局：`reset_game`、`step_game`、`bot_move`、`get_game_state`、`get_move_action`、`get_opponent_type`
 - 模型：`list_models`、`load_model`
@@ -176,4 +174,5 @@
 
 - 2026-09-06：初版，由全库探索固化。
 - 2026-09-07：新增 `docs/mcts_chance_node_refactor_plan.md`（MCTS 机会节点 Single-Passage Outcome Sampling 重构计划）。
+- 2026-09-09：Tauri 桌面端拆分为独立 crate `src-tauri/`（workspace member `banqi-tauri`，path 依赖 `banqi_4x8`；`tauri.conf.json`/`frontend/`/`icons/` 一并迁入；根 crate 移除 `tauri` feature 与 tauri 依赖；GUI 构建命令改为 `cargo build -p banqi-tauri`）。
 - 2026-09-09：新增 `tmp_resnet_dump` bin 与 replay 标量解码暗子向量支持（`decode_scalar_state` 增 my/opp_hidden）；补充 ResNet 特征布局文档；修正 `resnet_scalar_feature_count` 为 `3 + 4×total_pieces`（4x8=67 / 4x4=35 / 4x2=19，Rust/Python 双侧同步，**旧 ckpt 标量维度不兼容需重训**）。

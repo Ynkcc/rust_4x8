@@ -5,7 +5,10 @@ edition = "2024"
 authors = ["Your Name <your.email@example.com>"]
 description = "4x8 Dark Chess game environment for reinforcement learning"
 license = "MIT"
-default-run = "banqi-tauri"
+
+# 桌面 GUI（banqi-tauri）已拆分为独立 crate，见 src-tauri/
+[workspace]
+members = ["src-tauri"]
 
 [lib]
 name = "banqi_4x8"
@@ -15,13 +18,6 @@ crate-type = ["lib", "cdylib"]
 [[bin]]
 name = "banqi"
 path = "src/bin/banqi.rs"
-
-# ── banqi-tauri ────────────────────────────────────────────────────────────
-# 桌面 GUI（Tauri 2）。仅在启用 `tauri` feature 时构建。
-[[bin]]
-name = "banqi-tauri"
-path = "src/bin/banqi_tauri.rs"
-required-features = ["tauri"]
 
 [[bin]]
 name = "banqi-data-collector"
@@ -48,8 +44,6 @@ fixedbitset = "0.5"
 ndarray = { version = "0.15", features = ["serde"] }
 slab = "0.4"
 rayon = "1.12"
-tauri = { version = "2.11.5", features = [], optional = true }
-tauri-plugin-shell = { version = "2.3", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -107,13 +101,10 @@ onnx-cuda = ["onnx", "ort/cuda"]
 # 与 RustTorchCollector 等价，但推理后端为 ONNX Runtime（不依赖 libtorch）。
 #   - maturin wheel：--features pyo3-extension,onnx
 rust-onnx-collector = ["onnx", "pyo3"]
-# tauri 特性：桌面 GUI（构建 banqi-tauri 时才需要，含 GTK 系统依赖）
-tauri = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-build"]
 # mongodb 特性：启用 MongoDB 存储后端（data_collector 使用）
 mongodb = ["dep:mongodb", "dep:bson"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [], optional = true }
 tonic-build = "0.12"
 
 [dev-dependencies]
