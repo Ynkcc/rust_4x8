@@ -227,7 +227,7 @@ impl GameEnv for Game4x4Env {
     const RESNET_BOARD_CHANNELS: usize = 16; // 2*7(全激活) + 2
     const BOARD_ROWS: usize = 4;
     const BOARD_COLS: usize = 4;
-    const RESNET_SCALAR_FEATURE_COUNT: usize = 19; // 3 + 2*8
+    const RESNET_SCALAR_FEATURE_COUNT: usize = 35; // 3 + 4*8
 
     fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
         Game4x4Env::encode_resnet_features_flat_into(self, board_data, scalars_data);
@@ -294,7 +294,7 @@ impl GameEnv for MiniDarkChessEnv {
     const RESNET_BOARD_CHANNELS: usize = 10;
     const BOARD_ROWS: usize = 4;
     const BOARD_COLS: usize = 2;
-    const RESNET_SCALAR_FEATURE_COUNT: usize = 11;
+    const RESNET_SCALAR_FEATURE_COUNT: usize = 19; // 3 + 4*4
 
     fn encode_resnet_features_flat_into(&self, board_data: &mut Vec<f32>, scalars_data: &mut Vec<f32>) {
         MiniDarkChessEnv::encode_resnet_features_flat_into(self, board_data, scalars_data);

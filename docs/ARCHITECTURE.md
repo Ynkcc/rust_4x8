@@ -51,6 +51,7 @@
 | `banqi-data-collector` | `data_collector.rs` | `torch`,`mongodb` | Rust 持 TorchScript 模型自对弈 → MongoDB |
 | `banqi-py-collector` | `py_data_collector.rs` | `pyo3` | 嵌入 Python 预测器自对弈 → JSONL |
 | `banqi-selfplay-worker` | `selfplay_worker.rs` | — | gRPC 双角色（client+server）分布式自对弈 worker |
+| `tmp_resnet_dump` | `tmp_resnet_dump.rs` | — | ResNet 输入特征人工验证：4x4 随机对局，每手将 NN 输入解码为人类可读表述写入文件（默认 `outputs/resnet_decode_4x4.txt`） |
 | `tmp_nnue_bench` / `tmp_reach` | `tmp_*.rs` | — | NNUE 吞吐/强度临时基准工具 |
 
 ## 3. Rust 源码 `src/`（DDD 分层，入口 `lib.rs` 声明 6 模块）
@@ -65,7 +66,10 @@
   - `actions.rs`：动作↔坐标双向查找表（按 config 缓存）；
   - `rules.rs`：走子/吃子规则、`action_masks`；
   - `bitboard.rs`：u64 位棋盘工具；
-  - `features.rs`：`StateView` 单次遍历快照 → ResNet 稠密特征（`get_resnet_state`）+ NNUE 稀疏特征（`nnue_active_features*`、`nnue_slot_feature_index`）；
+  - `features.rs`：`StateView` 单次遍历快照 → ResNet 稠密特征（`get_resnet_state`）+ NNUE 稀疏特征（`nnue_active_features*`、`nnue_slot_feature_index`）。
+    - **ResNet 棋盘张量**（`resnet_board_channels × rows × cols`，视角化=当前行棋方）：通道 `[0..num_active)` 己方明子按型、`[num_active..2*num_active)` 对方明子按型、`[2*num_active]` 暗子、`[2*num_active+1]` 空位；
+    - **ResNet 标量向量**（`resnet_scalar_vector_into`，维度 = `resnet_scalar_feature_count` = `3 + 4×total_pieces`；4x8=67 / 4x4=35 / 4x2=19）：`[0]` 步数/判和上限、`[1]` 己方 HP、`[2]` 对方 HP，随后 4 组计数向量（存活×2 + 暗子×2，均按当前行棋方视角，按 `active_types`/`piece_counts` 分块 one-hot）；
+    - **解码（人类可读还原）**：`pipeline/replay/`——`decode.rs::decode_board_with_config`（张量→棋盘槽位）、`scalar.rs::decode_scalar_state`/`format_scalar_state`（标量→步数/HP/存活/暗子计数）、`util.rs::format_board`/`piece_name`（中文棋盘渲染）；入口工具 `tmp_resnet_dump`。
   - `symmetry.rs`：8 种空间对称与动作置换表（数据增强用）；
   - `traits.rs`：`GameEnv` trait（Copy 语义；`is_chance_action` 等机会节点扩展点）；
   - `board/`：`DarkChessEnv` 实现拆分（`struct_def`/`reset`/`step`/`accessors`/`tests`）；
@@ -172,3 +176,4 @@
 
 - 2026-09-06：初版，由全库探索固化。
 - 2026-09-07：新增 `docs/mcts_chance_node_refactor_plan.md`（MCTS 机会节点 Single-Passage Outcome Sampling 重构计划）。
+- 2026-09-09：新增 `tmp_resnet_dump` bin 与 replay 标量解码暗子向量支持（`decode_scalar_state` 增 my/opp_hidden）；补充 ResNet 特征布局文档；修正 `resnet_scalar_feature_count` 为 `3 + 4×total_pieces`（4x8=67 / 4x4=35 / 4x2=19，Rust/Python 双侧同步，**旧 ckpt 标量维度不兼容需重训**）。

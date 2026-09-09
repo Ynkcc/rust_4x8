@@ -8,7 +8,7 @@
 // - 血量上限 = 60（由变体指定，独立于分值总和）
 //
 // 本类型仅提供与 `DarkChessEnv` 不同的 `GameEnv` 关联常量
-// （16 通道 / 4x4 / 19 标量），其余全部委托给 `inner`。
+// （16 通道 / 4x4 / 35 标量），其余全部委托给 `inner`。
 // ==============================================================================
 
 use crate::core::env::board::DarkChessEnv;
@@ -28,8 +28,8 @@ pub const GAME4X4_RESNET_BOARD_CHANNELS: usize = 16;
 pub const GAME4X4_BOARD_ROWS: usize = 4;
 /// 4x4 暗棋：棋盘列数
 pub const GAME4X4_BOARD_COLS: usize = 4;
-/// 4x4 暗棋：标量特征数 = 3 + 2*8 = 19
-pub const GAME4X4_RESNET_SCALAR_FEATURE_COUNT: usize = 19;
+/// 4x4 暗棋：标量特征数 = 3 + 4*8 = 35
+pub const GAME4X4_RESNET_SCALAR_FEATURE_COUNT: usize = 35;
 
 impl Game4x4Env {
     /// 创建标准 4x4 开局。

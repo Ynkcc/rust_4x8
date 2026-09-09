@@ -33,7 +33,7 @@ fn color_prefix(player: Player) -> &'static str {
 }
 
 /// 棋子的中文名称（含颜色前缀），如 红马 / 黑兵 / 红帅 / 黑将。
-pub(super) fn piece_name(piece: Piece) -> String {
+pub fn piece_name(piece: Piece) -> String {
     let name = match piece.piece_type {
         PieceType::General => match piece.player {
             Player::Red => "帅",
@@ -63,7 +63,7 @@ fn pad_cell(s: &str) -> String {
     format!("{}{}", s, " ".repeat(pad))
 }
 
-pub(super) fn format_board(slots: &[Slot], cfg: &GameConfig) -> String {
+pub fn format_board(slots: &[Slot], cfg: &GameConfig) -> String {
     let mut s = String::new();
     s.push_str("    ");
     for c in 0..cfg.cols {

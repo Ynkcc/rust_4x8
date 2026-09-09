@@ -191,8 +191,8 @@ pub fn darkchess_config() -> GameConfig {
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
         resnet_board_channels: 2 * num_active + 2,
-        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活/暗子 × my/opp)
-        resnet_scalar_feature_count: 3 + 2 * total_pieces,
+        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活×2 + 暗子×2)
+        resnet_scalar_feature_count: 3 + 4 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
 }
@@ -237,8 +237,8 @@ pub fn game_4x4_config() -> GameConfig {
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
         resnet_board_channels: 2 * num_active + 2,
-        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活/暗子 × my/opp)
-        resnet_scalar_feature_count: 3 + 2 * total_pieces,
+        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活×2 + 暗子×2)
+        resnet_scalar_feature_count: 3 + 4 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
 }
@@ -276,8 +276,8 @@ pub fn mini_config() -> GameConfig {
         cannon_attack_actions_count: cannon,
         action_space_size: reveal + regular + cannon,
         resnet_board_channels: 2 * num_active + 2,
-        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活/暗子 × my/opp)
-        resnet_scalar_feature_count: 3 + 2 * total_pieces,
+        // 3 个全局标量 (MoveCount, MyHP, OppHP) + 4 个计数向量 (存活×2 + 暗子×2)
+        resnet_scalar_feature_count: 3 + 4 * total_pieces,
         reveal_probability_size: 2 * num_active,
     }
 }

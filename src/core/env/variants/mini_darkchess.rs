@@ -6,7 +6,7 @@
 // - 仅 兵 / 炮 / 士 / 将 四种棋子，每方各 1 子（共 8 子填满棋盘）
 // - 血量上限 = 2 + 5 + 10 + 30 = 47（= 单方棋子价值总和），全灭敌方即判胜
 //
-// 本类型仅提供与 `DarkChessEnv` 不同的 `GameEnv` 关联常量（10 通道 / 4x2 / 11 标量），
+// 本类型仅提供与 `DarkChessEnv` 不同的 `GameEnv` 关联常量（10 通道 / 4x2 / 19 标量），
 // 其余全部委托给 `inner`。
 // ==============================================================================
 
@@ -27,8 +27,8 @@ pub const MINI_RESNET_BOARD_CHANNELS: usize = 10;
 pub const MINI_BOARD_ROWS: usize = 4;
 /// 4x2 迷你暗棋：棋盘列数
 pub const MINI_BOARD_COLS: usize = 2;
-/// 4x2 迷你暗棋：标量特征数 = 3 + 2*4 = 11
-pub const MINI_RESNET_SCALAR_FEATURE_COUNT: usize = 11;
+/// 4x2 迷你暗棋：标量特征数 = 3 + 4*4 = 19
+pub const MINI_RESNET_SCALAR_FEATURE_COUNT: usize = 19;
 
 impl MiniDarkChessEnv {
     /// 创建标准 4x2 迷你开局。

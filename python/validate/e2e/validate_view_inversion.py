@@ -109,9 +109,14 @@ def test_env_switch_view() -> None:
             np.allclose(a[7:14], bb[0:7]) and np.allclose(a[0:7], bb[7:14])
             and np.allclose(a[14], bb[14]) and np.allclose(a[15], bb[15])
         )
-        # scalars: my_hp(1)↔opp_hp(2)、my_survival(3-18)↔opp_survival(19-34) 互换
+        # scalars: my_hp(1)↔opp_hp(2)、存活向量(3-34)与暗子向量(35-66)各自 my↔opp 互换
+        half = C.TOTAL_PIECES_PER_PLAYER
+        sv_end = 3 + 2 * half          # 存活段末尾
         ok = ok and abs(s1a[1] - s2a[2]) < 1e-5 and abs(s1a[2] - s2a[1]) < 1e-5
-        ok = ok and np.allclose(s1a[3:19], s2a[19:35]) and np.allclose(s1a[19:35], s2a[3:19])
+        ok = ok and np.allclose(s1a[3:sv_end], s2a[sv_end:3 + 4 * half])
+        ok = ok and np.allclose(s1a[sv_end:3 + 4 * half], s2a[3:sv_end])
+        ok = ok and np.allclose(s1a[3 + 2 * half:sv_end], s2a[sv_end + half:3 + 4 * half + half])
+        ok = ok and np.allclose(s1a[sv_end + half:3 + 4 * half + half], s2a[3 + 2 * half:sv_end])
         if not ok:
             rep.check(False, f"第 {_} 个随机局面视角切换编码错误")
             ok_all = False

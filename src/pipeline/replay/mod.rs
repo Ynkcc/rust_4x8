@@ -22,3 +22,4 @@ pub use describe::{describe_record, describe_record_with_config};
 pub use scalar::{
     ScalarDecodeResult, decode_scalar_state, format_scalar_state, survival_to_dead_vec,
 };
+pub use util::{format_board, piece_name};

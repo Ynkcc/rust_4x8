@@ -69,8 +69,8 @@ class Variant:
 
     @cached_property
     def scalar_feature_count(self) -> int:
-        """3 全局（步数/我方HP/敌方HP）+ 2 × 存活向量。"""
-        return 3 + 2 * self.total_pieces_per_player
+        """3 全局（步数/我方HP/敌方HP）+ 存活向量×2 + 暗子向量×2。"""
+        return 3 + 4 * self.total_pieces_per_player
 
     @cached_property
     def action_counts(self) -> Tuple[int, int, int]:

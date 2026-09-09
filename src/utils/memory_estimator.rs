@@ -165,7 +165,7 @@ pub fn estimate_game_state_suspended() -> MemoryEstimate {
     est.add("Box<DarkChessEnv> 指针", box_overhead(), "Box指针占用");
 
     let obs_size = estimate_observation();
-    est.add("ResNetObservation (NN输入)", obs_size, "board(16,4,8)f32 + scalars(35,)f32");
+    est.add("ResNetObservation (NN输入)", obs_size, "board(16,4,8)f32 + scalars(67,)f32");
     est.add("Option<ResNetObservation> tag", option_overhead(), "Option判别位");
 
     let action_mask = ACTION_SPACE_SIZE * size_of::<i32>();

@@ -28,6 +28,16 @@ pub(super) fn parse_survival(scalars: &[f32], start: usize, cfg: &GameConfig) ->
     counts
 }
 
+/// 从 scalars 的暗子计数向量中解析出某一方的暗子数量（按玩家归属）。
+///
+/// 暗子编码（见 features.rs `resnet_scalar_vector_into`）：与存活向量同构，
+/// 对每种棋子按 `piece_counts[pt]` 分块，每块用 `count` 个 1 + `(max - count)` 个 0
+/// 表示该方该种棋子在暗子包中的数量。
+/// `start` 为暗子向量在 scalars 中的起始偏移。
+pub(super) fn parse_hidden(scalars: &[f32], start: usize, cfg: &GameConfig) -> Vec<u8> {
+    parse_survival(scalars, start, cfg)
+}
+
 /// 从一手的 scalars 解析出双方存活棋子数，返回 (红方存活, 黑方存活)。
 ///
 /// scalars 布局：`[0]` 步数、`[1]` 当前行棋方 HP、`[2]` 对方 HP、
@@ -75,6 +85,10 @@ pub struct ScalarDecodeResult {
     pub my_survival: Vec<u8>,
     /// 对方存活数（按 active_types 顺序）。
     pub opp_survival: Vec<u8>,
+    /// 当前行棋方暗子计数（按 active_types 顺序，按玩家归属）。
+    pub my_hidden: Vec<u8>,
+    /// 对方暗子计数（按 active_types 顺序，按玩家归属）。
+    pub opp_hidden: Vec<u8>,
 }
 
 /// 由某一方存活数推导该方已阵亡棋子列表（按 active_types 顺序）。
@@ -84,19 +98,21 @@ pub fn survival_to_dead_vec(survival: &[u8], cfg: &GameConfig) -> Vec<PieceType>
 
 /// 解码单手标量特征（config 驱动，支持 4x8/4x2/4x4）。
 ///
-/// scalars 布局（见 features.rs `get_scalar_state_vector_into`）：
+/// scalars 布局（见 features.rs `resnet_scalar_vector_into`）：
 /// `[0]` = move_counter / max_consecutive_moves_for_draw
 /// `[1]` = 当前行棋方 HP / initial_health
 /// `[2]` = 对方 HP / initial_health
-/// `[3..3+total_pieces]` = 当前行棋方存活 one-hot（按 active_types / piece_counts 分块）
-/// `[3+total_pieces..]`   = 对方存活 one-hot
+/// `[3..3+total]`           = 当前行棋方存活 one-hot（按 active_types / piece_counts 分块）
+/// `[3+total..3+2*total]`   = 对方存活 one-hot
+/// `[3+2*total..3+3*total]` = 当前行棋方暗子计数 one-hot
+/// `[3+3*total..3+4*total]` = 对方暗子计数 one-hot
 ///
 /// 返回结构化结果；`cur_player` 用于标注红/黑视角（仅影响 HP 归属，不影响数值）。
 pub fn decode_scalar_state(scalars: &[f32], cfg: &GameConfig) -> ScalarDecodeResult {
     assert!(
-        scalars.len() >= 3 + 2 * cfg.total_pieces_per_player,
+        scalars.len() >= 3 + 4 * cfg.total_pieces_per_player,
         "scalars 长度不足: 期望 ≥{}，实际 {}",
-        3 + 2 * cfg.total_pieces_per_player,
+        3 + 4 * cfg.total_pieces_per_player,
         scalars.len()
     );
     let move_counter =
@@ -105,12 +121,16 @@ pub fn decode_scalar_state(scalars: &[f32], cfg: &GameConfig) -> ScalarDecodeRes
     let opp_hp = (scalars[2] * cfg.initial_health as f32).round() as i32;
     let my_survival = parse_survival(scalars, 3, cfg);
     let opp_survival = parse_survival(scalars, 3 + cfg.total_pieces_per_player, cfg);
+    let my_hidden = parse_hidden(scalars, 3 + 2 * cfg.total_pieces_per_player, cfg);
+    let opp_hidden = parse_hidden(scalars, 3 + 3 * cfg.total_pieces_per_player, cfg);
     ScalarDecodeResult {
         move_counter,
         my_hp,
         opp_hp,
         my_survival,
         opp_survival,
+        my_hidden,
+        opp_hidden,
     }
 }
 
@@ -127,6 +147,8 @@ pub fn format_scalar_state(
     };
     let mut my_pieces = Vec::new();
     let mut opp_pieces = Vec::new();
+    let mut my_hidden_pieces = Vec::new();
+    let mut opp_hidden_pieces = Vec::new();
     for (ci, &pt) in cfg.active_types.iter().enumerate().take(cfg.num_active) {
         if r.my_survival[ci] > 0 {
             my_pieces.push(format!("{}x{}", piece_name(Piece::new(piece_type_from_idx(pt), cur_player)), r.my_survival[ci]));
@@ -134,9 +156,15 @@ pub fn format_scalar_state(
         if r.opp_survival[ci] > 0 {
             opp_pieces.push(format!("{}x{}", piece_name(Piece::new(piece_type_from_idx(pt), cur_player.opposite())), r.opp_survival[ci]));
         }
+        if r.my_hidden[ci] > 0 {
+            my_hidden_pieces.push(format!("{}x{}", piece_name(Piece::new(piece_type_from_idx(pt), cur_player)), r.my_hidden[ci]));
+        }
+        if r.opp_hidden[ci] > 0 {
+            opp_hidden_pieces.push(format!("{}x{}", piece_name(Piece::new(piece_type_from_idx(pt), cur_player.opposite())), r.opp_hidden[ci]));
+        }
     }
     format!(
-        "{}方回合 | 连续无吃子步数 {} | HP {}({}) vs {}({}) | {}存活: {} | {}存活: {}",
+        "{}方回合 | 连续无吃子步数 {} | HP {}({}) vs {}({}) | {}存活: {} | {}存活: {} | {}暗子: {} | {}暗子: {}",
         my_name,
         r.move_counter,
         my_name,
@@ -147,5 +175,9 @@ pub fn format_scalar_state(
         if my_pieces.is_empty() { "无".to_string() } else { my_pieces.join(" ") },
         opp_name,
         if opp_pieces.is_empty() { "无".to_string() } else { opp_pieces.join(" ") },
+        my_name,
+        if my_hidden_pieces.is_empty() { "无".to_string() } else { my_hidden_pieces.join(" ") },
+        opp_name,
+        if opp_hidden_pieces.is_empty() { "无".to_string() } else { opp_hidden_pieces.join(" ") },
     )
 }
