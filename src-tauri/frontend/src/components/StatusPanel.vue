@@ -39,7 +39,6 @@ function hpPct(hp: number): string {
       <span class="hp-value">{{ store.state?.hp_black ?? '—' }}</span>
     </div>
     <div class="counter-row">
-      <span>回合：{{ store.state?.move_counter ?? '—' }}</span>
       <span>总步数：{{ store.state?.total_step_counter ?? '—' }}</span>
       <span>未吃子：{{ store.state?.move_counter ?? '—' }}</span>
     </div>

@@ -33,7 +33,12 @@ function cellClass(idx: number): string[] {
 
 <template>
   <div class="board-wrap" :class="{ busy: store.busy }">
-    <div v-if="store.state" class="chess-board" :style="gridStyle">
+    <div
+      v-if="store.state"
+      class="chess-board"
+      :class="{ 'board-square': dims.cols === dims.rows }"
+      :style="gridStyle"
+    >
       <div
         v-for="(slot, idx) in store.state.board"
         :key="idx"

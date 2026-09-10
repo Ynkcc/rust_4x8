@@ -84,7 +84,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
               <PieceTray player="Black" :pieces="store.state?.hidden_black" :dim-when-zero="true" />
             </div>
           </div>
-          <StatusPanel />
+          <div class="panel-card status-card">
+            <StatusPanel />
+          </div>
         </div>
       </section>
 

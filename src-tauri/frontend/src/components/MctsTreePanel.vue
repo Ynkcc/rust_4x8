@@ -10,9 +10,12 @@ const { store, treeTransform, refresh, toggle, search, fetchDetail, buildLayout,
   useMctsTree();
 const { store: game } = useGame();
 
-const DX = 92;
-const DY = 96;
-const PAD = 60;
+// mcts-viz 风格：矩形节点 + 正交折线连线
+const NW = 116;
+const NH = 64;
+const DX = 138;
+const DY = 128;
+const PAD = 70;
 
 const wrapEl = ref<HTMLElement | null>(null);
 const tooltip = ref<{ x: number; y: number; detail: MctsNodeDetail } | null>(null);
@@ -31,17 +34,21 @@ const rootInfo = computed(() => store.rootInfo);
 const px = (n: { x: number }) => PAD + n.x * DX;
 const py = (n: { y: number }) => PAD + n.y * DY;
 
-function qColor(q: number): string {
-  const t = Math.max(-1, Math.min(1, q));
-  const hue = t >= 0 ? 215 : 5;
-  const sat = 15 + Math.abs(t) * 65;
-  const light = 82 - Math.abs(t) * 22;
-  return `hsl(${hue}, ${sat}%, ${light}%)`;
+function nodeTitle(n: { id: number; edge: { is_chance: boolean; chance_prob: number; action: number } | null }): string {
+  if (rootInfo.value && n.id === rootInfo.value.root.id) return 'ROOT';
+  if (!n.edge) return '';
+  return n.edge.is_chance ? `翻 ${(n.edge.chance_prob * 100).toFixed(0)}%` : `着法 #${n.edge.action}`;
 }
 
-function edgeLabel(edge: { is_chance: boolean; chance_prob: number; action: number } | null): string {
-  if (!edge) return '';
-  return edge.is_chance ? `翻${(edge.chance_prob * 100).toFixed(0)}%` : `#${edge.action}`;
+function edgePath(n: { x: number; y: number }, c: { x: number; y: number }): string {
+  const y1 = py(n) + NH / 2;
+  const y2 = py(c) - NH / 2;
+  const mid = (y1 + y2) / 2;
+  return `M ${px(n)} ${y1} L ${px(n)} ${mid} L ${px(c)} ${mid} L ${px(c)} ${y2}`;
+}
+
+function edgeMidY(n: { y: number }, c: { y: number }): number {
+  return (py(n) + NH / 2 + (py(c) - NH / 2)) / 2;
 }
 
 function isChosenEdge(n: { edge: { is_chance: boolean; action: number } | null }): boolean {
@@ -49,16 +56,13 @@ function isChosenEdge(n: { edge: { is_chance: boolean; action: number } | null }
   return !!info && !!n.edge && !n.edge.is_chance && n.edge.action === info.chosen_action;
 }
 
-function nodeRadius(n: { n: number }): number {
-  return 5 + Math.sqrt(n.n || 0) * 1.6;
+function edgeWidth(n: { edge: { prior: number; is_chance: boolean } | null }): number {
+  if (!n.edge || n.edge.is_chance) return 1.5;
+  return Math.max(1.5, Math.min(7, (n.edge?.prior ?? 0) * 40));
 }
 
-function edgeWidth(prior: number): number {
-  return Math.max(1, Math.min(8, prior * 40));
-}
-
-function edgeStroke(n: { edge: { prior: number; is_chance: boolean } | null }): string {
-  return n.edge?.is_chance ? 'transparent' : '#9a8f7f';
+function edgeStroke(n: { edge: { is_chance: boolean } | null }): string {
+  return n.edge?.is_chance ? '#c9a24b' : '#9a8f7f';
 }
 
 async function onNodeEnter(nodeId: number, evt: MouseEvent) {
@@ -154,19 +158,20 @@ function transformAttr(): string {
       </div>
       <svg v-else :viewBox="`0 0 ${svgViewBox.width} ${svgViewBox.height}`" width="100%" height="100%">
         <g :transform="transformAttr()">
+          <!-- 正交折线连线（mcts-viz 风格） -->
           <template v-for="n in nodes" :key="`edges-${n.id}`">
             <template v-for="c in n.children" :key="`e-${n.id}-${c.id}`">
               <path
-                :d="`M ${px(n)} ${py(n)} C ${px(n)} ${(py(n) + py(c)) / 2}, ${px(c)} ${(py(n) + py(c)) / 2}, ${px(c)} ${py(c)}`"
+                :d="edgePath(n, c)"
                 fill="none"
-                :stroke="isChosenEdge(c) ? '#2f9e44' : edgeStroke(c)"
-                :stroke-width="isChosenEdge(c) ? 5 : edgeWidth(c.edge?.prior ?? 0)"
+                :stroke="isChosenEdge(c) ? '#d32f2f' : edgeStroke(c)"
+                :stroke-width="isChosenEdge(c) ? 4.5 : edgeWidth(c)"
                 :stroke-dasharray="c.edge?.is_chance ? '5 4' : undefined"
               />
               <text
                 v-if="(c.edge?.prior ?? 0) > 0"
-                :x="(px(n) + px(c)) / 2 + 6"
-                :y="(py(n) + py(c)) / 2"
+                :x="px(c) + 5"
+                :y="edgeMidY(n, c) - 4"
                 font-size="10"
                 fill="#8a8378"
               >
@@ -175,6 +180,7 @@ function transformAttr(): string {
             </template>
           </template>
 
+          <!-- 矩形节点 -->
           <g
             v-for="n in nodes"
             :key="`n-${n.id}`"
@@ -184,34 +190,35 @@ function transformAttr(): string {
             @mouseenter="onNodeEnter(n.id, $event)"
             @mouseleave="onNodeLeave"
           >
-            <circle
-              :r="nodeRadius(n)"
-              :fill="qColor(n.q)"
-              :stroke="n.id === rootInfo!.root.id ? '#4a3f2f' : '#6b6152'"
-              :stroke-width="n.id === rootInfo!.root.id ? 3 : 1.5"
+            <rect
+              class="mcts-node-rect"
+              :x="-NW / 2"
+              :y="-NH / 2"
+              :width="NW"
+              :height="NH"
+              rx="8"
+              :class="{ 'is-chosen': isChosenEdge(n) }"
             />
-            <text :y="-nodeRadius(n) - 5" text-anchor="middle" font-size="11" fill="#4a3f2f">
-              {{ n.id === rootInfo!.root.id ? 'ROOT' : edgeLabel(n.edge) }}
+            <text :y="-6" text-anchor="middle" class="mcts-node-title">
+              {{ nodeTitle(n) }}
             </text>
-            <text :y="nodeRadius(n) + 13" text-anchor="middle" font-size="10" fill="#6b6152">
+            <text :y="14" text-anchor="middle" class="mcts-node-stats">
               N={{ n.n }} Q={{ n.q.toFixed(2) }}
             </text>
-            <text
-              v-if="hasChildren(n.id)"
-              :x="nodeRadius(n) + 4"
-              y="4"
-              font-size="11"
-              fill="#2f6f9e"
-            >
-              {{ store.expanded.has(n.id) ? '−' : '+' }}
-            </text>
+            <g v-if="hasChildren(n.id)" class="mcts-collapse">
+              <circle :cy="NH / 2" r="9" />
+              <text :y="NH / 2 + 4" text-anchor="middle">
+                {{ store.expanded.has(n.id) ? '−' : '+' }}
+              </text>
+            </g>
           </g>
 
           <template v-for="n in nodes" :key="`hidden-${n.id}`">
             <text
               v-if="store.expanded.has(n.id) && n.hiddenCount > 0"
-              :x="px(n) - 40"
-              :y="py(n) + DY - 18"
+              :x="px(n)"
+              :y="py(n) + DY - 24"
+              text-anchor="middle"
               font-size="10"
               fill="#b0651f"
             >

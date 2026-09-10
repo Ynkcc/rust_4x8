@@ -65,7 +65,16 @@ function describeBoardChange(prev: GameState, next: GameState): string {
 
 function logMove(prev: GameState, next: GameState) {
   const actor = playerName(next.current_player === 'Red' ? 'Black' : 'Red');
-  appendLog(`第${next.move_counter}步 [${actor}] ${describeBoardChange(prev, next)}`);
+  appendLog(
+    `第${next.total_step_counter}步 [${actor}] ${describeBoardChange(prev, next)}` +
+      `（无吃子 ${next.move_counter}/${variantMaxConsecutive(next)}）`,
+  );
+}
+
+function variantMaxConsecutive(s: GameState): number {
+  if (s.variant === 'mini') return 8;
+  if (s.variant === '4x4') return 16;
+  return 24;
 }
 
 async function cachedMoveAction(fromSq: number, toSq: number): Promise<number | null> {
@@ -121,9 +130,10 @@ async function refreshHighlights() {
 
 function checkGameOver(result: { terminated: boolean; truncated: boolean; winner: number }) {
   if (!result.terminated && !result.truncated) return;
-  const msg =
-    '游戏结束！' +
-    (result.winner === 1 ? ' 红方获胜！' : result.winner === -1 ? ' 黑方获胜！' : ' 平局！');
+  const outcome =
+    result.winner === 1 ? '红方获胜！' : result.winner === -1 ? '黑方获胜！' : '平局！';
+  const reason = result.truncated ? '（步数用尽）' : '';
+  const msg = `游戏结束！${reason} ${outcome}`;
   appendLog(msg);
   toast.success(msg, 5000);
 }

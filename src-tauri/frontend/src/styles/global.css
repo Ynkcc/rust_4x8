@@ -189,14 +189,18 @@ button.mini {
 
 /* ===================== 棋盘 ===================== */
 .board-zone {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .board-wrap {
   position: relative;
+  flex: 1;
+  min-height: 0;
   width: 100%;
   display: flex;
   justify-content: center;
@@ -211,6 +215,13 @@ button.mini {
   border-radius: 8px;
   width: min(680px, 100%);
   box-shadow: 0 6px 18px rgba(80, 50, 20, 0.25);
+}
+
+/* 正方形棋盘（mini / 4x4）按可用高度自适应，避免纵向溢出 */
+.chess-board.board-square {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
 }
 
 .chess-cell {
@@ -489,6 +500,25 @@ button.mini {
   color: var(--text-sub);
 }
 
+/* ===================== 底部信息行（免滚动紧凑布局） ===================== */
+.insights {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+.insights .panel-card {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+.insights .panel-card h3 {
+  margin-bottom: 6px;
+}
+.status-card .status-panel {
+  gap: 6px;
+  justify-content: center;
+}
+
 /* ===================== 日志 ===================== */
 .log-panel {
   background: var(--panel-bg);
@@ -672,6 +702,36 @@ button.mini {
 }
 .mcts-node {
   cursor: pointer;
+}
+.mcts-node-rect {
+  fill: #fffdf8;
+  stroke: #6b6152;
+  stroke-width: 1.5;
+  filter: drop-shadow(1px 2px 2px rgba(60, 50, 30, 0.18));
+}
+.mcts-node-rect.is-chosen {
+  stroke: #d32f2f;
+  stroke-width: 3;
+}
+.mcts-node-title {
+  font-size: 12px;
+  font-weight: bold;
+  fill: #4a3f2f;
+}
+.mcts-node-stats {
+  font-size: 10.5px;
+  fill: #6b6152;
+  font-variant-numeric: tabular-nums;
+}
+.mcts-collapse circle {
+  fill: #4a3f2f;
+  stroke: #fffdf8;
+  stroke-width: 1.5;
+}
+.mcts-collapse text {
+  fill: #fffdf8;
+  font-size: 11px;
+  font-weight: bold;
 }
 .mcts-empty {
   position: absolute;
