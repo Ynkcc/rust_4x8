@@ -5,6 +5,9 @@ use banqi_4x8::engine::{Policy, RandomPolicy, RevealFirstPolicy};
 use banqi_4x8::inference::onnx::{OnnxMctsPolicy, OnnxModel};
 use banqi_4x8::inference::nnue::NnueEvaluator;
 use banqi_4x8::core::env::*;
+#[cfg(any(feature = "torch", feature = "onnx"))]
+use banqi_4x8::core::mcts::GumbelMCTS;
+use banqi_4x8::core::mcts::{GumbelConfig, MctsArena};
 use serde::{Deserialize, Serialize}; // Added Deserialize
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -73,6 +76,264 @@ struct AppState {
     nnue_evaluator: Mutex<Option<Arc<NnueEvaluator>>>,
     nnue_depth: Mutex<i32>,
     nnue_budget: Mutex<u64>,
+    // 最近一次 Gumbel MCTS 搜索树（供前端按需浏览；非 MCTS 对手时为 None）
+    mcts_tree: Mutex<Option<MctsTreeHandle>>,
+}
+
+/// 常驻后端的 MCTS 树：arena + 根索引 + 本次搜索选中的动作。
+struct MctsTreeHandle {
+    arena: MctsArena<DarkChessEnv>,
+    root_idx: usize,
+    chosen_action: usize,
+}
+
+// ===================== MCTS 树可视化命令 =====================
+
+/// 统一的"边"摘要：普通节点取 children，机会节点取 possible_states。
+#[derive(Debug, Clone, Serialize)]
+struct MctsEdge {
+    child_id: usize,
+    /// 普通边 = 动作索引；机会边 = outcome_id
+    action: usize,
+    prior: f32,
+    logit: f32,
+    n: u32,
+    q: f32,
+    health_q: f32,
+    is_chance: bool,
+    chance_prob: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MctsNodeSummary {
+    id: usize,
+    n: u32,
+    q: f32,
+    health_q: f32,
+    player: String,
+    is_chance: bool,
+    is_terminal: bool,
+    is_expanded: bool,
+    edge_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MctsRootInfo {
+    root: MctsNodeSummary,
+    chosen_action: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MctsNodeDetail {
+    id: usize,
+    prior: f32,
+    logit: f32,
+    n: u32,
+    q: f32,
+    health_q: f32,
+    initial_value: f32,
+    player: String,
+    is_chance: bool,
+    is_terminal: bool,
+    is_expanded: bool,
+    child_count: usize,
+    outcome_count: usize,
+}
+
+fn player_label(p: Player) -> String {
+    match p {
+        Player::Red => "Red".to_string(),
+        Player::Black => "Black".to_string(),
+    }
+}
+
+/// 收集某节点的全部子边（普通 + 机会），按 N 降序、再按先验降序。
+fn mcts_edge_list(arena: &MctsArena<DarkChessEnv>, node_id: usize) -> Vec<MctsEdge> {
+    let node = arena.get(node_id);
+    let mut edges: Vec<MctsEdge> = node
+        .children
+        .iter()
+        .map(|(action, idx)| {
+            let c = arena.get(*idx);
+            MctsEdge {
+                child_id: *idx,
+                action: *action,
+                prior: c.prior,
+                logit: c.logit,
+                n: c.visit_count,
+                q: c.q_value(),
+                health_q: c.q_health_value(),
+                is_chance: false,
+                chance_prob: 1.0,
+            }
+        })
+        .collect();
+    edges.extend(node.possible_states.iter().map(|(outcome_id, prob, idx)| {
+        let c = arena.get(*idx);
+        MctsEdge {
+            child_id: *idx,
+            action: *outcome_id,
+            prior: c.prior,
+            logit: c.logit,
+            n: c.visit_count,
+            q: c.q_value(),
+            health_q: c.q_health_value(),
+            is_chance: true,
+            chance_prob: *prob,
+        }
+    }));
+    edges.sort_by(|a, b| {
+        b.n.cmp(&a.n)
+            .then(b.prior.partial_cmp(&a.prior).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    edges
+}
+
+fn mcts_node_summary(arena: &MctsArena<DarkChessEnv>, node_id: usize) -> MctsNodeSummary {
+    let node = arena.get(node_id);
+    let edge_count = node.children.len() + node.possible_states.len();
+    MctsNodeSummary {
+        id: node_id,
+        n: node.visit_count,
+        q: node.q_value(),
+        health_q: node.q_health_value(),
+        player: player_label(node.player),
+        is_chance: node.is_chance_node,
+        is_terminal: node.is_terminal,
+        is_expanded: node.is_expanded,
+        edge_count,
+    }
+}
+
+fn mcts_root_info(handle: &MctsTreeHandle) -> MctsRootInfo {
+    MctsRootInfo {
+        root: mcts_node_summary(&handle.arena, handle.root_idx),
+        chosen_action: handle.chosen_action,
+    }
+}
+
+/// 阻塞执行一次 Gumbel MCTS 搜索并保留树。仅支持 MctsDL / MctsOnnx。
+#[allow(unused_variables)]
+fn mcts_search_blocking(
+    opp: OpponentType,
+    env: &DarkChessEnv,
+    sims: usize,
+    torch_model: TorchModelOpt,
+    onnx_model: OnnxModelOpt,
+) -> Result<MctsTreeHandle, String> {
+    let config = GumbelConfig::with_search_scale(sims.max(1), 16);
+    match opp {
+        #[cfg(feature = "torch")]
+        OpponentType::MctsDL => {
+            let model = torch_model.ok_or("未加载 .pt 模型，无法执行 MCTS+DL 搜索")?;
+            let evaluator = banqi_4x8::engine::TchEvaluator::<DarkChessEnv>::new(model);
+            let mut mcts = GumbelMCTS::new(env, &evaluator, config);
+            let result = mcts
+                .run()
+                .ok_or_else(|| "MCTS 搜索无合法动作".to_string())?;
+            Ok(MctsTreeHandle {
+                root_idx: mcts.root_idx,
+                arena: mcts.arena,
+                chosen_action: result.action,
+            })
+        }
+        #[cfg(not(feature = "torch"))]
+        OpponentType::MctsDL => Err("MctsDL 需要启用 torch 特性".into()),
+        #[cfg(feature = "onnx")]
+        OpponentType::MctsOnnx => {
+            let model = onnx_model.ok_or("未加载 .onnx 模型，无法执行 MCTS+ONNX 搜索")?;
+            let evaluator = banqi_4x8::inference::onnx::OnnxEvaluator::<DarkChessEnv>::new(model);
+            let mut mcts = GumbelMCTS::new(env, &evaluator, config);
+            let result = mcts
+                .run()
+                .ok_or_else(|| "MCTS 搜索无合法动作".to_string())?;
+            Ok(MctsTreeHandle {
+                root_idx: mcts.root_idx,
+                arena: mcts.arena,
+                chosen_action: result.action,
+            })
+        }
+        #[cfg(not(feature = "onnx"))]
+        OpponentType::MctsOnnx => Err("MctsOnnx 需要启用 onnx 特性".into()),
+        _ => Err("MCTS 树可视化仅支持 MctsDL / MctsOnnx 对手".into()),
+    }
+}
+
+#[cfg(feature = "torch")]
+type TorchModelOpt = Option<Arc<banqi_4x8::engine::ModelWrapper>>;
+#[cfg(not(feature = "torch"))]
+type TorchModelOpt = Option<()>;
+
+#[cfg(feature = "onnx")]
+type OnnxModelOpt = Option<Arc<banqi_4x8::inference::onnx::OnnxModel>>;
+#[cfg(not(feature = "onnx"))]
+type OnnxModelOpt = Option<()>;
+
+/// 获取当前 MCTS 树根（前端打开面板时调用）
+#[tauri::command]
+fn mcts_get_root(state: State<AppState>) -> Result<MctsRootInfo, String> {
+    let guard = state.mcts_tree.lock().unwrap();
+    let tree = guard
+        .as_ref()
+        .ok_or("暂无 MCTS 搜索树：请先让 MctsDL / MctsOnnx 对手走一步，或在搜索树面板手动搜索")?;
+    Ok(mcts_root_info(tree))
+}
+
+/// 按需读取某节点的全部子边（懒展开）
+#[tauri::command]
+fn mcts_get_children(node_id: usize, state: State<AppState>) -> Result<Vec<MctsEdge>, String> {
+    let guard = state.mcts_tree.lock().unwrap();
+    let tree = guard.as_ref().ok_or("暂无 MCTS 搜索树")?;
+    Ok(mcts_edge_list(&tree.arena, node_id))
+}
+
+/// 读取某节点完整统计（tooltip 用）
+#[tauri::command]
+fn mcts_get_node_detail(node_id: usize, state: State<AppState>) -> Result<MctsNodeDetail, String> {
+    let guard = state.mcts_tree.lock().unwrap();
+    let tree = guard.as_ref().ok_or("暂无 MCTS 搜索树")?;
+    let node = tree.arena.get(node_id);
+    Ok(MctsNodeDetail {
+        id: node_id,
+        prior: node.prior,
+        logit: node.logit,
+        n: node.visit_count,
+        q: node.q_value(),
+        health_q: node.q_health_value(),
+        initial_value: node.initial_value,
+        player: player_label(node.player),
+        is_chance: node.is_chance_node,
+        is_terminal: node.is_terminal,
+        is_expanded: node.is_expanded,
+        child_count: node.children.len(),
+        outcome_count: node.possible_states.len(),
+    })
+}
+
+/// 在当前局面上手动触发一次 MCTS 搜索并替换浏览树
+#[tauri::command]
+async fn mcts_search(state: State<'_, AppState>) -> Result<MctsRootInfo, String> {
+    let opp = *state.opponent_type.lock().unwrap();
+    #[cfg(feature = "torch")]
+    let torch_model = state.model.lock().unwrap().clone();
+    #[cfg(not(feature = "torch"))]
+    let torch_model = None;
+    #[cfg(feature = "onnx")]
+    let onnx_model = state.onnx_model.lock().unwrap().clone();
+    #[cfg(not(feature = "onnx"))]
+    let onnx_model = None;
+    let snapshot = state.game.lock().unwrap().clone();
+    let sims = *state.mcts_num_simulations.lock().unwrap();
+
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        mcts_search_blocking(opp, &snapshot, sims, torch_model, onnx_model)
+    })
+    .await
+    .map_err(|e| format!("MCTS 搜索线程错误: {e}"))??;
+
+    let info = mcts_root_info(&handle);
+    *state.mcts_tree.lock().unwrap() = Some(handle);
+    Ok(info)
 }
 
 // Tauri 命令：重置游戏
@@ -112,6 +373,9 @@ fn reset_game(opponent: Option<String>, variant: Option<String>, state: State<Ap
             *eval_lock = None;
         }
     }
+
+    // 重开后旧搜索树失效
+    *state.mcts_tree.lock().unwrap() = None;
 
     // 若选择 MctsDL / MctsOnnx 且已有对应模型，创建策略实例
     #[cfg(feature = "torch")]
@@ -184,9 +448,12 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
     }
 
     // 调用策略模块选择动作。
-    // Engine / Nnue 为计算密集搜索，放后台线程执行避免阻塞 UI；
+    // Engine / Nnue / MctsDL / MctsOnnx 为计算密集搜索，放后台线程执行避免阻塞 UI；
     // 其余策略廉价，直接同步执行。
+    // MctsDL / MctsOnnx 搜索后保留整棵树到 mcts_tree 供前端可视化；其他对手清空旧树。
     let snapshot = state.game.lock().unwrap().clone();
+    #[cfg_attr(not(any(feature = "torch", feature = "onnx")), allow(unused_mut))]
+    let mut new_tree: Option<MctsTreeHandle> = None;
     let chosen_action = match opp_type {
         OpponentType::Engine => {
             let budget = *state.engine_budget.lock().unwrap();
@@ -229,54 +496,62 @@ async fn bot_move(state: State<'_, AppState>) -> Result<StepResult, String> {
             .await
             .map_err(|e| format!("NNUE Expectimax 搜索线程错误: {e}"))?
         }
+        #[cfg(feature = "torch")]
+        OpponentType::MctsDL => {
+            let model = state
+                .model
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("未加载模型，无法执行 MCTS+DL 策略")?;
+            let sims = *state.mcts_num_simulations.lock().unwrap();
+            let handle = tauri::async_runtime::spawn_blocking(move || {
+                mcts_search_blocking(OpponentType::MctsDL, &snapshot, sims, Some(model), None)
+            })
+            .await
+            .map_err(|e| format!("MCTS 搜索线程错误: {e}"))??;
+            let action = handle.chosen_action;
+            new_tree = Some(handle);
+            Some(action)
+        }
+        #[cfg(not(feature = "torch"))]
+        OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
+        #[cfg(feature = "onnx")]
+        OpponentType::MctsOnnx => {
+            let model = state
+                .onnx_model
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("未加载 ONNX 模型，无法执行 MCTS+ONNX 策略")?;
+            let sims = *state.mcts_num_simulations.lock().unwrap();
+            let handle = tauri::async_runtime::spawn_blocking(move || {
+                mcts_search_blocking(OpponentType::MctsOnnx, &snapshot, sims, None, Some(model))
+            })
+            .await
+            .map_err(|e| format!("MCTS 搜索线程错误: {e}"))??;
+            let action = handle.chosen_action;
+            new_tree = Some(handle);
+            Some(action)
+        }
+        #[cfg(not(feature = "onnx"))]
+        OpponentType::MctsOnnx => return Err("MctsOnnx 需要启用 onnx 特性".into()),
         _ => {
             let game = state.game.lock().unwrap();
             match opp_type {
                 OpponentType::RevealFirst => RevealFirstPolicy::choose_action(&*game),
                 OpponentType::Random => RandomPolicy::choose_action(&*game),
-                #[cfg(feature = "torch")]
-                OpponentType::MctsDL => {
-                    let mut policy_lock = state.mcts_policy.lock().unwrap();
-                    if policy_lock.is_none() {
-                        // 尝试基于已加载模型创建
-                        let model_opt = state.model.lock().unwrap().clone();
-                        if let Some(model) = model_opt {
-                            let sims = *state.mcts_num_simulations.lock().unwrap();
-                            *policy_lock = Some(MctsDlPolicy::new(model, &*game, sims));
-                        } else {
-                            return Err("未加载模型，无法执行 MCTS+DL 策略".into());
-                        }
-                    }
-                    let policy = policy_lock.as_ref().unwrap();
-                    policy.choose_action(&*game)
-                }
-                #[cfg(not(feature = "torch"))]
-                OpponentType::MctsDL => return Err("MctsDL 需要启用 torch 特性".into()),
-                #[cfg(feature = "onnx")]
-                OpponentType::MctsOnnx => {
-                    let mut policy_lock = state.onnx_policy.lock().unwrap();
-                    if policy_lock.is_none() {
-                        // 尝试基于已加载的 ONNX 模型创建
-                        let model_opt = state.onnx_model.lock().unwrap().clone();
-                        if let Some(model) = model_opt {
-                            let sims = *state.mcts_num_simulations.lock().unwrap();
-                            *policy_lock = Some(OnnxMctsPolicy::new(model, &*game, sims));
-                        } else {
-                            return Err("未加载 ONNX 模型，无法执行 MCTS+ONNX 策略".into());
-                        }
-                    }
-                    let policy = policy_lock.as_ref().unwrap();
-                    policy.choose_action(&*game)
-                }
-                #[cfg(not(feature = "onnx"))]
-                OpponentType::MctsOnnx => return Err("MctsOnnx 需要启用 onnx 特性".into()),
                 OpponentType::PvP => None,        // 已在上面返回 Err，这里兜底
                 OpponentType::Engine => unreachable!(),
                 OpponentType::Nnue => unreachable!(),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
             }
         }
     }
     .ok_or_else(|| "AI 无棋可走".to_string())?;
+
+    *state.mcts_tree.lock().unwrap() = new_tree;
 
     let mut game = state.game.lock().unwrap();
     match game.step(chosen_action, None) {
@@ -637,6 +912,7 @@ pub fn run() {
                 nnue_evaluator: Mutex::new(None),
                 nnue_depth: Mutex::new(8),
                 nnue_budget: Mutex::new(200_000),
+                mcts_tree: Mutex::new(None),
             });
             Ok(())
         })
@@ -653,7 +929,11 @@ pub fn run() {
             set_mcts_iterations,
             set_engine_budget,
             set_nnue_depth,
-            set_nnue_budget
+            set_nnue_budget,
+            mcts_get_root,
+            mcts_get_children,
+            mcts_get_node_detail,
+            mcts_search
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

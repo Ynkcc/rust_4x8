@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "identifier": "com.banqi.4x8",
   "build": {
-    "frontendDist": "./frontend",
-    "beforeDevCommand": "",
-    "beforeBuildCommand": ""
+    "frontendDist": "./frontend/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "暗棋 4x8",

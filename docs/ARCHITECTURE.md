@@ -137,11 +137,20 @@
 
 ## 5. Tauri 桌面端（独立 crate `src-tauri/`）
 
-`src-tauri/src/main.rs` 持有 `AppState`（环境 + 各引擎）。`#[tauri::command]` 列表（前端 `src-tauri/frontend/main_tauri.js` 经 `invoke` 调用）：
+`src-tauri/src/main.rs` 持有 `AppState`（环境 + 各引擎）。前端为 **Vite + Vue 3 + TypeScript** 工程（`src-tauri/frontend/`，源码 `src/`，构建产物 `dist/`，Tauri 加载 `frontendDist=./frontend/dist`，dev 经 `devUrl http://localhost:5173`）：
+
+- `src/api/types.ts` + `src/api/client.ts`：command 返回类型定义与 `invoke` 封装（`api.*`）；
+- `src/composables/`：`useGame`（对局状态/走子/高亮/日志/机器人回合）、`useSettings`（变体/对手/模型列表与参数设置）、`useMctsTree`（搜索树懒加载缓存 + 布局计算）、`useToast`、`useLogs`；
+- `src/components/`：`App`（三栏布局 + 抽屉）、`BoardView`、`ControlPanel`、`StatusPanel`、`LogPanel`、`PieceTray`、`BitboardPanel`、`MctsTreePanel`、`ToastHost`；`src/domain/pieces.ts` 棋子/位板常量与棋盘尺寸换算。
+
+`#[tauri::command]` 列表（前端经 `@tauri-apps/api/core::invoke` 调用）：
 
 - 对局：`reset_game`、`step_game`、`bot_move`、`get_game_state`、`get_move_action`、`get_opponent_type`
 - 模型：`list_models`、`load_model`
 - 引擎参数：`set_minimax_depth`、`set_mcts_iterations`、`set_engine_budget`、`set_heuristic_sims`、`set_nnue_depth`、`set_nnue_budget`
+- MCTS 树可视化（懒加载）：`mcts_get_root`、`mcts_get_children`、`mcts_get_node_detail`、`mcts_search`。MctsDL/MctsOnnx 落子后整棵 `MctsArena<DarkChessEnv>` 常驻 `AppState.mcts_tree`，前端按需逐节点拉取子边渲染（SVG 树面板，机会节点 outcome 亦懒展开）
+
+前端构建/开发命令（在 `src-tauri/frontend/` 内）：`npm run dev`（Vite dev server，端口 5173）、`npm run build`（vue-tsc 类型检查 + vite build → `dist/`）。
 
 ## 6. 分布式与存储（可选路径）
 
@@ -192,3 +201,5 @@
 - 2026-09-09：Tauri 桌面端拆分为独立 crate `src-tauri/`（workspace member `banqi-tauri`，path 依赖 `banqi_4x8`；`tauri.conf.json`/`frontend/`/`icons/` 一并迁入；根 crate 移除 `tauri` feature 与 tauri 依赖；GUI 构建命令改为 `cargo build -p banqi-tauri`）。
 - 2026-09-09：新增 `tmp_resnet_dump` bin 与 replay 标量解码暗子向量支持（`decode_scalar_state` 增 my/opp_hidden）；补充 ResNet 特征布局文档；修正 `resnet_scalar_feature_count` 为 `3 + 4×total_pieces`（4x8=67 / 4x4=35 / 4x2=19，Rust/Python 双侧同步，**旧 ckpt 标量维度不兼容需重训**）。
 - 2026-09-09：调度器改用 Go 实现：新增 `proto/scheduler.proto`（6 RPC）与 Go module `server/`（cmd/scheduler + internal/{store,r2,sprt,scheduler}，SQLite 元数据 + R2 预签名直传 + 五项 GSPRT 判停，含单测，构建/冒烟通过）；`deploy/` 部署物占位。见 §6.4 与 `docs/distributed_training_reference_survey.md`。
+- 2026-09-10：Tauri GUI 新增 MCTS 搜索树懒加载可视化：`GumbelConfig::with_search_scale` 公开构造器；`MctsDlPolicy`/`OnnxMctsPolicy` 落子路径改为 `bot_move` 内直接构造 `GumbelMCTS` 并将树常驻 `AppState.mcts_tree`；新增 4 个 command（§5）与前端 SVG 搜索树面板（点击展开逐节点拉取）。
+- 2026-09-10：Tauri 前端由原生 HTML/JS 重写为 Vite + Vue 3 + TypeScript（`frontend/` 内源码 `src/`、组件/composables/api 分层、三栏布局重构，功能与 command 接口不变；`tauri.conf.json` 改用 `frontendDist=./frontend/dist` + devUrl:5173 + beforeDev/BuildCommand）。

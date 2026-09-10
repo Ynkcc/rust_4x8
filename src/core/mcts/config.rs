@@ -58,6 +58,19 @@ impl Default for GumbelConfig {
     }
 }
 
+impl GumbelConfig {
+    /// 标准 Gumbel 配置（c_scale = gumbel_scale = 1.0），仅指定搜索规模。
+    /// 供 crate 外（如 banqi-tauri）构造：c_scale/gumbel_scale 为 pub(crate)，
+    /// 外部无法使用结构体更新语法。
+    pub fn with_search_scale(num_simulations: usize, max_considered_actions: usize) -> Self {
+        Self {
+            num_simulations,
+            max_considered_actions,
+            ..Default::default()
+        }
+    }
+}
+
 /// MCTS 搜索结果
 ///
 /// 包含 MCTS 搜索后的所有关键数据，避免在 self-play 中重复计算
