@@ -105,7 +105,7 @@ common:
     EVAL_MATCH_ROUNDS: 5          # 对战评估周期（轮次，0=关闭）
     EVAL_MATCH_GAMES: 20          # 每周期对弈局数
     EVAL_MATCH_OPPONENTS: ["random"]  # 对手列表（random / expectimax:<path.nnue> / .pt路径）
-    EVAL_MATCH_VS_PREV: true      # 是否与上一轮模型对头守门
+    EVAL_MATCH_VS_PREV: false      # 是否与上一轮模型对头守门。轮次间训练量不够，测试样本过少，暂时禁用
     EVAL_MATCH_STOP_WIN_RATE: 0.0  # 达到该胜率时停止训练（0=关闭）
     EVAL_MATCH_STOP_OPPONENT: ""   # 停机判定的对手（空=任一对手达标即停）
 

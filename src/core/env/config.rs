@@ -229,7 +229,7 @@ pub fn game_4x4_config() -> GameConfig {
         total_pieces_per_player: total_pieces,
         piece_values,
         initial_health: 60,
-        initial_revealed_pieces: 2,
+        initial_revealed_pieces: 8,
         max_consecutive_moves_for_draw: 16, // 未吃子步数为 16 时强制判和
         max_steps_per_episode: 48,
         reveal_actions_count: reveal,

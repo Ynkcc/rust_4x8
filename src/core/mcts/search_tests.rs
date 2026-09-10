@@ -8,13 +8,16 @@
 //    - 后手 vs 随机：不败
 //    - 先手/后手 vs minimax：全平（井字棋双方最优 = 平局）
 
-use crate::core::env::{GameEnv, Player, TicTacToeEnv};
+use crate::core::env::{Game4x4Env, GameEnv, Player, TicTacToeEnv, GAME4X4_ACTION_SPACE_SIZE};
 use crate::core::mcts::config::GumbelConfig;
 use crate::core::mcts::evaluator::{Evaluator, EvaluatorOutput};
+use crate::core::mcts::node::MctsArena;
 use crate::core::mcts::search::GumbelMCTS;
 use rand::prelude::*;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// 从 `env.get_current_player()` 视角计算 minimax 价值：1=当前玩家胜，-1=负，0=平。
 /// 带记忆化缓存（井字棋状态空间有限，缓存后每个局面只计算一次）。
@@ -340,4 +343,142 @@ fn ttt_mcts_initial_search_produces_valid_action() {
         .map(|(_, &p)| p)
         .sum();
     assert!(legal_mass > 0.99);
+}
+
+// ============================================================================
+// 4x4 变体：树推进复用（step_next 整局推进，验证不触发重建）
+// ============================================================================
+
+/// 随机参数初始化的评估器：logits / values 均取自随机噪声，仅用于验证树
+/// 推进复用机制（而非棋力）。`health` 恒 None，MCTS 退化为纯胜率效用。
+struct Random4x4Evaluator {
+    rng: RefCell<StdRng>,
+}
+
+impl Random4x4Evaluator {
+    fn new(seed: u64) -> Self {
+        Self {
+            rng: RefCell::new(StdRng::seed_from_u64(seed)),
+        }
+    }
+}
+
+impl Evaluator<Game4x4Env> for Random4x4Evaluator {
+    fn evaluate(&self, envs: &[Game4x4Env]) -> EvaluatorOutput {
+        let mut rng = self.rng.borrow_mut();
+        let logits = (0..envs.len())
+            .map(|_| {
+                (0..GAME4X4_ACTION_SPACE_SIZE)
+                    .map(|_| rng.r#gen::<f32>() * 2.0 - 1.0)
+                    .collect::<Vec<f32>>()
+            })
+            .collect();
+        let values = (0..envs.len())
+            .map(|_| rng.r#gen::<f32>() * 2.0 - 1.0)
+            .collect();
+        EvaluatorOutput {
+            logits,
+            values,
+            health: None,
+        }
+    }
+}
+
+/// 收集以 `start` 为根的可达节点索引集合。
+///
+/// 复用（step_next 命中子树）时新根必为原根可达的子/孙节点，属于该集合；
+/// 重建时 `step_next` 会在 arena 中分配全新节点（该节点此前从未分配），
+/// 故其索引不可能出现在集合内。由此可精确判定是否触发重建。
+fn collect_reachable<G: GameEnv>(arena: &MctsArena<G>, start: usize) -> HashSet<usize> {
+    let mut set = HashSet::new();
+    let mut stack = vec![start];
+    while let Some(idx) = stack.pop() {
+        if !set.insert(idx) {
+            continue;
+        }
+        let node = arena.get(idx);
+        for (_, child) in &node.children {
+            stack.push(*child);
+        }
+        for (_, _, child) in &node.possible_states {
+            stack.push(*child);
+        }
+    }
+    set
+}
+
+/// 4x4 整局手动对局：单侧 GumbelMCTS + 随机模型，双方动作均由同一 mcts 决策，
+/// 每步以 `step_next` 推进。返回 (重建次数, 步数)。
+fn play_game4x4_reuse(model_seed: u64, sims: usize) -> (usize, usize) {
+    let evaluator = Random4x4Evaluator::new(model_seed);
+    let config = GumbelConfig {
+        num_simulations: sims,
+        max_considered_actions: 64,
+        ..Default::default()
+    };
+    let mut env = Game4x4Env::new();
+    let mut mcts = GumbelMCTS::new(&env, &evaluator, config);
+
+    let mut rebuilds = 0usize;
+    let mut steps = 0usize;
+    loop {
+        let (terminated, truncated, _) = env.check_game_over_conditions();
+        if terminated || truncated {
+            break;
+        }
+        let result = match mcts.run() {
+            Some(r) => r,
+            None => break,
+        };
+        let action = result.action;
+
+        let mut mask = vec![0i32; GAME4X4_ACTION_SPACE_SIZE];
+        env.action_masks_into(&mut mask);
+        assert_eq!(mask[action], 1, "step={} MCTS 选中非法动作", steps);
+
+        // 推进前锁定当前根可达子树集合
+        let reach = collect_reachable(&mcts.arena, mcts.root_idx);
+
+        let (_, term, trunc, _) = env.step(action).unwrap();
+        mcts.step_next(&env, action);
+
+        if !reach.contains(&mcts.root_idx) {
+            rebuilds += 1;
+            eprintln!("⚠️ step={} 树推进触发重建 (root_idx={})", steps, mcts.root_idx);
+        }
+        steps += 1;
+        if term || trunc || steps >= 512 {
+            break;
+        }
+    }
+    (rebuilds, steps)
+}
+
+/// 4x4 上以随机初始化参数模型整局自对弈，验证 `step_next` 每步均复用于已有
+/// 子树（含翻牌机会节点的真实 outcome 匹配），全程不触发根节点重建。
+#[test]
+fn game4x4_tree_reuse_no_rebuild_with_random_model() {
+    let mut total_rebuilds = 0usize;
+    let mut total_steps = 0usize;
+    // 多局：不同 model seed 产生不同噪声与初始局面，覆盖翻牌/移动/炮击路径
+    for seed in 1..=4 {
+        let (rebuilds, steps) = play_game4x4_reuse(seed, 96);
+        total_rebuilds += rebuilds;
+        total_steps += steps;
+        assert!(steps > 0, "seed={} 随机模型自对弈应至少推进若干步", seed);
+        assert_eq!(
+            rebuilds, 0,
+            "seed={} 树推进应始终复用于子树（含翻牌真实 outcome 匹配），不应重建根节点",
+            seed
+        );
+    }
+    eprintln!(
+        "4x4 随机模型整局树复用(4局): 总步数={} 重建={}",
+        total_steps, total_rebuilds
+    );
+    assert_eq!(
+        total_rebuilds, 0,
+        "4x4 树推进全程应 0 重建，实际重建 {} 次",
+        total_rebuilds
+    );
 }
