@@ -24,7 +24,8 @@
 
 | 条目 | 说明 |
 |---|---|
-| `Cargo.toml` | crate `banqi_4x8` + workspace root（members=`src-tauri`），edition 2024；`[lib]` crate-type=`["lib","cdylib"]`（cdylib 供 maturin） |
+| `Cargo.toml` | crate `banqi_4x8` + workspace root（members=`src-tauri`、`crates/banqi-core`），edition 2024；`[lib]` crate-type=`["lib","cdylib"]`（cdylib 供 maturin） |
+| `crates/banqi-core/` | 领域核心独立 crate（workspace member，规划拆出为独立仓库），见 §3.1 |
 | `build.rs` | ① 环境预检（pyo3 嵌入 bin 需 libpython 共享库）；② libtorch rpath/链接；③ `tonic_build` 编译 proto |
 | `pyproject.toml` | maturin 构建，`features=["pyo3-extension"]`（cdylib wheel，不链接 libpython） |
 | `src-tauri/` | 桌面 GUI 独立 crate `banqi-tauri`（规划拆出为独立仓库），架构见 `src-tauri/ARCHITECTURE.md` |
@@ -40,7 +41,8 @@
 
 1. **`banqi-scheduler`**：`server/` + `proto/scheduler.proto`（+ `deploy/` 占位）。与其他代码零耦合；唯一跨界依赖是主仓库 `build.rs` 编译 `scheduler.proto`，拆分后主仓库改为引用该仓库的 proto 副本。
 2. **`banqi-tauri`**：`src-tauri/`。已独立 crate，拆分时 path 依赖 `banqi_4x8` 改为 git 依赖。
-3. **主体仓库（本仓库保留）**：Rust `src/` + `python/` + `proto/banqi_service.proto`。**后续将进一步拆分为训练（trainer）与数据收集（collector）两个仓库**——当前耦合点：`pipeline/`、`registry/`、`bridge/`（PyO3 episode 契约）与 Python `infra/`/`runners/`，拆分前先以 `registry/`（Rust）+ `infra/`（Python）为接口边界解耦，此文档届时再拆。
+3. **`banqi-core`**：`crates/banqi-core/`（已拆出为独立仓库 https://github.com/Ynkcc/banqi-core ，本地工作副本 `../banqi-core/`；主仓库暂以 path 依赖引用，后续切 git 依赖并删除 `crates/banqi-core` 副本）。内容为依赖闭合的领域核心：`core/`（env/mcts/expectimax/zobrist）+ `engine/movegen` + `inference/nnue` + 环境辅助 trait（`core/env/seed.rs` 的 `AsDarkChessRef`/`SeedableEnv`）；`Evaluator` trait（`core/mcts/evaluator.rs`）随之下沉，主仓库 TorchScript/ONNX/PyEvaluator 为其实现方。内部模块路径保持 `core`/`engine`/`inference` 三模块不变，主 crate 经 `src/lib.rs` 同名包装模块（`pub mod core { pub use banqi_core::core::*; }`）与 `pub use` 重导出，`crate::core::...`/`banqi_4x8::core::...` 路径全部不变。原 `pub(crate)` 跨界项已调整：`GumbelConfig.c_scale/gumbel_scale` 改 `pub`。
+4. **主体仓库（本仓库保留）**：Rust `src/` + `python/` + `proto/banqi_service.proto`。**后续将进一步拆分为训练（trainer）与数据收集（collector）两个仓库**——当前耦合点：`pipeline/`、`registry/`、`bridge/`（PyO3 episode 契约）与 Python `infra/`/`runners/`，拆分前先以 `registry/`（Rust）+ `infra/`（Python）为接口边界解耦，此文档届时再拆。
 
 ### 2.1 feature 矩阵
 
@@ -63,9 +65,11 @@
 | `tmp_resnet_dump` | `tmp_resnet_dump.rs` | — | ResNet 输入特征人工验证：4x4 随机对局，每手将 NN 输入解码为人类可读表述写入文件（默认 `outputs/resnet_decode_4x4.txt`） |
 | `tmp_nnue_bench` / `tmp_reach` | `tmp_*.rs` | — | NNUE 吞吐/强度临时基准工具 |
 
-## 3. Rust 源码 `src/`（DDD 分层，入口 `lib.rs` 声明 6 模块）
+## 3. Rust 源码 `src/`（DDD 分层，入口 `lib.rs` 声明模块：bridge/core/engine/inference/pipeline/registry/utils）
 
-### 3.1 `core/` — 领域核心
+> **注**：领域核心已拆出为独立 crate `crates/banqi-core`（见 §2.0-3）。`src/` 内 `crate::core::...`、`crate::engine::movegen`、`crate::inference::nnue` 路径经重导出仍然有效，指向 banqi-core。
+
+### 3.1 `core/` — 领域核心（已迁至 banqi-core，结构如下留存备查）
 
 - `core/zobrist.rs`：Zobrist 哈希（棋盘/暗袋/行棋方）。
 - `core/env/`：暗棋环境
@@ -202,3 +206,4 @@
 - 2026-09-10：Tauri 前端由原生 HTML/JS 重写为 Vite + Vue 3 + TypeScript（`frontend/` 内源码 `src/`、组件/composables/api 分层、三栏布局重构，功能与 command 接口不变；`tauri.conf.json` 改用 `frontendDist=./frontend/dist` + devUrl:5173 + beforeDev/BuildCommand）。
 - 2026-09-11：仓库拆分规划落档（方案 A，见 §2.0）：`server/` 与 `src-tauri/` 各自新增 `ARCHITECTURE.md`（内容自本文 §5/§6.4 拆出，本文改为引用）与独立 `.gitignore`（server 特有忽略规则自根 `.gitignore` 下沉）；主体仓库后续将进一步拆分 trainer/collector，接口边界为 Rust `registry/` + Python `infra/`。
 - 2026-09-11：分布式 worker 资源分配与心跳/完整性加固：Go 调度器 GetTask 按 worker 上报线程数缩放下发局数（`SCHEDULER_THREADS_BASELINE` 基准，0=不缩放）；`HeartbeatRequest` 增 `client_version`/`memory_mb`，workers 表记录版本声明（版本变更打日志，不做强校验）；ReportEpisode/ReportMatchResult 校验 task↔worker 归属；Rust `SchedulerRegistry` 后台 30s 心跳（版本声明/资源/累计局数/running_task_id，感知 best 换网与 pause）、GetTask 上报真实可用内存（/proc/meminfo）、网络文件下载与缓存命中均做 sha256 SRI 校验（不符删除缓存拒绝使用）。
+- 2026-09-11：**banqi-core 拆分（workspace 化）**：`core/`（env/mcts/expectimax/zobrist）+ `engine/movegen` + `inference/nnue` + `SeedableEnv`/`AsDarkChessRef`（新 `core/env/seed.rs`）整体迁至 `crates/banqi-core/` 独立 crate；`Evaluator` trait 随之下沉，主仓库为其实现方。主 crate 经 lib.rs 同名包装模块与 `pub use` 保持 `crate::core` 等路径不变；`GumbelConfig.c_scale/gumbel_scale` 由 `pub(crate)` 改 `pub`（跨 crate 字面量构造）。全部 feature 组合（torch/onnx/mongodb/pyo3/pyo3-extension）与 tauri crate check 通过；33 单测 + 1 doctest 全绿。见 §2.0-3。

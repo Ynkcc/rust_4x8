@@ -43,7 +43,7 @@ impl SequentialHalvingBudget {
     /// # 例子
     ///
     /// ```
-    /// use banqi_4x8::core::mcts::budget::SequentialHalvingBudget;
+    /// use banqi_core::core::mcts::budget::SequentialHalvingBudget;
     /// let budget = SequentialHalvingBudget::new(8, 1024, 2);
     /// assert_eq!(budget.num_phases(), 4); // phases = log_2(8) + 1
     /// assert_eq!(budget.actions_in_phase(0), 8); // 第1阶段：8个动作

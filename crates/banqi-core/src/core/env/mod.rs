@@ -9,6 +9,7 @@ pub mod config;
 pub mod constants;
 pub mod features;
 pub mod rules;
+pub mod seed;
 pub mod symmetry;
 pub mod traits;
 pub mod types;

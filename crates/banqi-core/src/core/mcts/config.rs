@@ -16,11 +16,11 @@ pub struct GumbelConfig {
     /// PUCT 探索系数（即经典 c_puct）：
     /// - 非根节点选择阶段：u_score = c_scale * prior * sqrt(N_parent) / (1 + N_child)
     /// - 训练目标 improved_policy：sigma = c_scale * ln(1 + N_root)
-    pub(crate) c_scale: f32,
+    pub c_scale: f32,
     /// Gumbel 噪声尺度（Gumbel(0, gumbel_scale)）。
     /// Gumbel AlphaZero 根探索主力：Top-K 采样为每个候选动作 logit 加该尺度噪声。
     /// 越大探索越强，越小越接近纯 logit 排序；1.0 为标准 Gumbel。
-    pub(crate) gumbel_scale: f32,
+    pub gumbel_scale: f32,
     // 注意：Gumbel AlphaZero 的根节点探索由 Gumbel 噪声（Top-K 采样）与
     // Sequential Halving 提供；根节点子节点的 prior 不参与任何搜索决策
     // （Top-K 用 logit、根选择不经 PUCT、训练目标用 logit + σ·Q）。

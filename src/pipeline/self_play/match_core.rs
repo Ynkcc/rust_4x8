@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::core::env::{DarkChessEnv, Game4x4Env, GameEnv, MiniDarkChessEnv};
+use crate::core::env::{DarkChessEnv, GameEnv};
 use crate::core::expectimax::ExpectimaxEngine;
 use crate::core::mcts::{Evaluator, EvaluatorOutput, GumbelConfig, GumbelMCTS};
 
@@ -26,58 +26,11 @@ use crate::bridge::python::py_evaluator::PyEvaluator;
 use super::{finalize_episode, GameEpisode, SelfPlayConfig};
 
 // ============================================================================
-// 辅助 Trait：提取 &DarkChessEnv 与种子设置（自 eval.rs 迁入）
+// 辅助 Trait：提取 &DarkChessEnv 与种子设置
+// （实现已随领域核心下沉至 banqi-core::core::env::seed，此处重导出保持路径不变）
 // ============================================================================
 
-pub trait AsDarkChessRef {
-    fn as_darkchess_ref(&self) -> &DarkChessEnv;
-}
-
-impl AsDarkChessRef for DarkChessEnv {
-    fn as_darkchess_ref(&self) -> &DarkChessEnv {
-        self
-    }
-}
-
-impl AsDarkChessRef for MiniDarkChessEnv {
-    fn as_darkchess_ref(&self) -> &DarkChessEnv {
-        &self.inner
-    }
-}
-
-impl AsDarkChessRef for Game4x4Env {
-    fn as_darkchess_ref(&self) -> &DarkChessEnv {
-        &self.inner
-    }
-}
-
-pub trait SeedableEnv {
-    fn set_seed(&mut self, seed: u64);
-}
-
-impl SeedableEnv for DarkChessEnv {
-    fn set_seed(&mut self, seed: u64) {
-        self.seed = Some(seed);
-        self.reset_internal_state();
-        self.initialize_board();
-    }
-}
-
-impl SeedableEnv for MiniDarkChessEnv {
-    fn set_seed(&mut self, seed: u64) {
-        self.inner.seed = Some(seed);
-        self.inner.reset_internal_state();
-        self.inner.initialize_board();
-    }
-}
-
-impl SeedableEnv for Game4x4Env {
-    fn set_seed(&mut self, seed: u64) {
-        self.inner.seed = Some(seed);
-        self.inner.reset_internal_state();
-        self.inner.initialize_board();
-    }
-}
+pub use banqi_core::core::env::seed::{AsDarkChessRef, SeedableEnv};
 
 /// 从收集到的每步特征与 env.config 组装 `GameEpisode.nnue` 字段。
 /// 未启用收集时返回 None；env 仅用于读取 config 推导布局元信息。

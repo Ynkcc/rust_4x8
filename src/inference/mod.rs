@@ -8,7 +8,7 @@ pub mod torchscript;
 #[cfg(feature = "onnx")]
 pub mod onnx;
 
-pub mod nnue;
+pub use banqi_core::inference::nnue;
 
 #[cfg(feature = "pyo3")]
 pub use crate::bridge::python::py_evaluator::PyEvaluator;
