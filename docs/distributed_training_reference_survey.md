@@ -2,7 +2,7 @@
 
 > 调研日期：2026-09-09
 > 范围：`/home/ynk/Projects/Games-Entertainment/engine-testing` 下各分布式项目的架构对比
-> 背景：计划将 4x8 暗棋平台改为分布式训练（中心调度：2C2G 30Mbps 云服务器；存储：Cloudflare R2；worker：自有 + 朋友设备）
+> 背景：计划将 4x8 暗棋平台改为分布式训练（中心调度：2C2G 30Mbps 云服务器；存储：Cloudflare R2；worker：自有 + 朋友设备 + 免费GPU训练平台）
 
 ## 一图速览
 
