@@ -1,0 +1,9 @@
+# ---- Tauri 生成代码 / 本地产物 ----
+gen/
+target/
+
+# ---- 前端构建产物 ----
+frontend/dist/
+
+# ---- 本地 cargo 配置 ----
+.cargo/config.toml

@@ -25,6 +25,8 @@ runs_*/
 config.local.yaml
 *.local.yaml
 
+# ---- 调度器（server/）与桌面端（src-tauri/）本地忽略规则已下沉到各自目录的 .gitignore ----
+
 # ---- 训练/监控产物 ----
 *.csv
 wandb/

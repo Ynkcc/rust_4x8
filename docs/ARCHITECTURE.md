@@ -27,13 +27,20 @@
 | `Cargo.toml` | crate `banqi_4x8` + workspace root（members=`src-tauri`），edition 2024；`[lib]` crate-type=`["lib","cdylib"]`（cdylib 供 maturin） |
 | `build.rs` | ① 环境预检（pyo3 嵌入 bin 需 libpython 共享库）；② libtorch rpath/链接；③ `tonic_build` 编译 proto |
 | `pyproject.toml` | maturin 构建，`features=["pyo3-extension"]`（cdylib wheel，不链接 libpython） |
-| `src-tauri/` | 桌面 GUI 独立 crate `banqi-tauri`：`Cargo.toml`、`build.rs`（GTK/WebKit 预检 + `tauri_build::build()`）、`src/main.rs`（入口）、`tauri.conf.json`、`frontend/`、`icons/` |
+| `src-tauri/` | 桌面 GUI 独立 crate `banqi-tauri`（规划拆出为独立仓库），架构见 `src-tauri/ARCHITECTURE.md` |
 | `proto/banqi_service.proto` | 分布式自对弈 RPC 契约（4 个 RPC，见 §6.3） |
 | `plot_lr_finder.py` | LR finder 绘图脚本 |
 | `docs/` | 本文 + draft&archive + `mcts_chance_node_refactor_plan.md` + `distributed_training_reference_survey.md` |
-| `proto/scheduler.proto` | 分布式调度器契约（worker↔中心调度器，见 §6.4） |
-| `server/` | Go 中心调度器（module `banqi/server`，见 §6.4） |
-| `deploy/` | 2C2G 云服务器部署物（占位） |
+| `proto/scheduler.proto` | 分布式调度器契约（worker↔中心调度器，见 §6.4；拆分时迁入调度器仓库） |
+| `server/` | Go 中心调度器（module `banqi/server`，规划拆出为独立仓库 `banqi-scheduler`），架构见 `server/ARCHITECTURE.md` |
+
+### 2.0 仓库拆分规划（方案 A）
+
+按耦合边界拆为多个仓库，目录已预先聚集（各拆分单元自带 `.gitignore` 与 `ARCHITECTURE.md`，拆分时整体迁移即可）：
+
+1. **`banqi-scheduler`**：`server/` + `proto/scheduler.proto`（+ `deploy/` 占位）。与其他代码零耦合；唯一跨界依赖是主仓库 `build.rs` 编译 `scheduler.proto`，拆分后主仓库改为引用该仓库的 proto 副本。
+2. **`banqi-tauri`**：`src-tauri/`。已独立 crate，拆分时 path 依赖 `banqi_4x8` 改为 git 依赖。
+3. **主体仓库（本仓库保留）**：Rust `src/` + `python/` + `proto/banqi_service.proto`。**后续将进一步拆分为训练（trainer）与数据收集（collector）两个仓库**——当前耦合点：`pipeline/`、`registry/`、`bridge/`（PyO3 episode 契约）与 Python `infra/`/`runners/`，拆分前先以 `registry/`（Rust）+ `infra/`（Python）为接口边界解耦，此文档届时再拆。
 
 ### 2.1 feature 矩阵
 
@@ -146,20 +153,7 @@
 
 ## 5. Tauri 桌面端（独立 crate `src-tauri/`）
 
-`src-tauri/src/main.rs` 持有 `AppState`（环境 + 各引擎）。前端为 **Vite + Vue 3 + TypeScript** 工程（`src-tauri/frontend/`，源码 `src/`，构建产物 `dist/`，Tauri 加载 `frontendDist=./frontend/dist`，dev 经 `devUrl http://localhost:5173`）：
-
-- `src/api/types.ts` + `src/api/client.ts`：command 返回类型定义与 `invoke` 封装（`api.*`）；
-- `src/composables/`：`useGame`（对局状态/走子/高亮/日志/机器人回合）、`useSettings`（变体/对手/模型列表与参数设置）、`useMctsTree`（搜索树懒加载缓存 + 布局计算）、`useToast`、`useLogs`；
-- `src/components/`：`App`（三栏布局 + 抽屉）、`BoardView`、`ControlPanel`、`StatusPanel`、`LogPanel`、`PieceTray`、`BitboardPanel`、`MctsTreePanel`、`ToastHost`；`src/domain/pieces.ts` 棋子/位板常量与棋盘尺寸换算。
-
-`#[tauri::command]` 列表（前端经 `@tauri-apps/api/core::invoke` 调用）：
-
-- 对局：`reset_game`、`step_game`、`bot_move`、`get_game_state`、`get_move_action`、`get_opponent_type`
-- 模型：`list_models`、`load_model`
-- 引擎参数：`set_minimax_depth`、`set_mcts_iterations`、`set_engine_budget`、`set_heuristic_sims`、`set_nnue_depth`、`set_nnue_budget`
-- MCTS 树可视化（懒加载）：`mcts_get_root`、`mcts_get_children`、`mcts_get_node_detail`、`mcts_search`。MctsDL/MctsOnnx 落子后整棵 `MctsArena<DarkChessEnv>` 常驻 `AppState.mcts_tree`，前端按需逐节点拉取子边渲染（SVG 树面板，机会节点 outcome 亦懒展开）
-
-前端构建/开发命令（在 `src-tauri/frontend/` 内）：`npm run dev`（Vite dev server，端口 5173）、`npm run build`（vue-tsc 类型检查 + vite build → `dist/`）。
+已规划拆出为独立仓库（见 §2.0），完整架构（前端分层、`#[tauri::command]` 清单、构建命令）见 **`src-tauri/ARCHITECTURE.md`**。
 
 ## 6. 分布式与存储（可选路径）
 
@@ -175,17 +169,9 @@
 
 `py_data_collector` 与 Expectimax 强自对弈产 JSONL episode 文件。
 
-### 6.4 Go 中心调度器（`server/`，proto/scheduler.proto）
+### 6.4 Go 中心调度器（`server/`）
 
-调研结论（`docs/distributed_training_reference_survey.md`）落地：lczero 拉取式调度 + KataGo URL 下发/预签名直传 + fishtest/pentanomial 五项 GSPRT 判停。技术栈：Go + tonic 对位的 grpc-go + SQLite（modernc 纯 Go 驱动，WAL）+ aws-sdk-go-v2 S3 预签名（R2 兼容，凭据走标准 `AWS_*` 环境变量）。
-
-- `proto/scheduler.proto`：8 RPC——`GetTask`（worker 按机器规格拉任务：优先 gatekeeper rating，其次 best 网络 selfplay）、`ReportEpisode`（只收元数据，签发 R2 预签名 PUT，数据直传 R2）、`GetNetwork`（sha 或 best → 预签名 GET）、`RegisterNetwork`（trainer 登记新网络 → 自动创建 gatekeeper 对打；首个网络直接晋级）、`ReportMatchResult`（五项成对计数累计 → GSPRT 判停 → 晋级/拒绝 best 指针）、`Heartbeat`（worker 状态 + best sha 下发）、`SignNetworkUpload`（trainer 请求网络直传预签名 PUT）、`ListEpisodes`（trainer 游标分页拉 episode 预签名 GET 列表）。**R2 凭据只在调度器持有**，worker/trainer 零存储配置，全部经预签名 URL 上下行。
-- `server/cmd/scheduler/main.go`：入口，配置全走 `SCHEDULER_*` 环境变量（`-h` 列出）；示例配置见 `server/config.example.env`（含 R2 凭据与 GSPRT 参数说明）。
-- `server/internal/store`：SQLite 元数据（networks/matches/episodes/workers，best 指针事务切换）。
-- `server/internal/r2`：预签名 PUT/GET，键布局 `episodes/<sha>/*.jsonl.gz`、`networks/<sha>.bin`。
-- `server/internal/sprt`：五项 GSPRT（正态近似 LLR，elo0/elo1/alpha/beta 可配，含单测）。
-- `server/internal/scheduler`：gRPC 服务实现 + 任务表（内存 task_id 注册校验）。
-- 生成方式：`protoc --proto_path=proto --go_out=server --go_opt=module=banqi/server --go-grpc_out=server --go-grpc_opt=module=banqi/server scheduler.proto`。
+已规划拆出为独立仓库 `banqi-scheduler`（见 §2.0），完整架构（9 RPC 契约、internal 分层、proto 生成命令、R2 预签名直传与 GSPRT 判停）见 **`server/ARCHITECTURE.md`**。
 
 ## 7. 端到端数据流（自对弈 → 训练 → NNUE → 搜索）
 
@@ -214,4 +200,5 @@
 - 2026-09-11：新增 `docs/unified_training_architecture.md`（单机/分布式统一架构设计与实施计划：三角色 Collector/Trainer/Registry 同构、推理下沉 Rust、EpisodeStore/ModelRegistry 双实现、退役清单与进度表）。
 - 2026-09-11：分布式训练改造落地（决策：优先分布式，单机后续在其基础上改造）：Rust `registry/` 新增 `scheduler_registry.rs`（SchedulerRegistry：tonic 客户端对接 `proto/scheduler.proto` + reqwest 预签名 URL 下载网络/直传 R2）；`build.rs` 增编 scheduler.proto（依赖新增 `reqwest`/`sha2`）；`MatchResult` 新增 `game_outcomes`（rating 五项成对计数推导）；`banqi-collector` 新增 `--backend scheduler`（selfplay/rating 双任务，无任务退避轮询）。Python：`infra/` 新增 `R2EpisodeStore`（boto3）/`SchedulerModelRegistry`（上传 R2 + RegisterNetwork）与 `TRAIN_MODE=distributed`（`runners/distributed.py`，生成 `proto/scheduler_pb2*`）。Go scheduler ↔ Rust collector gRPC 互通冒烟通过；含 R2 全链路联调待 MinIO。详见 `docs/unified_training_architecture.md` 进度表。
 - 2026-09-10：Tauri 前端由原生 HTML/JS 重写为 Vite + Vue 3 + TypeScript（`frontend/` 内源码 `src/`、组件/composables/api 分层、三栏布局重构，功能与 command 接口不变；`tauri.conf.json` 改用 `frontendDist=./frontend/dist` + devUrl:5173 + beforeDev/BuildCommand）。
+- 2026-09-11：仓库拆分规划落档（方案 A，见 §2.0）：`server/` 与 `src-tauri/` 各自新增 `ARCHITECTURE.md`（内容自本文 §5/§6.4 拆出，本文改为引用）与独立 `.gitignore`（server 特有忽略规则自根 `.gitignore` 下沉）；主体仓库后续将进一步拆分 trainer/collector，接口边界为 Rust `registry/` + Python `infra/`。
 - 2026-09-11：分布式 worker 资源分配与心跳/完整性加固：Go 调度器 GetTask 按 worker 上报线程数缩放下发局数（`SCHEDULER_THREADS_BASELINE` 基准，0=不缩放）；`HeartbeatRequest` 增 `client_version`/`memory_mb`，workers 表记录版本声明（版本变更打日志，不做强校验）；ReportEpisode/ReportMatchResult 校验 task↔worker 归属；Rust `SchedulerRegistry` 后台 30s 心跳（版本声明/资源/累计局数/running_task_id，感知 best 换网与 pause）、GetTask 上报真实可用内存（/proc/meminfo）、网络文件下载与缓存命中均做 sha256 SRI 校验（不符删除缓存拒绝使用）。
