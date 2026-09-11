@@ -54,3 +54,68 @@ class LocalModelRegistry:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"等待模型超时（{timeout}s）: {self.pointer_path}")
             time.sleep(poll)
+
+
+class SchedulerModelRegistry:
+    """分布式实现：模型直传 R2 + gRPC RegisterNetwork 登记到 Go scheduler。
+
+    - publish：sha256 命名上传 `networks/<sha>.bin`（与 Go r2.NetworkKey 一致），
+      再调 RegisterNetwork（首个网络直接晋级，其后自动创建 gatekeeper 对打）；
+    - parent_sha 记录上次成功登记的 sha，作为谱系信息上报。
+    凭据走环境变量：R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET；
+    调度器地址：SCHEDULER_ENDPOINT（默认 http://127.0.0.1:50051）。
+    """
+
+    def __init__(self) -> None:
+        import boto3
+
+        account = os.environ["R2_ACCOUNT_ID"]
+        self.bucket = os.environ["R2_BUCKET"]
+        self.endpoint = os.environ.get("SCHEDULER_ENDPOINT", "http://127.0.0.1:50051")
+        self._s3 = boto3.client(
+            "s3",
+            endpoint_url=f"https://{account}.r2.cloudflarestorage.com",
+            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+            region_name="auto",
+        )
+        self.last_sha: Optional[str] = None
+
+    @staticmethod
+    def sha256_of(path: str) -> str:
+        import hashlib
+
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def latest_model_path(self) -> Optional[str]:
+        """分布式形态下 trainer 不需要从 registry 取模型，返回 None。"""
+        return None
+
+    def publish(self, model_path: str) -> None:
+        import grpc
+
+        from banqi.proto import scheduler_pb2, scheduler_pb2_grpc
+
+        sha = self.sha256_of(model_path)
+        key = f"networks/{sha}.bin"
+        self._s3.upload_file(model_path, self.bucket, key)
+        print(f"[registry] ✅ 模型已上传 R2: {key} <- {model_path}")
+
+        with grpc.insecure_channel(self.endpoint) as channel:
+            stub = scheduler_pb2_grpc.SchedulerServiceStub(channel)
+            ack = stub.RegisterNetwork(
+                scheduler_pb2.RegisterNetworkRequest(
+                    sha=sha,
+                    parent_sha=self.last_sha or "",
+                    notes=f"trainer publish {os.path.basename(model_path)}",
+                )
+            )
+        if not ack.accepted:
+            print(f"[registry] ⚠️ RegisterNetwork 被拒绝: {ack.message}")
+            return
+        self.last_sha = sha
+        print(f"[registry] ✅ 已登记网络 sha={sha}: {ack.message} {ack.match_task_hint}".rstrip())

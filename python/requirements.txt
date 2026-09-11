@@ -29,6 +29,9 @@ grpcio>=1.50.0
 grpcio-tools>=1.50.0
 protobuf>=4.20.0
 
+# 分布式存储（R2/S3 API：episode 拉取与模型上传）
+boto3>=1.34.0
+
 # --- PyO3 + maturin 集成所需 ---
 # maturin 用于编译 Rust PyO3 扩展 (不需要放到运行时 venv，但这里一起列出方便新手)
 maturin==1.14.1

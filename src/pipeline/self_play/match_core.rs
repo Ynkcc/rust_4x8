@@ -618,6 +618,9 @@ pub struct MatchResult {
     pub wins: usize,
     pub draws: usize,
     pub losses: usize,
+    /// 逐局结果（A/player_a 视角：+1 胜 / 0 和 / -1 负），顺序与对局索引一致；
+    /// rating 任务据此按成对（i 与 i+1 换色）推导五项计数。
+    pub game_outcomes: Vec<i32>,
     pub block_wr: Vec<f32>,
     pub avg_moves: f32,
 }
@@ -703,12 +706,14 @@ where
     }
 
     let avg_moves = (total_moves as f32) / (n.max(1) as f32);
+    let game_outcomes = games.iter().map(|g| g.result).collect();
     MatchResult {
         episodes,
         nnue_episodes,
         wins,
         draws,
         losses,
+        game_outcomes,
         block_wr,
         avg_moves,
     }

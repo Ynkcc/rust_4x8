@@ -5,6 +5,7 @@ main 按 config.TRAIN_MODE 分派：
   - "archive"      : 仅从冷存储归档数据训练（runners/offline.py）
   - "rule_selfplay": 纯规则（minimax/heuristic）自对弈生成数据训练（runners/offline.py）
   - "local"        : 单机双进程闭环（Rust collector 落盘 + TrainWorker 消费，runners/local_loop.py）
+  - "distributed"  : 分布式 Trainer（R2 拉 episode + RegisterNetwork，runners/distributed.py）
 
 共享基础设施（可选依赖探测 / 日志落盘 / TB 元信息 / 队列计数 / 变体维度缓存）
 统一在 runners/context.py；归档数据供给线程在 runners/archive_feeder.py。
@@ -15,6 +16,7 @@ from __future__ import annotations
 from banqi.config import Config, make_config
 
 from .context import build_const, setup_variant_logging, log_meta_tb
+from .distributed import run_distributed
 from .local_loop import run_local_loop
 from .offline import run_offline
 from .selfplay import run_selfplay
@@ -37,7 +39,9 @@ def main(variant_id: str) -> None:
         run_offline(variant_id, train_mode)
     elif train_mode == "local":
         run_local_loop(variant_id)
+    elif train_mode == "distributed":
+        run_distributed(variant_id)
     else:
         raise ValueError(
-            f"未知 TRAIN_MODE={train_mode!r}，可选: selfplay / archive / rule_selfplay / local"
+            f"未知 TRAIN_MODE={train_mode!r}，可选: selfplay / archive / rule_selfplay / local / distributed"
         )

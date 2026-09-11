@@ -63,6 +63,10 @@ mongodb = { version = "3.8", optional = true }
 bson = { version = "2.15", optional = true }
 ctrlc = "3.4"
 
+# 分布式 collector：R2 预签名 URL HTTP 上下行 + 内容 sha256 校验
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+sha2 = "0.10"
+
 # gRPC 依赖 - 用于自对弈/Python 节点通信
 tonic = "0.12"
 prost = "0.13"

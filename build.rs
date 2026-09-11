@@ -34,13 +34,17 @@ fn main() {
         }
     }
 
-    // gRPC 代码生成
+    // gRPC 代码生成（banqi_service: 旧协议 worker；scheduler: 分布式调度器客户端）
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&["proto/banqi_service.proto"], &["proto"])
+        .compile_protos(
+            &["proto/banqi_service.proto", "proto/scheduler.proto"],
+            &["proto"],
+        )
         .unwrap_or_else(|e| panic!("Failed to compile protos: {}", e));
     println!("cargo:rerun-if-changed=proto/banqi_service.proto");
+    println!("cargo:rerun-if-changed=proto/scheduler.proto");
 }
 
 // ── 环境检测：banqi-py-collector ──────────────────────────────────────────

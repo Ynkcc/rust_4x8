@@ -51,7 +51,7 @@
 | `banqi` | `banqi.rs` | — | 随机策略对局演示 |
 | `banqi-data-collector` | `data_collector.rs` | `torch`,`mongodb` | Rust 持 TorchScript 模型自对弈 → MongoDB |
 | `banqi-py-collector` | `py_data_collector.rs` | `pyo3` | 嵌入 Python 预测器自对弈 → JSONL |
-| `banqi-collector` | `collector.rs` | `onnx` | 统一 Collector 进程（`--backend local`）：LocalRegistry 模型热重载 + `run_match_core`/`OnnxEvaluator` Rust 推理自对弈 → LocalEpisodeStore jsonl.gz 落盘 |
+| `banqi-collector` | `collector.rs` | `onnx` | 统一 Collector 进程：`--backend local`（LocalRegistry 模型热重载 → Rust 推理自对弈 → LocalEpisodeStore 落盘）或 `--backend scheduler`（gRPC GetTask + R2 预签名直传，selfplay/rating 双任务） |
 | `banqi-selfplay-worker` | `selfplay_worker.rs` | — | gRPC 双角色（client+server）分布式自对弈 worker |
 | `tmp_resnet_dump` | `tmp_resnet_dump.rs` | — | ResNet 输入特征人工验证：4x4 随机对局，每手将 NN 输入解码为人类可读表述写入文件（默认 `outputs/resnet_decode_4x4.txt`） |
 | `tmp_nnue_bench` / `tmp_reach` | `tmp_*.rs` | — | NNUE 吞吐/强度临时基准工具 |
@@ -212,5 +212,5 @@
 - 2026-09-09：调度器改用 Go 实现：新增 `proto/scheduler.proto`（6 RPC）与 Go module `server/`（cmd/scheduler + internal/{store,r2,sprt,scheduler}，SQLite 元数据 + R2 预签名直传 + 五项 GSPRT 判停，含单测，构建/冒烟通过）；`deploy/` 部署物占位。见 §6.4 与 `docs/distributed_training_reference_survey.md`。
 - 2026-09-10：Tauri GUI 新增 MCTS 搜索树懒加载可视化：`GumbelConfig::with_search_scale` 公开构造器；`MctsDlPolicy`/`OnnxMctsPolicy` 落子路径改为 `bot_move` 内直接构造 `GumbelMCTS` 并将树常驻 `AppState.mcts_tree`；新增 4 个 command（§5）与前端 SVG 搜索树面板（点击展开逐节点拉取）。
 - 2026-09-11：新增 `docs/unified_training_architecture.md`（单机/分布式统一架构设计与实施计划：三角色 Collector/Trainer/Registry 同构、推理下沉 Rust、EpisodeStore/ModelRegistry 双实现、退役清单与进度表）。
-- 2026-09-11：统一架构主干落地（#1/#3/#4）：Rust 新增 `registry/` 模块（`LocalRegistry` notify 热重载 + `LocalEpisodeStore` jsonl.gz 落盘）与新 bin `banqi-collector`（`--backend local`，纯 Rust ONNX 推理，依赖新增 `notify`/`flate2`）；Python 新增 `banqi/infra/`（EpisodeStore/ModelRegistry Protocol + local 实现）与 `TRAIN_MODE=local`（`runners/local_loop.py` 单机双进程闭环，旧 selfplay 路径未动）。
+- 2026-09-11：分布式训练改造落地（决策：优先分布式，单机后续在其基础上改造）：Rust `registry/` 新增 `scheduler_registry.rs`（SchedulerRegistry：tonic 客户端对接 `proto/scheduler.proto` + reqwest 预签名 URL 下载网络/直传 R2）；`build.rs` 增编 scheduler.proto（依赖新增 `reqwest`/`sha2`）；`MatchResult` 新增 `game_outcomes`（rating 五项成对计数推导）；`banqi-collector` 新增 `--backend scheduler`（selfplay/rating 双任务，无任务退避轮询）。Python：`infra/` 新增 `R2EpisodeStore`（boto3）/`SchedulerModelRegistry`（上传 R2 + RegisterNetwork）与 `TRAIN_MODE=distributed`（`runners/distributed.py`，生成 `proto/scheduler_pb2*`）。Go scheduler ↔ Rust collector gRPC 互通冒烟通过；含 R2 全链路联调待 MinIO。详见 `docs/unified_training_architecture.md` 进度表。
 - 2026-09-10：Tauri 前端由原生 HTML/JS 重写为 Vite + Vue 3 + TypeScript（`frontend/` 内源码 `src/`、组件/composables/api 分层、三栏布局重构，功能与 command 接口不变；`tauri.conf.json` 改用 `frontendDist=./frontend/dist` + devUrl:5173 + beforeDev/BuildCommand）。

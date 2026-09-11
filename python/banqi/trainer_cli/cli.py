@@ -17,7 +17,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("variant", nargs="?", default="4x8", help="变体 id（默认 4x8）")
     p.add_argument("--train-mode", default=None,
-                   choices=["selfplay", "offline", "rule_selfplay", "archive", "local"],
+                   choices=["selfplay", "offline", "rule_selfplay", "archive", "local", "distributed"],
                    help="覆盖 config.TRAIN_MODE")
     p.add_argument("--mcts-sims", type=int, default=None, help="MCTS 模拟次数")
     p.add_argument("--games-per-iter", type=int, default=None, help="每轮对局数")

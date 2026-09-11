@@ -103,10 +103,16 @@ loop:
 | 2 | 单机切 Rust 推理：进程内 Collector + LocalStore 替代 PyO3 回调路径；validate 冒烟验证一致性 | 单机闭环无 Python 推理 | 🟡 部分（`banqi-collector` 已全程 Rust 推理；validate 一致性冒烟待跑） |
 | 3 | Python `infra/`：EpisodeStore/ModelRegistry Protocol + local 实现；Trainer 切 LocalStore | L4 接口显式化 | ✅ 已完成（`banqi/infra/` + `TRAIN_MODE=local` 走 `local_loop`） |
 | 4 | Collector bin 化（`collector/`），支持 `--backend local` | 统一采集进程 | ✅ 已完成（`src/bin/collector.rs`，bin 名 `banqi-collector`） |
-| 5 | Rust SchedulerBackend：gRPC(GetTask/ReportEpisode/ReportMatchResult/GetNetwork) + R2 直传 | 分布式 worker | 未开始 |
-| 6 | R2Store + Trainer 分布式薄壳（`trainer/gpu/`：拉 R2 数据、注册网络） | 分布式 trainer | 未开始 |
+| 5 | Rust SchedulerBackend：gRPC(GetTask/ReportEpisode/ReportMatchResult/GetNetwork) + R2 直传 + 网络下载缓存；rating 五项计数（`MatchResult.game_outcomes` 逐局结果 → 成对推导） | 分布式 worker | ✅ 已完成（`src/registry/scheduler_registry.rs` + `collector.rs` backend=scheduler；与 Go scheduler gRPC 互通冒烟通过：GetTask → no_best_network_registered → 退避） |
+| 6 | R2Store + Trainer 分布式薄壳（拉 R2 数据、注册网络） | 分布式 trainer | ✅ 已完成（`infra/episode_store.py::R2EpisodeStore`、`infra/model_registry.py::SchedulerModelRegistry`、`TRAIN_MODE=distributed` 走 `runners/distributed.py`） |
 | 7 | 目录迁移（§4）+ 退役清单执行 + ARCHITECTURE.md 改版 | 结构收敛 | 未开始 |
-| 8 | 端到端联调：本地双进程冒烟 → scheduler+R2 沙箱闭环 | 验收 | 未开始（#1–#4 主干已具备单机双进程闭环） |
+| 8 | 端到端联调：本地双进程冒烟 → scheduler+R2（MinIO 模拟）沙箱闭环（注册网络→gatekeeper→晋级→selfplay 换网） | 验收 | 🟡 部分（#5 gRPC 互通已验证；含 R2 的完整闭环待 MinIO 联调） |
+
+### 分布式部署形态（三组件各自独立启动）
+
+- **worker**（自有/朋友设备）：`banqi-collector --backend scheduler --scheduler-endpoint http://<host>:50051 --variant 4x8`；
+- **trainer**（GPU 机）：`R2_ACCOUNT_ID=... R2_BUCKET=... SCHEDULER_ENDPOINT=... python -m banqi.trainer_cli 4x8 --train-mode distributed`；
+- **调度器**：`server/cmd/scheduler`（`SCHEDULER_*` 环境变量配置，凭据走标准 `AWS_*`）。
 
 ### 验收标准
 
@@ -118,3 +124,4 @@ loop:
 
 - 2026-09-11：初版（统一架构设计 + 实施计划）。
 - 2026-09-11：主干落地 #1/#3/#4——Rust 新增 `src/registry/`（`LocalRegistry`：onnx + notify 热重载；`LocalEpisodeStore`：jsonl.gz 目录落盘，复用 `episode_to_dict_json` 契约）与新 bin `banqi-collector`（`--backend local`，`run_match_core` + `OnnxEvaluator`，纯 Rust 推理）；Python 新增 `banqi/infra/`（EpisodeStore/ModelRegistry Protocol + local 实现）与 `TRAIN_MODE=local`（`runners/local_loop.py`：collector 子进程 + TrainWorker 经 LocalStore 消费 + RegistryPublisher 指针发布线程）。旧 selfplay 路径未动，退役清单延后执行。
+- 2026-09-11：决策变更——优先分布式改造，放弃单机兼容先行；后续单机在分布式基础上改造。分布式主干落地 #5/#6：Rust 新增 `registry/scheduler_registry.rs`（SchedulerRegistry：tonic 客户端 GetTask/ReportEpisode/ReportMatchResult + reqwest 预签名 URL 下载网络/直传 R2，本地 `cache_dir/networks/<sha>.bin` 缓存，按 sha 缓存 onnx 模型）；`build.rs` 增编 `proto/scheduler.proto`；`MatchResult` 新增 `game_outcomes`（A 视角逐局结果，rating 五项计数成对推导）；`banqi-collector --backend scheduler` 支持 selfplay/rating 双任务。Python 新增 `R2EpisodeStore`（boto3 列举/下载 `episodes/` 前缀）、`SchedulerModelRegistry`（sha256 命名上传 `networks/<sha>.bin` + gRPC RegisterNetwork）、`TRAIN_MODE=distributed`（`runners/distributed.py`）。三端构建/单测通过；gRPC 互通冒烟通过。待办：#7 目录迁移与退役清单、#8 MinIO 全链路联调。
