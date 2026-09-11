@@ -51,6 +51,7 @@
 | `banqi` | `banqi.rs` | — | 随机策略对局演示 |
 | `banqi-data-collector` | `data_collector.rs` | `torch`,`mongodb` | Rust 持 TorchScript 模型自对弈 → MongoDB |
 | `banqi-py-collector` | `py_data_collector.rs` | `pyo3` | 嵌入 Python 预测器自对弈 → JSONL |
+| `banqi-collector` | `collector.rs` | `onnx` | 统一 Collector 进程（`--backend local`）：LocalRegistry 模型热重载 + `run_match_core`/`OnnxEvaluator` Rust 推理自对弈 → LocalEpisodeStore jsonl.gz 落盘 |
 | `banqi-selfplay-worker` | `selfplay_worker.rs` | — | gRPC 双角色（client+server）分布式自对弈 worker |
 | `tmp_resnet_dump` | `tmp_resnet_dump.rs` | — | ResNet 输入特征人工验证：4x4 随机对局，每手将 NN 输入解码为人类可读表述写入文件（默认 `outputs/resnet_decode_4x4.txt`） |
 | `tmp_nnue_bench` / `tmp_reach` | `tmp_*.rs` | — | NNUE 吞吐/强度临时基准工具 |
@@ -102,7 +103,14 @@
 - 函数：`run_native_match`、`run_python_match`（统一对局主干）、`run_expectimax_self_play`（NNUE 训练回环）、`describe_record`、`decode_scalar_state`、`variant_dims`、`ttt_mcts_search`、`run_ttt_self_play_with_predictor`、数据增强函数组（`augment.rs::register_augment_functions`）；
 - 子模块：`chess_env.rs`（环境包装）、`eval.rs`（对局）、`expectimax.rs`、`self_play/`（配置）、`py_evaluator.rs`（Python 回调评估器）、`decode.rs`、`augment.rs`、`variant.rs`、`ttt.rs`。
 
-### 3.6 `utils/`
+### 3.6 `registry/` — 协作接口层（统一训练架构 L4，见 `docs/unified_training_architecture.md`）
+
+角色同构（Collector/Trainer/Registry）的单机本地实现；分布式 Scheduler/R2 实现后续接入。
+
+- `local_registry.rs`（feature=`onnx`）：`LocalRegistry`——watch onnx 模型路径（notify），`ensure_model()` 惰性热重载（失败保留旧模型）；`CollectorTask` 描述一次采集任务；
+- `local_store.rs`：`LocalEpisodeStore`——episode 按 `<dir>/<variant>/iter{N}_{ts}_w{id}.jsonl.gz` 落盘，字段复用 `serialize::episode_to_dict_json` 契约（与 PyO3/gRPC 一致）。
+
+### 3.7 `utils/`
 
 `memory_estimator.rs` 等基础设施。
 
@@ -110,7 +118,8 @@
 
 ### 4.1 核心训练闭环
 
-- `trainer_cli/`：训练总入口。`cli.py`（`python -m banqi.trainer_cli <variant> [options]`：`--train-mode/--mcts-sims/--games-per-iter/--train-steps` 等）、`config_resolver.py`、`__main__.py`、`runners/`：`selfplay.py`（自对弈 runner，内常驻 `NnueDistillWorker`）、`expectimax_sidecar.py`（低频 NNUE 强自对弈 sidecar，监听 `ckpt_event`）、`archive_feeder.py`、`offline.py`、`context.py`。
+- `trainer_cli/`：训练总入口。`cli.py`（`python -m banqi.trainer_cli <variant> [options]`：`--train-mode/--mcts-sims/--games-per-iter/--train-steps` 等）、`config_resolver.py`、`__main__.py`、`runners/`：`selfplay.py`（自对弈 runner，内常驻 `NnueDistillWorker`）、`expectimax_sidecar.py`（低频 NNUE 强自对弈 sidecar，监听 `ckpt_event`）、`local_loop.py`（`TRAIN_MODE=local` 单机双进程闭环：collector 子进程 + TrainWorker 经 LocalEpisodeStore 消费 + RegistryPublisher 指针发布）、`archive_feeder.py`、`offline.py`、`context.py`。
+- `infra/`：L4 协作接口（统一训练架构）——`episode_store.py`（`EpisodeStore` Protocol + `LocalEpisodeStore` 目录/jsonl.gz 扫描，队列语义 get/get_nowait/qsize 可直连 TrainWorker）、`model_registry.py`（`ModelRegistry` Protocol + `LocalModelRegistry` 指针发布）；r2/scheduler 实现后续接入。
 - `config.py` + `config.default.yaml` / `config.local.yaml`：分层配置（local 覆盖 default）。
 - `variant.py`：变体声明单一来源。
 - `train.py` / `training_service.py` / `training/`：`worker.py`(`TrainWorker`)、`buffer.py`(`episode_to_samples`)、`losses.py`(`run_training_epochs`)、`lr_schedule.py`、`augment.py`、`eval.py`。
@@ -203,4 +212,5 @@
 - 2026-09-09：调度器改用 Go 实现：新增 `proto/scheduler.proto`（6 RPC）与 Go module `server/`（cmd/scheduler + internal/{store,r2,sprt,scheduler}，SQLite 元数据 + R2 预签名直传 + 五项 GSPRT 判停，含单测，构建/冒烟通过）；`deploy/` 部署物占位。见 §6.4 与 `docs/distributed_training_reference_survey.md`。
 - 2026-09-10：Tauri GUI 新增 MCTS 搜索树懒加载可视化：`GumbelConfig::with_search_scale` 公开构造器；`MctsDlPolicy`/`OnnxMctsPolicy` 落子路径改为 `bot_move` 内直接构造 `GumbelMCTS` 并将树常驻 `AppState.mcts_tree`；新增 4 个 command（§5）与前端 SVG 搜索树面板（点击展开逐节点拉取）。
 - 2026-09-11：新增 `docs/unified_training_architecture.md`（单机/分布式统一架构设计与实施计划：三角色 Collector/Trainer/Registry 同构、推理下沉 Rust、EpisodeStore/ModelRegistry 双实现、退役清单与进度表）。
+- 2026-09-11：统一架构主干落地（#1/#3/#4）：Rust 新增 `registry/` 模块（`LocalRegistry` notify 热重载 + `LocalEpisodeStore` jsonl.gz 落盘）与新 bin `banqi-collector`（`--backend local`，纯 Rust ONNX 推理，依赖新增 `notify`/`flate2`）；Python 新增 `banqi/infra/`（EpisodeStore/ModelRegistry Protocol + local 实现）与 `TRAIN_MODE=local`（`runners/local_loop.py` 单机双进程闭环，旧 selfplay 路径未动）。
 - 2026-09-10：Tauri 前端由原生 HTML/JS 重写为 Vite + Vue 3 + TypeScript（`frontend/` 内源码 `src/`、组件/composables/api 分层、三栏布局重构，功能与 command 接口不变；`tauri.conf.json` 改用 `frontendDist=./frontend/dist` + devUrl:5173 + beforeDev/BuildCommand）。

@@ -13,4 +13,5 @@ pub mod core;
 pub mod engine;
 pub mod inference;
 pub mod pipeline;
+pub mod registry;
 pub mod utils;

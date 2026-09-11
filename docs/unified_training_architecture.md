@@ -99,14 +99,14 @@ loop:
 
 | # | 任务 | 产出 | 状态 |
 |---|---|---|---|
-| 1 | Rust LocalRegistry：onnx 加载 + notify 热重载，接入自对弈主干 | collector 模型热更新能力 | 未开始 |
-| 2 | 单机切 Rust 推理：进程内 Collector + LocalStore 替代 PyO3 回调路径；validate 冒烟验证一致性 | 单机闭环无 Python 推理 | 未开始 |
-| 3 | Python `infra/`：EpisodeStore/ModelRegistry Protocol + local 实现；Trainer 切 LocalStore | L4 接口显式化 | 未开始 |
-| 4 | Collector bin 化（`collector/`），支持 `--backend local` | 统一采集进程 | 未开始 |
+| 1 | Rust LocalRegistry：onnx 加载 + notify 热重载，接入自对弈主干 | collector 模型热更新能力 | ✅ 已完成（`src/registry/local_registry.rs`） |
+| 2 | 单机切 Rust 推理：进程内 Collector + LocalStore 替代 PyO3 回调路径；validate 冒烟验证一致性 | 单机闭环无 Python 推理 | 🟡 部分（`banqi-collector` 已全程 Rust 推理；validate 一致性冒烟待跑） |
+| 3 | Python `infra/`：EpisodeStore/ModelRegistry Protocol + local 实现；Trainer 切 LocalStore | L4 接口显式化 | ✅ 已完成（`banqi/infra/` + `TRAIN_MODE=local` 走 `local_loop`） |
+| 4 | Collector bin 化（`collector/`），支持 `--backend local` | 统一采集进程 | ✅ 已完成（`src/bin/collector.rs`，bin 名 `banqi-collector`） |
 | 5 | Rust SchedulerBackend：gRPC(GetTask/ReportEpisode/ReportMatchResult/GetNetwork) + R2 直传 | 分布式 worker | 未开始 |
 | 6 | R2Store + Trainer 分布式薄壳（`trainer/gpu/`：拉 R2 数据、注册网络） | 分布式 trainer | 未开始 |
 | 7 | 目录迁移（§4）+ 退役清单执行 + ARCHITECTURE.md 改版 | 结构收敛 | 未开始 |
-| 8 | 端到端联调：本地双进程冒烟 → scheduler+R2 沙箱闭环 | 验收 | 未开始 |
+| 8 | 端到端联调：本地双进程冒烟 → scheduler+R2 沙箱闭环 | 验收 | 未开始（#1–#4 主干已具备单机双进程闭环） |
 
 ### 验收标准
 
@@ -117,3 +117,4 @@ loop:
 ## 变更记录
 
 - 2026-09-11：初版（统一架构设计 + 实施计划）。
+- 2026-09-11：主干落地 #1/#3/#4——Rust 新增 `src/registry/`（`LocalRegistry`：onnx + notify 热重载；`LocalEpisodeStore`：jsonl.gz 目录落盘，复用 `episode_to_dict_json` 契约）与新 bin `banqi-collector`（`--backend local`，`run_match_core` + `OnnxEvaluator`，纯 Rust 推理）；Python 新增 `banqi/infra/`（EpisodeStore/ModelRegistry Protocol + local 实现）与 `TRAIN_MODE=local`（`runners/local_loop.py`：collector 子进程 + TrainWorker 经 LocalStore 消费 + RegistryPublisher 指针发布线程）。旧 selfplay 路径未动，退役清单延后执行。

@@ -30,6 +30,13 @@ name = "banqi-py-collector"
 path = "src/bin/py_data_collector.rs"
 required-features = ["pyo3"]
 
+# ── banqi-collector ────────────────────────────────────────────────────────
+# 统一采集进程（Collector）：LocalRegistry 模型热重载 + LocalEpisodeStore 落盘
+[[bin]]
+name = "banqi-collector"
+path = "src/bin/collector.rs"
+required-features = ["onnx"]
+
 # ── banqi-selfplay-worker ──────────────────────────────────────────────────
 # 评估器为纯神经网络（无启发式兜底），仅支持 torch 构建
 [[bin]]
@@ -50,6 +57,8 @@ serde_yaml = "0.9"
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 num_cpus = "1.17"
+notify = "7"
+flate2 = "1"
 mongodb = { version = "3.8", optional = true }
 bson = { version = "2.15", optional = true }
 ctrlc = "3.4"
