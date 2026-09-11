@@ -177,7 +177,10 @@ fn run_scheduler(args: Args, mut config: SelfPlayConfig) -> Result<()> {
     let mut iteration: usize = 0;
     while args.iterations == 0 || iteration < args.iterations {
         let task = match registry.get_task()? {
-            Some(t) => t,
+            Some(t) => {
+                registry.set_running_task(&t.task_id);
+                t
+            }
             None => {
                 std::thread::sleep(BACKOFF);
                 continue;
@@ -229,6 +232,7 @@ fn run_scheduler(args: Args, mut config: SelfPlayConfig) -> Result<()> {
                     avg_steps(&result.episodes),
                     started.elapsed().as_secs_f64()
                 );
+                registry.add_completed_games(result.episodes.len());
             }
             TaskKind::TaskRating => {
                 let candidate = registry.model(&task.network_sha)?;
@@ -255,6 +259,7 @@ fn run_scheduler(args: Args, mut config: SelfPlayConfig) -> Result<()> {
                     pairs,
                     started.elapsed().as_secs_f64()
                 );
+                registry.add_completed_games(n);
                 registry.report_match_result(
                     &task.task_id,
                     &task.network_sha,

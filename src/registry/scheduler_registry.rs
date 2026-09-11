@@ -7,8 +7,9 @@
 // 模型换网感知：GetTask 返回的 best sha 变化即触发新模型下载加载。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -22,8 +23,12 @@ pub mod pb {
 }
 
 use pb::scheduler_service_client::SchedulerServiceClient;
-use pb::{EpisodeMeta, MatchResult as PbMatchResult, NetworkRequest, TaskKind, TaskRequest};
+use pb::{EpisodeMeta, HeartbeatRequest, MatchResult as PbMatchResult, NetworkRequest, TaskKind, TaskRequest};
 
+/// 心跳间隔
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
 pub struct SchedulerConfig {
     pub endpoint: String,
     pub worker_id: String,
@@ -52,6 +57,10 @@ pub struct SchedulerRegistry {
     models: HashMap<String, Arc<OnnxModel>>,
     /// 当前持有的网络 sha（GetTask 时上报，服务端据此免发下载 URL）
     current_network: String,
+    /// 心跳共享状态：累计完成局数
+    completed_games: Arc<AtomicU64>,
+    /// 心跳共享状态：当前执行中的 task_id
+    running_task_id: Arc<Mutex<String>>,
 }
 
 impl SchedulerRegistry {
@@ -65,13 +74,33 @@ impl SchedulerRegistry {
             .timeout(Duration::from_secs(300))
             .build()
             .context("构建 HTTP 客户端失败")?;
+        let completed_games = Arc::new(AtomicU64::new(0));
+        let running_task_id = Arc::new(Mutex::new(String::new()));
+        spawn_heartbeat(
+            rt.handle().clone(),
+            cfg.clone(),
+            Arc::clone(&completed_games),
+            Arc::clone(&running_task_id),
+        );
         Ok(Self {
             rt,
             http,
             cfg,
             models: HashMap::new(),
             current_network: String::new(),
+            completed_games,
+            running_task_id,
         })
+    }
+
+    /// 标记当前执行中的任务（心跳上报 running_task_id）
+    pub fn set_running_task(&self, task_id: &str) {
+        *self.running_task_id.lock().unwrap() = task_id.to_string();
+    }
+
+    /// 累加已完成局数（心跳上报）
+    pub fn add_completed_games(&self, n: usize) {
+        self.completed_games.fetch_add(n as u64, Ordering::Relaxed);
     }
 
     fn connect(&self) -> Result<SchedulerServiceClient<Channel>> {
@@ -90,7 +119,7 @@ impl SchedulerRegistry {
             worker_id: self.cfg.worker_id.clone(),
             client_version: self.cfg.client_version.clone(),
             threads: num_cpus::get() as i32,
-            memory_mb: 0,
+            memory_mb: available_memory_mb(),
             current_network: self.current_network.clone(),
         };
         let resp = self
@@ -142,15 +171,29 @@ impl SchedulerRegistry {
     }
 
     /// 下载（若本地缓存缺失）指定 sha 的网络文件，并更新 current_network。
+    /// SRI 完整性校验：缓存命中与下载后都做 sha256 比对，不符则删除缓存并拒绝使用。
     fn ensure_downloaded(&mut self, sha: &str, url: &str) -> Result<()> {
         let path = self.network_path(sha);
+        if path.is_file() {
+            if let Err(e) = verify_file_sha256(&path, sha) {
+                println!(
+                    "[scheduler] ⚠️ 缓存网络校验失败，删除并重新下载: {} ({e:#})",
+                    path.display()
+                );
+                let _ = std::fs::remove_file(&path);
+            }
+        }
         if !path.is_file() {
             if url.is_empty() {
                 anyhow::bail!("网络 {sha} 本地无缓存且服务端未下发下载 URL");
             }
             self.download(url, &path)
                 .with_context(|| format!("下载网络失败: {sha}"))?;
-            println!("[scheduler] ✅ 网络已下载: {} -> {}", sha, path.display());
+            if let Err(e) = verify_file_sha256(&path, sha) {
+                let _ = std::fs::remove_file(&path);
+                return Err(anyhow::anyhow!("下载的网络 SRI 校验失败 (sha={sha}): {e:#}"));
+            }
+            println!("[scheduler] ✅ 网络已下载并校验: {} -> {}", sha, path.display());
         }
         self.current_network = sha.to_string();
         Ok(())
@@ -313,4 +356,72 @@ impl SchedulerRegistry {
 fn hex_sha256(data: &[u8]) -> String {
     let digest = Sha256::digest(data);
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// SRI：文件内容 sha256 是否等于期望的 hex sha（大小写不敏感）。
+fn verify_file_sha256(path: &Path, expect_sha: &str) -> Result<()> {
+    let data = std::fs::read(path).with_context(|| format!("读取网络文件失败: {}", path.display()))?;
+    let actual = hex_sha256(&data);
+    if !actual.eq_ignore_ascii_case(expect_sha) {
+        anyhow::bail!("sha256 不匹配: 期望 {expect_sha} 实际 {actual}");
+    }
+    Ok(())
+}
+
+/// 可用内存（MB）：Linux 读 /proc/meminfo MemAvailable，失败返回 0。
+fn available_memory_mb() -> i64 {
+    let Ok(s) = std::fs::read_to_string("/proc/meminfo") else {
+        return 0;
+    };
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let kb: i64 = rest.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0);
+            return kb / 1024;
+        }
+    }
+    0
+}
+
+/// 后台心跳：周期上报版本声明/资源/进度，日志感知 best 网络变化与暂停指令。
+fn spawn_heartbeat(
+    handle: tokio::runtime::Handle,
+    cfg: SchedulerConfig,
+    completed_games: Arc<AtomicU64>,
+    running_task_id: Arc<Mutex<String>>,
+) {
+    handle.spawn(async move {
+        let mut last_best = String::new();
+        loop {
+            tokio::time::sleep(HEARTBEAT_INTERVAL).await;
+            let req = HeartbeatRequest {
+                worker_id: cfg.worker_id.clone(),
+                current_threads: num_cpus::get() as i32,
+                completed_games: completed_games.load(Ordering::Relaxed) as i32,
+                running_task_id: running_task_id.lock().unwrap().clone(),
+                client_version: cfg.client_version.clone(),
+                memory_mb: available_memory_mb(),
+            };
+            let result = match SchedulerServiceClient::connect(cfg.endpoint.clone()).await {
+                Ok(mut client) => client.heartbeat(req).await.map(|r| r.into_inner()),
+                Err(e) => Err(tonic::Status::unknown(format!("connect: {e}"))),
+            };
+            match result {
+                Ok(reply) => {
+                    if !last_best.is_empty() && reply.best_network != last_best {
+                        println!(
+                            "[heartbeat] 🔄 best 网络变化: {last_best} -> {}（下次 GetTask 生效）",
+                            reply.best_network
+                        );
+                    }
+                    if reply.pause_self_play {
+                        println!("[heartbeat] ⏸️ 服务端下发 pause_self_play");
+                    }
+                    last_best = reply.best_network;
+                }
+                Err(status) => {
+                    println!("[heartbeat] 上报失败（将重试）: {status}");
+                }
+            }
+        }
+    });
 }

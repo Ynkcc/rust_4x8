@@ -115,12 +115,14 @@ message MatchResultAck {
   string best_sha = 5;          // 晋级后的 best（未变则当前 best）
 }
 
-// 心跳 + 控制参数
+// 心跳 + 控制参数（worker 周期上报资源与版本声明）
 message HeartbeatRequest {
   string worker_id = 1;
   int32 current_threads = 2;
   int32 completed_games = 3;
   string running_task_id = 4;
+  string client_version = 5;    // collector 版本声明（仅记录/展示，不做强校验）
+  int64 memory_mb = 6;          // 可用内存
 }
 
 message HeartbeatReply {
