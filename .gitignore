@@ -46,4 +46,5 @@ python/banqi/proto/banqi_service_pb2.py
 
 docs/draft&archive
 
-python/banqi/proto
+python/banqi/proto/
+server/pb/

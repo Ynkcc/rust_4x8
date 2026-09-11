@@ -131,11 +131,53 @@ message HeartbeatReply {
   string best_network = 5;      // 当前 best sha（供 worker 判断是否换网）
 }
 
+// trainer 请求签发网络上传预签名 PUT（R2 凭据只在调度器持有，trainer 零配置）
+message SignNetworkUploadRequest {
+  string trainer_id = 1;
+  string sha = 2;               // 网络内容 sha256（决定对象键与去重）
+  int64 content_length = 3;
+  string content_sha256 = 4;
+}
+
+message SignNetworkUploadAck {
+  bool accepted = 1;
+  string message = 2;
+  string upload_url = 3;        // 预签名 PUT；accepted=false 时为空
+  string object_key = 4;        // networks/<sha>.bin
+}
+
+// trainer 拉取已登记 episode 的预签名 GET 列表（游标分页）
+message ListEpisodesRequest {
+  int32 limit = 1;              // 单次最多返回条数（0 = 服务端默认）
+  string after_key = 2;         // 游标：仅返回 object_key 字典序大于它的对象
+}
+
+message EpisodeObject {
+  string object_key = 1;
+  string download_url = 2;
+  int64 size = 3;
+}
+
+message ListEpisodesReply {
+  repeated EpisodeObject objects = 1;
+  bool has_more = 2;
+}
+
+// 调度器全局信息（trainer 启动时获取变体，无需命令行传入）
+message GetInfoRequest {}
+
+message GetInfoReply {
+  string variant = 1;
+}
+
 service SchedulerService {
+  rpc GetInfo (GetInfoRequest) returns (GetInfoReply);
   rpc GetTask (TaskRequest) returns (TaskResponse);
   rpc ReportEpisode (EpisodeMeta) returns (EpisodeAck);
   rpc GetNetwork (NetworkRequest) returns (NetworkInfo);
   rpc RegisterNetwork (RegisterNetworkRequest) returns (RegisterNetworkAck);
   rpc ReportMatchResult (MatchResult) returns (MatchResultAck);
   rpc Heartbeat (HeartbeatRequest) returns (HeartbeatReply);
+  rpc SignNetworkUpload (SignNetworkUploadRequest) returns (SignNetworkUploadAck);
+  rpc ListEpisodes (ListEpisodesRequest) returns (ListEpisodesReply);
 }

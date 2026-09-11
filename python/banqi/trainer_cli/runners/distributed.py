@@ -19,7 +19,7 @@ import threading
 import time
 
 from banqi.config import Config, make_config
-from banqi.infra import R2EpisodeStore, SchedulerModelRegistry
+from banqi.infra import SchedulerEpisodeStore, SchedulerModelRegistry
 from banqi.memory_guard import start_memory_guard
 from banqi.tb_logger import close_summary_writer, init_summary_writer
 from banqi.training import TrainWorker
@@ -47,7 +47,7 @@ def run_distributed(variant_id: str) -> None:
 
     start_memory_guard()
 
-    store = R2EpisodeStore()
+    store = SchedulerEpisodeStore()
     registry = SchedulerModelRegistry()
     counting_q = CountingQueue(store)
 
@@ -55,8 +55,8 @@ def run_distributed(variant_id: str) -> None:
     sep = "=" * 56
     print(sep)
     print(f"  🚀 分布式 Trainer 启动（变体 {variant_id}，无 Collector）")
-    print(f"  EPISODE_SOURCE = R2 episodes/（bucket={store.bucket}）")
-    print(f"  SCHEDULER      = {registry.endpoint}（新模型 RegisterNetwork）")
+    print(f"  EPISODE_SOURCE = scheduler ListEpisodes（预签名 GET 拉取）")
+    print(f"  SCHEDULER      = {registry.endpoint}（SignNetworkUpload + RegisterNetwork）")
     print(f"  WATCH ONNX     = {onnx_path}")
     print(sep)
 

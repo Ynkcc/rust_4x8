@@ -32,7 +32,7 @@ use banqi_4x8::registry::scheduler_registry::pb::TaskKind;
 #[derive(Parser, Debug)]
 #[command(name = "banqi-collector", about = "统一自对弈采集进程（Collector）")]
 struct Args {
-    /// 变体 id：4x8 / 4x4 / mini
+    /// 变体 id：4x8 / 4x4 / mini（backend=local 使用；backend=scheduler 由服务端下发）
     #[arg(long, default_value = "4x8")]
     variant: String,
     /// 协作后端：local（单机） / scheduler（分布式）
@@ -158,7 +158,7 @@ fn run_scheduler(args: Args, mut config: SelfPlayConfig) -> Result<()> {
     let mut registry = SchedulerRegistry::new(SchedulerConfig {
         endpoint: args.scheduler_endpoint.clone(),
         worker_id: if args.worker_id.is_empty() {
-            format!("{}-{}", args.variant, std::process::id())
+            format!("worker-{}", std::process::id())
         } else {
             args.worker_id.clone()
         },
@@ -169,8 +169,8 @@ fn run_scheduler(args: Args, mut config: SelfPlayConfig) -> Result<()> {
 
     println!("=== banqi-collector 启动（scheduler） ===");
     println!(
-        "variant={} endpoint={} cache={} threads={}",
-        args.variant, args.scheduler_endpoint, args.cache_dir, pool.current_num_threads()
+        "endpoint={} cache={} threads={}（variant 由服务端 GetTask 下发）",
+        args.scheduler_endpoint, args.cache_dir, pool.current_num_threads()
     );
 
     const BACKOFF: Duration = Duration::from_secs(30);
@@ -195,7 +195,7 @@ fn run_scheduler(args: Args, mut config: SelfPlayConfig) -> Result<()> {
             TaskKind::TaskSelfplay => {
                 let model = registry.model(&task.network_sha)?;
                 let result = run_variant_dispatch(
-                    &args.variant,
+                    &task.variant,
                     Arc::clone(&model),
                     Arc::clone(&model),
                     &config,
@@ -236,7 +236,7 @@ fn run_scheduler(args: Args, mut config: SelfPlayConfig) -> Result<()> {
                 // 换色配对要求偶数局
                 let n = (task.games - task.games % 2).max(2);
                 let result = run_variant_dispatch(
-                    &args.variant,
+                    &task.variant,
                     candidate,
                     opponent,
                     &config,

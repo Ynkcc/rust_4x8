@@ -110,9 +110,9 @@ loop:
 
 ### 分布式部署形态（三组件各自独立启动）
 
-- **worker**（自有/朋友设备）：`banqi-collector --backend scheduler --scheduler-endpoint http://<host>:50051 --variant 4x8`；
-- **trainer**（GPU 机）：`R2_ACCOUNT_ID=... R2_BUCKET=... SCHEDULER_ENDPOINT=... python -m banqi.trainer_cli 4x8 --train-mode distributed`；
-- **调度器**：`server/cmd/scheduler`（`SCHEDULER_*` 环境变量配置，凭据走标准 `AWS_*`）。
+- **worker**（自有/朋友设备）：`banqi-collector --backend scheduler --scheduler-endpoint http://<host>:50051`（零凭据，变体由 `GetTask` 的 `SelfPlayParams.variant` 下发）；
+- **trainer**（GPU 机）：`SCHEDULER_ENDPOINT=http://<host>:50051 python -m banqi.trainer_cli --train-mode distributed`（零凭据，变体由调度器 `GetInfo` 下发；上下行经 `SignNetworkUpload`/`ListEpisodes` 预签名 URL）；
+- **调度器**：`server/cmd/scheduler`（`SCHEDULER_*` 环境变量配置，变体由 `SCHEDULER_VARIANT` 指定，凭据走标准 `AWS_*`）。
 
 ### 验收标准
 
@@ -124,4 +124,6 @@ loop:
 
 - 2026-09-11：初版（统一架构设计 + 实施计划）。
 - 2026-09-11：主干落地 #1/#3/#4——Rust 新增 `src/registry/`（`LocalRegistry`：onnx + notify 热重载；`LocalEpisodeStore`：jsonl.gz 目录落盘，复用 `episode_to_dict_json` 契约）与新 bin `banqi-collector`（`--backend local`，`run_match_core` + `OnnxEvaluator`，纯 Rust 推理）；Python 新增 `banqi/infra/`（EpisodeStore/ModelRegistry Protocol + local 实现）与 `TRAIN_MODE=local`（`runners/local_loop.py`：collector 子进程 + TrainWorker 经 LocalStore 消费 + RegistryPublisher 指针发布线程）。旧 selfplay 路径未动，退役清单延后执行。
-- 2026-09-11：决策变更——优先分布式改造，放弃单机兼容先行；后续单机在分布式基础上改造。分布式主干落地 #5/#6：Rust 新增 `registry/scheduler_registry.rs`（SchedulerRegistry：tonic 客户端 GetTask/ReportEpisode/ReportMatchResult + reqwest 预签名 URL 下载网络/直传 R2，本地 `cache_dir/networks/<sha>.bin` 缓存，按 sha 缓存 onnx 模型）；`build.rs` 增编 `proto/scheduler.proto`；`MatchResult` 新增 `game_outcomes`（A 视角逐局结果，rating 五项计数成对推导）；`banqi-collector --backend scheduler` 支持 selfplay/rating 双任务。Python 新增 `R2EpisodeStore`（boto3 列举/下载 `episodes/` 前缀）、`SchedulerModelRegistry`（sha256 命名上传 `networks/<sha>.bin` + gRPC RegisterNetwork）、`TRAIN_MODE=distributed`（`runners/distributed.py`）。三端构建/单测通过；gRPC 互通冒烟通过。待办：#7 目录迁移与退役清单、#8 MinIO 全链路联调。
+- 2026-09-11：决策变更——优先分布式改造，放弃单机兼容先行；后续单机在分布式基础上改造。分布式主干落地 #5/#6：Rust 新增 `registry/scheduler_registry.rs`（SchedulerRegistry：tonic 客户端 GetTask/ReportEpisode/ReportMatchResult + reqwest 预签名 URL 下载网络/直传 R2，本地 `cache_dir/networks/<sha>.bin` 缓存，按 sha 缓存 onnx 模型）；`build.rs` 增编 `proto/scheduler.proto`；`MatchResult` 新增 `game_outcomes`（A 视角逐局结果，rating 五项计数成对推导）；`banqi-collector --backend scheduler` 支持 selfplay/rating 双任务。Python 新增 `SchedulerEpisodeStore`/`SchedulerModelRegistry` 与 `TRAIN_MODE=distributed`（`runners/distributed.py`）。三端构建/单测通过；gRPC 互通冒烟通过。待办：#7 目录迁移与退役清单、#8 MinIO 全链路联调。
+- 2026-09-11：配置收敛到调度器单点（R2 凭据只在调度器持有）：`scheduler.proto` 增至 8 RPC——新增 `SignNetworkUpload`（trainer 请求网络直传预签名 PUT）与 `ListEpisodes`（游标分页下发 episode 预签名 GET 列表，Go store 增 `ListEpisodeKeys`）；Python `SchedulerEpisodeStore`（gRPC 游标 + urllib 下载，替代 boto3）/`SchedulerModelRegistry`（Sign → PUT → RegisterNetwork）全面去 boto3/R2 环境变量依赖，trainer 仅需 `SCHEDULER_ENDPOINT`；requirements 移除 boto3。冒烟：无效 sha 拒绝、有效请求到达预签名环节、ListEpisodes 空表返回正常。
+- 2026-09-11：变体类型改由服务端下发——`scheduler.proto` 新增 `GetInfo` RPC（返回 `variant`，共 9 RPC）；Go 调度器增 `SCHEDULER_VARIANT` 配置，selfplay/rating 任务参数与 GetInfo 均使用该值；Rust `SchedulerTask` 增 `variant` 字段（缺省/空值报错），`banqi-collector --backend scheduler` 分支全部改用下发变体（`--variant` 仅 local 后端使用）；Python 新增 `infra.scheduler_variant()`（GetInfo 助手），`--train-mode distributed` 启动时忽略命令行位置变体、由调度器下发。三端 pb 重新生成，构建通过。

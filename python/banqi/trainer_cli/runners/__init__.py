@@ -40,7 +40,13 @@ def main(variant_id: str) -> None:
     elif train_mode == "local":
         run_local_loop(variant_id)
     elif train_mode == "distributed":
-        run_distributed(variant_id)
+        # 分布式形态：变体由调度器下发（GetInfo），忽略命令行位置参数
+        from banqi.infra import scheduler_variant
+
+        server_variant = scheduler_variant()
+        if server_variant != variant_id:
+            print(f"[distributed] 变体由调度器下发: {server_variant}（命令行传入 {variant_id} 被忽略）")
+        run_distributed(server_variant)
     else:
         raise ValueError(
             f"未知 TRAIN_MODE={train_mode!r}，可选: selfplay / archive / rule_selfplay / local / distributed"

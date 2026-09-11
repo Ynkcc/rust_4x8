@@ -41,6 +41,7 @@ pub struct SchedulerTask {
     pub opponent_sha: String,
     pub games: usize,
     pub mcts_sims: usize,
+    pub variant: String,
 }
 
 pub struct SchedulerRegistry {
@@ -108,10 +109,15 @@ impl SchedulerRegistry {
         // 主网络：sha 变化或本地无缓存时经预签名 URL 下载
         self.ensure_downloaded(&resp.network_sha, &resp.network_url)?;
 
-        let mcts_sims = resp
-            .params
-            .as_ref()
-            .map_or(0, |p| p.mcts_sims.max(0) as usize);
+        let (mcts_sims, variant) = resp.params.as_ref().map_or((0, String::new()), |p| {
+            (
+                p.mcts_sims.max(0) as usize,
+                p.variant.trim().to_lowercase(),
+            )
+        });
+        if variant.is_empty() {
+            anyhow::bail!("服务端未下发变体（SelfPlayParams.variant 为空），请升级调度器并配置 SCHEDULER_VARIANT");
+        }
 
         let task = SchedulerTask {
             task_id: resp.task_id.clone(),
@@ -120,6 +126,7 @@ impl SchedulerRegistry {
             opponent_sha: resp.opponent_sha.clone(),
             games: resp.games.max(0) as usize,
             mcts_sims,
+            variant,
         };
 
         // rating 任务：对手网络同样需就绪
@@ -128,8 +135,8 @@ impl SchedulerRegistry {
         }
 
         println!(
-            "[scheduler] 任务 task={} kind={:?} network={} opponent={} games={}",
-            task.task_id, task.kind, task.network_sha, task.opponent_sha, task.games
+            "[scheduler] 任务 task={} kind={:?} variant={} network={} opponent={} games={}",
+            task.task_id, task.kind, task.variant, task.network_sha, task.opponent_sha, task.games
         );
         Ok(Some(task))
     }

@@ -179,8 +179,8 @@
 
 调研结论（`docs/distributed_training_reference_survey.md`）落地：lczero 拉取式调度 + KataGo URL 下发/预签名直传 + fishtest/pentanomial 五项 GSPRT 判停。技术栈：Go + tonic 对位的 grpc-go + SQLite（modernc 纯 Go 驱动，WAL）+ aws-sdk-go-v2 S3 预签名（R2 兼容，凭据走标准 `AWS_*` 环境变量）。
 
-- `proto/scheduler.proto`：6 RPC——`GetTask`（worker 按机器规格拉任务：优先 gatekeeper rating，其次 best 网络 selfplay）、`ReportEpisode`（只收元数据，签发 R2 预签名 PUT，数据直传 R2）、`GetNetwork`（sha 或 best → 预签名 GET）、`RegisterNetwork`（trainer 登记新网络 → 自动创建 gatekeeper 对打；首个网络直接晋级）、`ReportMatchResult`（五项成对计数累计 → GSPRT 判停 → 晋级/拒绝 best 指针）、`Heartbeat`（worker 状态 + best sha 下发）。
-- `server/cmd/scheduler/main.go`：入口，配置全走 `SCHEDULER_*` 环境变量（`-h` 列出）。
+- `proto/scheduler.proto`：8 RPC——`GetTask`（worker 按机器规格拉任务：优先 gatekeeper rating，其次 best 网络 selfplay）、`ReportEpisode`（只收元数据，签发 R2 预签名 PUT，数据直传 R2）、`GetNetwork`（sha 或 best → 预签名 GET）、`RegisterNetwork`（trainer 登记新网络 → 自动创建 gatekeeper 对打；首个网络直接晋级）、`ReportMatchResult`（五项成对计数累计 → GSPRT 判停 → 晋级/拒绝 best 指针）、`Heartbeat`（worker 状态 + best sha 下发）、`SignNetworkUpload`（trainer 请求网络直传预签名 PUT）、`ListEpisodes`（trainer 游标分页拉 episode 预签名 GET 列表）。**R2 凭据只在调度器持有**，worker/trainer 零存储配置，全部经预签名 URL 上下行。
+- `server/cmd/scheduler/main.go`：入口，配置全走 `SCHEDULER_*` 环境变量（`-h` 列出）；示例配置见 `server/config.example.env`（含 R2 凭据与 GSPRT 参数说明）。
 - `server/internal/store`：SQLite 元数据（networks/matches/episodes/workers，best 指针事务切换）。
 - `server/internal/r2`：预签名 PUT/GET，键布局 `episodes/<sha>/*.jsonl.gz`、`networks/<sha>.bin`。
 - `server/internal/sprt`：五项 GSPRT（正态近似 LLR，elo0/elo1/alpha/beta 可配，含单测）。

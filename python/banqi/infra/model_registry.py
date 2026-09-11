@@ -14,6 +14,21 @@ from pathlib import Path
 from typing import Optional, Protocol
 
 
+def scheduler_variant(endpoint: Optional[str] = None) -> str:
+    """从调度器 GetInfo 获取变体 id（trainer 启动时无需命令行传入变体）。"""
+    import grpc
+
+    from banqi.proto import scheduler_pb2, scheduler_pb2_grpc
+
+    endpoint = endpoint or os.environ.get("SCHEDULER_ENDPOINT", "http://127.0.0.1:50051")
+    target = endpoint.split("://", 1)[-1]
+    stub = scheduler_pb2_grpc.SchedulerServiceStub(grpc.insecure_channel(target))
+    variant = stub.GetInfo(scheduler_pb2.GetInfoRequest()).variant
+    if not variant:
+        raise ValueError(f"调度器未下发变体（GetInfo.variant 为空）: {endpoint}，请升级调度器并配置 SCHEDULER_VARIANT")
+    return variant
+
+
 class ModelRegistry(Protocol):
     """模型版本与准入接口（L4）。单机无准入（导出即生效）。"""
 
@@ -57,28 +72,26 @@ class LocalModelRegistry:
 
 
 class SchedulerModelRegistry:
-    """分布式实现：模型直传 R2 + gRPC RegisterNetwork 登记到 Go scheduler。
+    """分布式实现：经调度器签发预签名 URL 直传模型 + RegisterNetwork 登记。
 
-    - publish：sha256 命名上传 `networks/<sha>.bin`（与 Go r2.NetworkKey 一致），
-      再调 RegisterNetwork（首个网络直接晋级，其后自动创建 gatekeeper 对打）；
+    R2 凭据只在调度器持有，trainer 零存储配置：
+    - publish：SignNetworkUpload（请求预签名 PUT）→ HTTP 直传 → RegisterNetwork
+      （首个网络直接晋级，其后自动创建 gatekeeper 对打）；
     - parent_sha 记录上次成功登记的 sha，作为谱系信息上报。
-    凭据走环境变量：R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET；
     调度器地址：SCHEDULER_ENDPOINT（默认 http://127.0.0.1:50051）。
     """
 
-    def __init__(self) -> None:
-        import boto3
+    def __init__(self, endpoint: Optional[str] = None) -> None:
+        import grpc
 
-        account = os.environ["R2_ACCOUNT_ID"]
-        self.bucket = os.environ["R2_BUCKET"]
-        self.endpoint = os.environ.get("SCHEDULER_ENDPOINT", "http://127.0.0.1:50051")
-        self._s3 = boto3.client(
-            "s3",
-            endpoint_url=f"https://{account}.r2.cloudflarestorage.com",
-            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-            region_name="auto",
-        )
+        from banqi.proto import scheduler_pb2, scheduler_pb2_grpc
+
+        self.endpoint = endpoint or os.environ.get("SCHEDULER_ENDPOINT", "http://127.0.0.1:50051")
+        self._pb2 = scheduler_pb2
+        # grpc.insecure_channel 只接受 host:port，不接受 URL scheme 前缀
+        target = self.endpoint.split("://", 1)[-1]
+        self._channel = grpc.insecure_channel(target)
+        self._stub = scheduler_pb2_grpc.SchedulerServiceStub(self._channel)
         self.last_sha: Optional[str] = None
 
     @staticmethod
@@ -96,24 +109,40 @@ class SchedulerModelRegistry:
         return None
 
     def publish(self, model_path: str) -> None:
-        import grpc
-
-        from banqi.proto import scheduler_pb2, scheduler_pb2_grpc
+        import urllib.request
 
         sha = self.sha256_of(model_path)
-        key = f"networks/{sha}.bin"
-        self._s3.upload_file(model_path, self.bucket, key)
-        print(f"[registry] ✅ 模型已上传 R2: {key} <- {model_path}")
+        with open(model_path, "rb") as f:
+            body = f.read()
 
-        with grpc.insecure_channel(self.endpoint) as channel:
-            stub = scheduler_pb2_grpc.SchedulerServiceStub(channel)
-            ack = stub.RegisterNetwork(
-                scheduler_pb2.RegisterNetworkRequest(
-                    sha=sha,
-                    parent_sha=self.last_sha or "",
-                    notes=f"trainer publish {os.path.basename(model_path)}",
-                )
+        # 1. 请求调度器签发预签名 PUT（对象键 networks/<sha>.bin）
+        sign = self._stub.SignNetworkUpload(
+            self._pb2.SignNetworkUploadRequest(
+                trainer_id=f"trainer-{os.getpid()}",
+                sha=sha,
+                content_length=len(body),
+                content_sha256=sha,
             )
+        )
+        if not sign.accepted:
+            print(f"[registry] ⚠️ SignNetworkUpload 被拒绝: {sign.message}")
+            return
+
+        # 2. HTTP 直传 R2
+        req = urllib.request.Request(sign.upload_url, data=body, method="PUT")
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"模型直传失败: HTTP {resp.status} {sign.object_key}")
+        print(f"[registry] ✅ 模型已直传: {sign.object_key} <- {model_path}")
+
+        # 3. 登记网络（触发 gatekeeper 对打 / 首个网络晋级）
+        ack = self._stub.RegisterNetwork(
+            self._pb2.RegisterNetworkRequest(
+                sha=sha,
+                parent_sha=self.last_sha or "",
+                notes=f"trainer publish {os.path.basename(model_path)}",
+            )
+        )
         if not ack.accepted:
             print(f"[registry] ⚠️ RegisterNetwork 被拒绝: {ack.message}")
             return
